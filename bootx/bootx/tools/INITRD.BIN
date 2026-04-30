@@ -1,0 +1,4 @@
+boot/x demo module
+name=initrd
+format=text
+payload=hello from boot/x module loading

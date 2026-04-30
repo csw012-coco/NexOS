@@ -1,0 +1,23 @@
+# Build outputs
+/build/
+/bootx/bootx/build/
+/NXFS/nxfs
+
+# Generated disk images
+/NexOS.img
+/nxfs.img
+*.img
+
+# Scratch and mount directories
+/tmp/
+/mnt/
+/NXFS/mnt/
+
+# Local reference material
+/a/
+
+# Editor and OS noise
+.codex
+*~
+*.swp
+.DS_Store
