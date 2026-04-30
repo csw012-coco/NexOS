@@ -1,0 +1,31 @@
+NexOS Third-Party Notices
+=========================
+
+This repository includes third-party material that is not licensed under
+the NexOS project license unless explicitly stated here.
+
+GNU Unifont
+-----------
+
+File:
+
+  font.hex
+
+Origin:
+
+  GNU Unifont 17.0.04, unifont_all-17.0.04.hex.gz
+  https://unifoundry.com/pub/unifont/unifont-17.0.04/font-builds/unifont_all-17.0.04.hex.gz
+
+Verification:
+
+  SHA256(font.hex) =
+  5cefdaf25843d13510d50b3b7f787bf5b3ffa4911c33e2d3b7079c13b6c38110
+
+License:
+
+  The GNU Unifont font files are dual-licensed under the SIL Open Font
+  License version 1.1 and under GPL version 2 or later with the GNU font
+  embedding exception.
+
+  The full license text from the GNU Unifont 17.0.04 distribution is
+  included in LICENSES/LICENSE.GNU-Unifont.
