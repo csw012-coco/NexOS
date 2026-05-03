@@ -9,3 +9,4 @@ int fs_service_fill_builtin_mount_info(struct vfs *vfs,
                                        uint32_t index,
                                        struct syscall_mount_info *info,
                                        uint32_t *offset_out);
+void fs_service_fill_dynamic_space(struct vfs *vfs, uint32_t index, struct syscall_mount_info *info);

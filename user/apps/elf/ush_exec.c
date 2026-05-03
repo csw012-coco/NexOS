@@ -624,7 +624,7 @@ static int ush_build_cmd_search_command_from(const char *line,
 }
 
 static int ush_build_cmd_search_command(const char *line, char *out, uint32_t out_size) {
-    return ush_build_cmd_search_command_from(line, "/CMD", out, out_size);
+    return ush_build_cmd_search_command_from(line, "/cmd", out, out_size);
 }
 
 static int ush_build_action_command(const char *line, char *out, uint32_t out_size) {
@@ -634,7 +634,7 @@ static int ush_build_action_command(const char *line, char *out, uint32_t out_si
     if (line == NULL || out == NULL || out_size == 0) {
         return 0;
     }
-    prefix_len = (uint32_t)snprintf(out, out_size, "/CMD/ACTION run ");
+    prefix_len = (uint32_t)snprintf(out, out_size, "/cmd/action run ");
     if (prefix_len == 0u || prefix_len >= out_size) {
         out[0] = '\0';
         return 0;
@@ -754,7 +754,7 @@ static int ush_parse_wav_command(const char *original_line,
     if (!ends_with_ignore_case_local(path, ".wav")) {
         return 0;
     }
-    copy_line_local(out, "/CMD/MPLAY", out_size);
+    copy_line_local(out, "/cmd/mplay", out_size);
     out_len = str_len_local(out);
     if (out_len + str_len_local(path) + 2u >= out_size) {
         return 0;

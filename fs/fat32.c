@@ -369,6 +369,31 @@ static int fat32_alloc_cluster(struct fat32_volume *vol, uint32_t *cluster_out) 
     return -1;
 }
 
+int fat32_space_info(struct fat32_volume *vol,
+                     uint32_t *block_size_out,
+                     uint64_t *total_blocks_out,
+                     uint64_t *free_blocks_out) {
+    uint64_t free_clusters = 0;
+    uint32_t value;
+
+    if (vol == 0 || !vol->mounted || vol->bdev == 0 ||
+        block_size_out == 0 || total_blocks_out == 0 || free_blocks_out == 0) {
+        return -1;
+    }
+    for (uint32_t cluster = 2; cluster < vol->cluster_count + 2u; cluster++) {
+        if (fat32_read_fat_entry(vol, cluster, &value) != 0) {
+            return -1;
+        }
+        if (value == 0u) {
+            free_clusters++;
+        }
+    }
+    *block_size_out = vol->bdev->block_size * vol->sectors_per_cluster;
+    *total_blocks_out = vol->cluster_count;
+    *free_blocks_out = free_clusters;
+    return 0;
+}
+
 static int fat32_update_dirent(struct fat32_volume *vol, const struct fat32_file *file) {
     struct fat32_dirent *dirent;
 
@@ -904,62 +929,6 @@ static int fat32_find_in_directory(struct fat32_volume *vol,
     }
 
     return -1;
-}
-
-static void fat32_debug_dump_directory(struct fat32_volume *vol, const struct fat32_file *dir) {
-    uint32_t cluster;
-    uint32_t shown = 0u;
-    struct fat32_lfn_state lfn_state;
-    uint8_t dir_sector[512];
-
-    if (!kprint_is_ready() || vol == 0 || !vol->mounted) {
-        return;
-    }
-    fat32_lfn_state_reset(&lfn_state);
-    cluster = fat32_dir_first_cluster(vol, dir);
-    while (fat32_cluster_is_data(vol, cluster) && shown < 12u) {
-        uint32_t cluster_lba = fat32_cluster_lba(vol, cluster);
-
-        for (uint32_t sec = 0; sec < vol->sectors_per_cluster && shown < 12u; sec++) {
-            struct fat32_dirent *dirents;
-
-            if (fat32_read_sector(vol, cluster_lba + sec, dir_sector) != 0) {
-                return;
-            }
-            dirents = (struct fat32_dirent *)dir_sector;
-            for (uint32_t i = 0; i < 16u && shown < 12u; i++) {
-                struct fat32_file entry;
-
-                if (fat32_is_end_of_dirent(&dirents[i])) {
-                    return;
-                }
-                if (fat32_is_deleted_dirent(&dirents[i])) {
-                    fat32_lfn_state_reset(&lfn_state);
-                    continue;
-                }
-                if (fat32_is_lfn_dirent(&dirents[i])) {
-                    (void)fat32_lfn_capture(&lfn_state, (const struct fat32_lfn_dirent *)&dirents[i]);
-                    continue;
-                }
-                if (!fat32_fill_file_from_dirent(&dirents[i], &lfn_state, &entry)) {
-                    fat32_lfn_state_reset(&lfn_state);
-                    continue;
-                }
-                kprint("fat32: lookup entry name=%s attr=%x cluster=%u size=%u lba=%u off=%u\n",
-                       entry.name,
-                       (uint32_t)entry.attributes,
-                       entry.first_cluster,
-                       entry.size,
-                       cluster_lba + sec,
-                       i * (uint32_t)sizeof(struct fat32_dirent));
-                shown++;
-                fat32_lfn_state_reset(&lfn_state);
-            }
-        }
-        if (fat32_next_cluster(vol, cluster, &cluster) != 0) {
-            return;
-        }
-    }
 }
 
 static uint32_t fat32_name_length(const char *text) {
@@ -1753,53 +1722,6 @@ int fat32_find_path(struct fat32_volume *vol, const char *path, struct fat32_fil
             return -1;
         }
         current = *out;
-    }
-}
-
-void fat32_debug_lookup_path(struct fat32_volume *vol, const char *path) {
-    struct fat32_file current;
-    struct fat32_file next;
-    char segment[NOS_NAME_BUFFER_SIZE];
-    const char *original = path;
-    int rc;
-
-    if (!kprint_is_ready() || vol == 0 || !vol->mounted || path == 0) {
-        return;
-    }
-    fat32_get_root_dir(vol, &current);
-    while (*path == '/') {
-        path++;
-    }
-    if (*path == '\0') {
-        return;
-    }
-    for (;;) {
-        rc = fat32_path_next_segment(&path, segment);
-        if (rc <= 0) {
-            return;
-        }
-        if (fat32_find_in_directory(vol, &current, segment, &next) != 0) {
-            kprint("fat32: lookup miss path=%s segment=%s dir=%s dir_cluster=%u partition=%u\n",
-                   original,
-                   segment,
-                   current.name,
-                   current.first_cluster,
-                   vol->partition_lba);
-            fat32_debug_dump_directory(vol, &current);
-            return;
-        }
-        if (*path == '\0') {
-            return;
-        }
-        if ((next.attributes & FAT32_ATTR_DIRECTORY) == 0) {
-            kprint("fat32: lookup non-dir path=%s segment=%s entry=%s attr=%x\n",
-                   original,
-                   segment,
-                   next.name,
-                   (uint32_t)next.attributes);
-            return;
-        }
-        current = next;
     }
 }
 

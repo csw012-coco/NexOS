@@ -561,6 +561,8 @@ int cmd_blk(void) {
     return 0;
 }
 
+static void stat_print_table_field_local(const char *text);
+
 int cmd_mounts(void) {
     struct syscall_mount_info info;
     uint32_t i;
@@ -587,6 +589,183 @@ int cmd_mounts(void) {
         } else {
             write_str("(source unknown)");
         }
+        write_str("\n");
+    }
+    return 0;
+}
+
+static const char *df_mount_kind_name_local(uint32_t kind) {
+    switch (kind) {
+        case NEX_MOUNT_INFO_FAT32:
+            return "fat32";
+        case NEX_MOUNT_INFO_NXFS:
+            return "nxfs";
+        case NEX_MOUNT_INFO_DEVFS:
+            return "devfs";
+        case NEX_MOUNT_INFO_PROCFS:
+            return "procfs";
+        case NEX_MOUNT_INFO_EVENTFS:
+            return "eventfs";
+        default:
+            return "unknown";
+    }
+}
+
+static void df_write_u64_dec_local(uint64_t value) {
+    char digits[21];
+    uint32_t pos = 0;
+
+    if (value == 0u) {
+        write_str("0");
+        return;
+    }
+    while (value != 0u && pos < sizeof(digits)) {
+        digits[pos++] = (char)('0' + (value % 10u));
+        value /= 10u;
+    }
+    while (pos > 0u) {
+        pos--;
+        write_stdout(&digits[pos], 1);
+    }
+}
+
+static uint64_t df_mount_total_bytes_local(const struct syscall_mount_info *info) {
+    return info->space_known ? info->total_blocks * (uint64_t)info->block_size : 0u;
+}
+
+static uint64_t df_mount_free_bytes_local(const struct syscall_mount_info *info) {
+    return info->space_known ? info->free_blocks * (uint64_t)info->block_size : 0u;
+}
+
+static uint64_t df_mount_used_bytes_local(const struct syscall_mount_info *info) {
+    uint64_t total = df_mount_total_bytes_local(info);
+    uint64_t free = df_mount_free_bytes_local(info);
+
+    return total > free ? total - free : 0u;
+}
+
+static uint32_t df_mount_use_percent_local(const struct syscall_mount_info *info) {
+    uint64_t total = df_mount_total_bytes_local(info);
+    uint64_t used = df_mount_used_bytes_local(info);
+
+    if (total == 0u) {
+        return 0u;
+    }
+    return (uint32_t)((used * 100u + total - 1u) / total);
+}
+
+static void df_write_mountpoint_local(const struct syscall_mount_info *info) {
+    write_str("/");
+    write_str(info->target);
+}
+
+static void df_write_quoted_mountpoint_local(const struct syscall_mount_info *info) {
+    uint32_t i = 0;
+
+    write_str("\"/");
+    while (info->target[i] != '\0') {
+        if (info->target[i] == '"' || info->target[i] == '\\') {
+            char slash = '\\';
+            write_stdout(&slash, 1);
+        }
+        write_stdout(&info->target[i], 1);
+        i++;
+    }
+    write_str("\"");
+}
+
+static void df_write_source_local(const struct syscall_mount_info *info) {
+    if (!info->source_known) {
+        write_str("-");
+        return;
+    }
+    write_str("/dev/disk");
+    write_dec(info->disk_index);
+    if (info->part_index != 0xffffffffu) {
+        write_str("p");
+        write_dec(info->part_index + 1u);
+    }
+}
+
+static void df_write_human_or_dash_local(uint64_t bytes, int known) {
+    if (!known) {
+        write_str("-");
+        return;
+    }
+    write_human_size(bytes);
+}
+
+int cmd_df(int argc, char **argv) {
+    struct syscall_mount_info info;
+    uint32_t i;
+    int table = 0;
+
+    if (argc == 2 && streq_local(argv[1], "--table")) {
+        table = 1;
+    } else if (argc != 1) {
+        write_err_usage("df", " [--table]\n");
+        return 1;
+    }
+
+    if (table) {
+        write_str("# nex/type: table\n");
+        write_str("# nex/columns: mount fs total used free use source\n");
+    } else {
+        write_str("Filesystem Size Used Avail Use% Mounted on Source\n");
+    }
+
+    for (i = 0; mount_query(i, &info) > 0; i++) {
+        uint64_t total = df_mount_total_bytes_local(&info);
+        uint64_t used = df_mount_used_bytes_local(&info);
+        uint64_t free = df_mount_free_bytes_local(&info);
+        uint32_t use_percent = df_mount_use_percent_local(&info);
+
+        if (table) {
+            df_write_quoted_mountpoint_local(&info);
+            write_str(" ");
+            write_str(df_mount_kind_name_local(info.kind));
+            write_str(" ");
+            df_write_u64_dec_local(total);
+            write_str(" ");
+            df_write_u64_dec_local(used);
+            write_str(" ");
+            df_write_u64_dec_local(free);
+            write_str(" ");
+            write_dec(use_percent);
+            write_str(" ");
+            if (info.source_known) {
+                write_str("\"/dev/disk");
+                write_dec(info.disk_index);
+                if (info.part_index != 0xffffffffu) {
+                    write_str("p");
+                    write_dec(info.part_index + 1u);
+                }
+                write_str("\"");
+            } else {
+                write_str("\"-\"");
+            }
+            write_str("\n");
+            continue;
+        }
+
+        write_text_padded(df_mount_kind_name_local(info.kind), 10u);
+        write_str(" ");
+        df_write_human_or_dash_local(total, info.space_known);
+        write_str(" ");
+        df_write_human_or_dash_local(used, info.space_known);
+        write_str(" ");
+        df_write_human_or_dash_local(free, info.space_known);
+        write_str(" ");
+        if (info.space_known) {
+            write_dec(use_percent);
+            write_str("%");
+        } else {
+            write_str("-");
+        }
+        write_str(" ");
+        df_write_mountpoint_local(&info);
+        write_str(" ");
+        df_write_source_local(&info);
         write_str("\n");
     }
     return 0;
@@ -803,7 +982,11 @@ static int cpio_join_local(char *out, uint32_t out_size, const char *dir, const 
         copy_line_local(out, name, out_size);
         return out[0] != '\0';
     }
-    if (snprintf(out, out_size, streq_local(dir, "/") ? "/%s" : "%s/%s", name) < 0) {
+    if (streq_local(dir, "/")) {
+        if (snprintf(out, out_size, "/%s", name) < 0) {
+            return 0;
+        }
+    } else if (snprintf(out, out_size, "%s/%s", dir, name) < 0) {
         return 0;
     }
     return 1;
@@ -842,10 +1025,67 @@ static int cpio_split_parent_local(const char *path, char *parent, uint32_t pare
     return name[0] != '\0';
 }
 
+static int cpio_join_absolute_local(char *out, uint32_t out_size, const char *path) {
+    char cwd[CMD_PATH_MAX];
+
+    if (out == NULL || out_size == 0u || path == NULL || path[0] == '\0') {
+        return 0;
+    }
+    if (path[0] == '/') {
+        copy_line_local(out, path, out_size);
+        return out[0] != '\0';
+    }
+    if (getcwd(cwd, sizeof(cwd)) < 0) {
+        copy_line_local(cwd, ".", sizeof(cwd));
+    }
+    if (streq_local(cwd, "/")) {
+        return snprintf(out, out_size, "/%s", path) >= 0;
+    }
+    return snprintf(out, out_size, "%s/%s", cwd, path) >= 0;
+}
+
+static int cpio_path_matches_mount_target_local(const char *path, const char *target) {
+    uint32_t target_len;
+
+    if (path == NULL || target == NULL || target[0] == '\0') {
+        return 0;
+    }
+    if (path[0] != '/') {
+        return 0;
+    }
+    target_len = str_len_local(target);
+    if (path[1] == '\0') {
+        return 0;
+    }
+    for (uint32_t i = 0; i < target_len; i++) {
+        if (path[1u + i] != target[i]) {
+            return 0;
+        }
+    }
+    return path[1u + target_len] == '\0' || path[1u + target_len] == '/';
+}
+
+static int cpio_path_is_fat_mount_local(const char *path) {
+    struct syscall_mount_info info;
+    char absolute[CMD_PATH_MAX];
+
+    if (!cpio_join_absolute_local(absolute, sizeof(absolute), path)) {
+        return 0;
+    }
+    for (uint32_t i = 0; mount_query(i, &info) > 0; i++) {
+        if (info.kind == NEX_MOUNT_INFO_FAT32 &&
+            cpio_path_matches_mount_target_local(absolute, info.target)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int cpio_query_path_local(const char *path, uint32_t *attributes_out, uint32_t *size_out) {
     struct syscall_dirent entry;
     char parent[CMD_PATH_MAX];
     char name[CMD_PATH_MAX];
+    int ignore_case;
     int fd;
 
     fd = opendir(path);
@@ -866,8 +1106,10 @@ static int cpio_query_path_local(const char *path, uint32_t *attributes_out, uin
     if (fd < 0) {
         return 0;
     }
+    ignore_case = cpio_path_is_fat_mount_local(parent);
     while (readdir((uint32_t)fd, &entry) > 0) {
-        if (streq_local(entry.name, name)) {
+        if (streq_local(entry.name, name) ||
+            (ignore_case && streq_ignore_case_local(entry.name, name))) {
             close((uint32_t)fd);
             if (attributes_out != NULL) {
                 *attributes_out = entry.attributes;
@@ -879,6 +1121,508 @@ static int cpio_query_path_local(const char *path, uint32_t *attributes_out, uin
         }
     }
     close((uint32_t)fd);
+    return 0;
+}
+
+static const char *stat_type_name_local(uint32_t attributes) {
+    return (attributes & 0x10u) != 0u ? "directory" : "file";
+}
+
+static void stat_print_table_field_local(const char *text) {
+    uint32_t i = 0;
+
+    if (text == NULL) {
+        return;
+    }
+    write_str("\"");
+    while (text[i] != '\0') {
+        if (text[i] == '"' || text[i] == '\\') {
+            char slash = '\\';
+            write_stdout(&slash, 1);
+        }
+        write_stdout(&text[i], 1);
+        i++;
+    }
+    write_str("\"");
+}
+
+enum {
+    DU_MAX_DEPTH = 24u
+};
+
+struct du_options {
+    int all;
+    int summary;
+    int table;
+};
+
+static void du_print_size_local(uint64_t size, const char *path, uint32_t attributes, const struct du_options *opts) {
+    if (opts->table) {
+        stat_print_table_field_local(path);
+        write_str(" ");
+        df_write_u64_dec_local(size);
+        write_str(" ");
+        write_str(stat_type_name_local(attributes));
+        write_str("\n");
+        return;
+    }
+    write_human_size(size);
+    write_str("\t");
+    write_str(path);
+    write_str("\n");
+}
+
+static int du_walk_local(const char *path, const struct du_options *opts, uint32_t depth, uint64_t *size_out) {
+    struct syscall_dirent entry;
+    uint32_t attributes = 0u;
+    uint32_t file_size = 0u;
+    uint64_t total = 0u;
+    int fd;
+
+    if (path == NULL || opts == NULL || size_out == NULL) {
+        return 0;
+    }
+    if (!cpio_query_path_local(path, &attributes, &file_size)) {
+        write_err_str("du: not found: ");
+        write_err_str(path);
+        write_err_str("\n");
+        return 0;
+    }
+    if ((attributes & 0x10u) == 0u) {
+        total = file_size;
+        *size_out = total;
+        if (opts->all || depth == 0u) {
+            du_print_size_local(total, path, attributes, opts);
+        }
+        return 1;
+    }
+    if (depth >= DU_MAX_DEPTH) {
+        write_err_str("du: depth limit: ");
+        write_err_str(path);
+        write_err_str("\n");
+        *size_out = 0u;
+        return 1;
+    }
+
+    fd = opendir(path);
+    if (fd < 0) {
+        write_err_str("du: cannot open: ");
+        write_err_str(path);
+        write_err_str("\n");
+        return 0;
+    }
+    while (readdir((uint32_t)fd, &entry) > 0) {
+        char child[CMD_PATH_MAX];
+        uint64_t child_size = 0u;
+
+        if (cpio_is_dot_entry_local(entry.name)) {
+            continue;
+        }
+        if (!cpio_join_local(child, sizeof(child), path, entry.name)) {
+            write_err_str("du: path too long\n");
+            continue;
+        }
+        if (!du_walk_local(child, opts, depth + 1u, &child_size)) {
+            close((uint32_t)fd);
+            return 0;
+        }
+        total += child_size;
+    }
+    close((uint32_t)fd);
+    *size_out = total;
+    if (!opts->summary || depth == 0u) {
+        du_print_size_local(total, path, attributes, opts);
+    }
+    return 1;
+}
+
+int cmd_du(int argc, char **argv) {
+    struct du_options opts;
+    const char *path = ".";
+    int path_set = 0;
+    uint64_t total = 0u;
+
+    opts.all = 0;
+    opts.summary = 0;
+    opts.table = 0;
+    for (int i = 1; i < argc; i++) {
+        if (streq_local(argv[i], "-a")) {
+            opts.all = 1;
+        } else if (streq_local(argv[i], "-s")) {
+            opts.summary = 1;
+        } else if (streq_local(argv[i], "--table")) {
+            opts.table = 1;
+        } else if (!path_set) {
+            path = argv[i];
+            path_set = 1;
+        } else {
+            write_err_usage("du", " [-a] [-s] [--table] [path]\n");
+            return 1;
+        }
+    }
+    if (opts.summary) {
+        opts.all = 0;
+    }
+    if (opts.table) {
+        write_str("# nex/type: table\n");
+        write_str("# nex/columns: path size type\n");
+    }
+    return du_walk_local(path, &opts, 0u, &total) ? 0 : 1;
+}
+
+static void tree_print_prefix_local(const uint8_t *last_stack, uint32_t depth) {
+    uint32_t i;
+
+    for (i = 1u; i < depth; i++) {
+        write_str(last_stack[i] ? "   " : "|  ");
+    }
+}
+
+static int tree_walk_local(const char *path, uint32_t depth, int table, uint8_t *last_stack, int is_last) {
+    struct syscall_dirent entry;
+    uint32_t entry_count = 0u;
+    uint32_t entry_index = 0u;
+    uint32_t attributes = 0u;
+    uint32_t size = 0u;
+    int fd;
+
+    if (!cpio_query_path_local(path, &attributes, &size)) {
+        write_err_str("tree: not found: ");
+        write_err_str(path);
+        write_err_str("\n");
+        return 0;
+    }
+    if (table) {
+        stat_print_table_field_local(path);
+        write_str(" ");
+        write_dec(depth);
+        write_str(" ");
+        write_str(stat_type_name_local(attributes));
+        write_str(" ");
+        write_dec(size);
+        write_str("\n");
+    } else if (depth == 0u) {
+        write_str(path);
+        write_str("\n");
+    } else {
+        tree_print_prefix_local(last_stack, depth);
+        write_str(is_last ? "`- " : "|- ");
+        write_str(cpio_path_basename_local(path));
+        write_str("\n");
+    }
+
+    if ((attributes & 0x10u) == 0u) {
+        return 1;
+    }
+    if (depth >= DU_MAX_DEPTH) {
+        write_err_str("tree: depth limit: ");
+        write_err_str(path);
+        write_err_str("\n");
+        return 1;
+    }
+    fd = opendir(path);
+    if (fd < 0) {
+        write_err_str("tree: cannot open: ");
+        write_err_str(path);
+        write_err_str("\n");
+        return 0;
+    }
+    while (readdir((uint32_t)fd, &entry) > 0) {
+        if (cpio_is_dot_entry_local(entry.name)) {
+            continue;
+        }
+        entry_count++;
+    }
+    close((uint32_t)fd);
+
+    fd = opendir(path);
+    if (fd < 0) {
+        write_err_str("tree: cannot reopen: ");
+        write_err_str(path);
+        write_err_str("\n");
+        return 0;
+    }
+    while (readdir((uint32_t)fd, &entry) > 0) {
+        char child[CMD_PATH_MAX];
+
+        if (cpio_is_dot_entry_local(entry.name)) {
+            continue;
+        }
+        entry_index++;
+        if (!cpio_join_local(child, sizeof(child), path, entry.name)) {
+            write_err_str("tree: path too long\n");
+            continue;
+        }
+        if (depth + 1u < DU_MAX_DEPTH) {
+            last_stack[depth + 1u] = (uint8_t)(entry_index == entry_count);
+        }
+        if (!tree_walk_local(child, depth + 1u, table, last_stack, entry_index == entry_count)) {
+            close((uint32_t)fd);
+            return 0;
+        }
+    }
+    close((uint32_t)fd);
+    return 1;
+}
+
+int cmd_tree(int argc, char **argv) {
+    const char *path = ".";
+    uint8_t last_stack[DU_MAX_DEPTH + 1u];
+    int path_set = 0;
+    int table = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (streq_local(argv[i], "--table")) {
+            table = 1;
+        } else if (!path_set) {
+            path = argv[i];
+            path_set = 1;
+        } else {
+            write_err_usage("tree", " [--table] [path]\n");
+            return 1;
+        }
+    }
+    if (table) {
+        write_str("# nex/type: table\n");
+        write_str("# nex/columns: path depth type size\n");
+    }
+    for (uint32_t i = 0u; i < (uint32_t)(sizeof(last_stack) / sizeof(last_stack[0])); i++) {
+        last_stack[i] = 0u;
+    }
+    return tree_walk_local(path, 0u, table, last_stack, 1) ? 0 : 1;
+}
+
+static int file_has_suffix_local(const char *path, const char *suffix) {
+    uint32_t path_len = str_len_local(path);
+    uint32_t suffix_len = str_len_local(suffix);
+
+    if (path_len < suffix_len) {
+        return 0;
+    }
+    return streq_ignore_case_local(path + path_len - suffix_len, suffix);
+}
+
+static int file_bytes_are_text_local(const uint8_t *bytes, uint32_t count) {
+    if (count == 0u) {
+        return 1;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t ch = bytes[i];
+
+        if (ch == '\n' || ch == '\r' || ch == '\t') {
+            continue;
+        }
+        if (ch < 32u || ch > 126u) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static const char *file_text_kind_local(const char *path) {
+    if (file_has_suffix_local(path, ".cfg")) {
+        return "config";
+    }
+    if (file_has_suffix_local(path, ".asm")) {
+        return "assembly";
+    }
+    if (file_has_suffix_local(path, ".sh")) {
+        return "script";
+    }
+    if (file_has_suffix_local(path, ".txt") || file_has_suffix_local(path, ".md")) {
+        return "text";
+    }
+    return "text";
+}
+
+static const char *file_text_detail_local(const char *path) {
+    if (file_has_suffix_local(path, ".cfg")) {
+        return "ASCII config";
+    }
+    if (file_has_suffix_local(path, ".asm")) {
+        return "assembly source";
+    }
+    if (file_has_suffix_local(path, ".sh")) {
+        return "shell script";
+    }
+    if (file_has_suffix_local(path, ".md")) {
+        return "Markdown text";
+    }
+    return "ASCII text";
+}
+
+static const char *file_detect_kind_local(const char *path,
+                                          const uint8_t *bytes,
+                                          uint32_t count,
+                                          uint32_t size,
+                                          const char **detail_out) {
+    if (detail_out != NULL) {
+        *detail_out = "data";
+    }
+    if (size == 0u) {
+        if (detail_out != NULL) {
+            *detail_out = "empty file";
+        }
+        return "empty";
+    }
+    if (count >= 4u && bytes[0] == 0x7fu && bytes[1] == 'E' && bytes[2] == 'L' && bytes[3] == 'F') {
+        if (detail_out != NULL) {
+            *detail_out = count >= 5u && bytes[4] == 2u ? "ELF64 executable" : "ELF executable";
+        }
+        return "elf";
+    }
+    if (count >= 12u &&
+        bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F' &&
+        bytes[8] == 'W' && bytes[9] == 'A' && bytes[10] == 'V' && bytes[11] == 'E') {
+        if (detail_out != NULL) {
+            *detail_out = "RIFF WAVE audio";
+        }
+        return "wav";
+    }
+    if (count >= 6u &&
+        bytes[0] == '0' && bytes[1] == '7' && bytes[2] == '0' &&
+        bytes[3] == '7' && bytes[4] == '0' && (bytes[5] == '1' || bytes[5] == '2')) {
+        if (detail_out != NULL) {
+            *detail_out = "cpio newc archive";
+        }
+        return "cpio";
+    }
+    if (file_bytes_are_text_local(bytes, count)) {
+        if (detail_out != NULL) {
+            *detail_out = file_text_detail_local(path);
+        }
+        return file_text_kind_local(path);
+    }
+    if (detail_out != NULL) {
+        *detail_out = "binary data";
+    }
+    return "binary";
+}
+
+int cmd_file(int argc, char **argv) {
+    const char *path = NULL;
+    const char *kind;
+    const char *detail;
+    uint32_t attributes = 0u;
+    uint32_t size = 0u;
+    uint8_t bytes[128];
+    uint32_t got = 0u;
+    int table = 0;
+    int fd;
+    int raw_got;
+
+    if (argc == 3 && streq_local(argv[1], "--table")) {
+        table = 1;
+        path = argv[2];
+    } else if (argc == 2) {
+        path = argv[1];
+    } else {
+        write_err_usage("file", " [--table] <path>\n");
+        return 1;
+    }
+    if (!cpio_query_path_local(path, &attributes, &size)) {
+        write_err_str("file: not found: ");
+        write_err_str(path);
+        write_err_str("\n");
+        return 1;
+    }
+    if ((attributes & 0x10u) != 0u) {
+        kind = "directory";
+        detail = "directory";
+    } else {
+        fd = open(path, 0);
+        if (fd < 0) {
+            write_err_str("file: cannot open: ");
+            write_err_str(path);
+            write_err_str("\n");
+            return 1;
+        }
+        raw_got = (int)read(fd, bytes, sizeof(bytes));
+        close((uint32_t)fd);
+        if (raw_got < 0) {
+            write_err_str("file: read failed: ");
+            write_err_str(path);
+            write_err_str("\n");
+            return 1;
+        }
+        got = (uint32_t)raw_got;
+        kind = file_detect_kind_local(path, bytes, got, size, &detail);
+    }
+    if (table) {
+        write_str("# nex/type: table\n");
+        write_str("# nex/columns: path type detail size\n");
+        stat_print_table_field_local(path);
+        write_str(" ");
+        write_str(kind);
+        write_str(" ");
+        stat_print_table_field_local(detail);
+        write_str(" ");
+        write_dec(size);
+        write_str("\n");
+        return 0;
+    }
+    write_str(path);
+    write_str(": ");
+    write_str(detail);
+    write_str("\n");
+    return 0;
+}
+
+int cmd_stat(int argc, char **argv) {
+    const char *path = NULL;
+    uint32_t attributes = 0u;
+    uint32_t size = 0u;
+    int table = 0;
+
+    if (argc == 3 && streq_local(argv[1], "--table")) {
+        table = 1;
+        path = argv[2];
+    } else if (argc == 2) {
+        path = argv[1];
+    } else {
+        write_err_usage("stat", " [--table] <path>\n");
+        return 1;
+    }
+
+    if (!cpio_query_path_local(path, &attributes, &size)) {
+        write_err_str("stat: not found: ");
+        write_err_str(path);
+        write_err_str("\n");
+        return 1;
+    }
+
+    if (table) {
+        write_str("# nex/type: table\n");
+        write_str("# nex/columns: path type size attr\n");
+        stat_print_table_field_local(path);
+        write_str(" ");
+        write_str(stat_type_name_local(attributes));
+        write_str(" ");
+        write_dec(size);
+        write_str(" 0x");
+        write_hex_u32(attributes);
+        write_str("\n");
+        return 0;
+    }
+
+    write_str("path: ");
+    write_str(path);
+    write_str("\n");
+    write_str("type: ");
+    write_str(stat_type_name_local(attributes));
+    write_str("\n");
+    write_str("size: ");
+    write_dec(size);
+    write_str(" bytes");
+    if ((attributes & 0x10u) == 0u) {
+        write_str(" (");
+        write_human_size(size);
+        write_str(")");
+    }
+    write_str("\n");
+    write_str("attr: 0x");
+    write_hex_u32(attributes);
+    write_str("\n");
     return 0;
 }
 

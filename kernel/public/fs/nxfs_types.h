@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 enum {
-    NXFS_EXTENTS = 4
+    NXFS_EXTENTS = 8
 };
 
 struct nxfs_extent {

@@ -9,9 +9,13 @@ BOOTX_BUILD := $(BOOTX_DIR)/build
 IMAGE := $(ROOT)/NexOS.img
 NXFS_IMAGE := $(ROOT)/nxfs.img
 RAMDISK_IMAGE := $(BUILD)/ramdisk.img
-RAMDISK_SIZE ?= 24M
+RAMDISK_SIZE ?= 32M
 NXFS_TOOL := $(BUILD)/nxfs_host
 NXFS_FS := $(BUILD)/nxfs.fs
+BOOT_FS_IMAGE := $(BUILD)/boot.fat
+ROOT_FS_IMAGE := $(BUILD)/root.nxfs
+BOOT_PART_LBA := 2048
+ROOT_PART_LBA := 100352
 MODE ?= solo
 
 CC := x86_64-elf-gcc
@@ -26,9 +30,9 @@ USERCFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mm
 LDFLAGS64 := -nostdlib -static -m elf_x86_64
 USER_ELF_BINS := $(BUILD)/HELLO.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
 INIT_SCRIPT := $(ROOT)/user/init/INIT.SH
-OS_CONFIG := $(ROOT)/config/NEXOS.CFG
+OS_CONFIG := $(ROOT)/config/NOS.CFG
 FASM_TEST_SOURCE := $(ROOT)/user/examples/fasm/test.asm
-CMD_SUITE_NAMES := NEXBOX HELP ACTIONS ACTION MAPPER ECHO CLEAR PWD ENV WHICH TYPE LS CAT LESS HEXDUMP GREP DATE HWCLOCK SLEEP WATCH ON EVENTS WC HEAD TAIL FIND AS PICK SELECT SORT-BY COUNT-BY TO VIEW ED TOUCH MV CP MKDIR RMDIR RM FASM BLK PARTS FDISK MOUNTS PROGS FATLS FATFIND FATREAD CPIO MOUNT UMOUNT HOTPLUG RUN RUNELF RUNBG PS SESSION SERVICE JOBS WAIT ALARM TIMEOUT KILL FG BG SWITCH_ROOT DMESG LSPCI AC97 RTL8139 RTL8139TX RTL8139RX ARP ROUTE NETSTAT PING DNS DHCP IFCONFIG HTTP WGET NC AUDIO TONE WAV MPLAY MEMINFO MINFO UNAME CPUINFO DBG
+CMD_SUITE_NAMES := NEXBOX HELP ACTIONS ACTION MAPPER ECHO CLEAR PWD ENV WHICH TYPE LS CAT LESS HEXDUMP GREP DATE HWCLOCK SLEEP WATCH ON EVENTS WC HEAD TAIL FIND AS PICK SELECT SORT-BY COUNT-BY TO VIEW ED VI VIM TOUCH MV CP MKDIR RMDIR RM FASM STAT DU TREE FILE BLK PARTS FDISK DF MOUNTS PROGS FATLS FATFIND FATREAD CPIO MOUNT UMOUNT HOTPLUG RUN RUNELF RUNBG PS SESSION SERVICE JOBS WAIT ALARM TIMEOUT KILL FG BG SWITCH_ROOT DMESG LSPCI AC97 RTL8139 RTL8139TX RTL8139RX ARP ROUTE NETSTAT PING DNS DHCP IFCONFIG HTTP WGET NC AUDIO TONE WAV MPLAY DOCTOR NEXCTL SYSINFO MEMINFO MINFO UNAME CPUINFO DBG
 QEMU_AUDIODEV ?= pa,id=snd0
 QEMU_SERIAL ?= -serial stdio
 QEMU_NET ?= -nic user,model=rtl8139
@@ -177,6 +181,8 @@ USER_ELF_C_SRCS := \
 	user/apps/elf/nexbox/applets/editor/cmdsuite_editor.c \
 	user/apps/elf/nexbox/applets/fs/cmdsuite_storage.c \
 	user/apps/elf/nexbox/applets/system/cmdsuite_session.c \
+	user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.c \
+	user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.c \
 	user/apps/elf/nexbox/applets/proc/cmdsuite_proc.c \
 	user/apps/elf/nexbox/applets/debug/cmdsuite_debug.c \
 	user/apps/elf/nexbox/applets/asm/cmdsuite_asm.c
@@ -295,7 +301,7 @@ $(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCR
 	$(Q)mcopy -i $@@@1048576 $(ROOT)/config/ACTION.CAPS ::/HOME/ACTION.CAPS
 	$(Q)mcopy -i $@@@1048576 $(FASM_TEST_SOURCE) ::/HOME/TEST.ASM
 	$(Q)mcopy -i $@@@1048576 $(INIT_SCRIPT) ::/INIT.SH
-	$(Q)mcopy -i $@@@1048576 $(OS_CONFIG) ::/NEXOS.CFG
+	$(Q)mcopy -i $@@@1048576 $(OS_CONFIG) ::/NOS.CFG
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/HELLO.ELF ::/CMD/HELLO
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/KEYDEMO.ELF ::/CMD/KEYDEMO
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/YIELDDEMO.ELF ::/CMD/YIELDDEMO
@@ -315,18 +321,57 @@ $(BUILD):
 	$(call log_cmd,MKDIR,$@)
 	$(Q)mkdir -p $(BUILD)
 
-$(NXFS_TOOL): $(ROOT)/tools/nxfs_host.c | $(BUILD)
-	$(do_hostcc)
+$(NXFS_TOOL): $(ROOT)/tools/nxfs_host.c $(ROOT)/fs/nxfs.c $(ROOT)/fs/nxfs.h $(ROOT)/kernel/public/fs/nxfs_types.h $(ROOT)/lib/string.c | $(BUILD)
+	$(call log_cmd,HOSTCC,$@)
+	$(Q)$(HOSTCC) -O2 -Wall -Wextra -fno-builtin -I$(ROOT) $(ROOT)/tools/nxfs_host.c $(ROOT)/fs/nxfs.c $(ROOT)/lib/string.c -o $@
 
 $(NXFS_FS): $(NXFS_TOOL)
 	$(call log_cmd,GEN,$@)
 	$(Q)rm -f $@
 	$(Q)$< mkfs $@
 
+$(BOOT_FS_IMAGE): $(BOOTX_STAGE3) $(BUILD)/kernel64.elf $(RAMDISK_IMAGE) $(ROOT)/bootx.cfg | $(BUILD)
+	$(call log_cmd,IMAGE,$@)
+	$(Q)rm -f $@
+	$(Q)truncate -s 48M $@
+	$(Q)mkfs.fat -F 32 $@
+	$(Q)mmd -i $@ ::/BOOT
+	$(Q)mcopy -i $@ $(BOOTX_STAGE3) ::/BOOT/STAGE3.SYS
+	$(Q)mcopy -i $@ $(BUILD)/kernel64.elf ::/BOOT/NEX.ELF
+	$(Q)mcopy -i $@ $(RAMDISK_IMAGE) ::/BOOT/RAMDISK.IMG
+	$(Q)mcopy -i $@ $(ROOT)/bootx.cfg ::/BOOT/BOOTX.CFG
+
+$(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCRIPT) $(OS_CONFIG) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
+	$(call log_cmd,IMAGE,$@)
+	$(Q)rm -f $@
+	$(Q)$(NXFS_TOOL) mkfs $@
+	$(Q)$(NXFS_TOOL) mkdir $@ /cmd
+	$(Q)$(NXFS_TOOL) mkdir $@ /home
+	$(Q)$(NXFS_TOOL) mkdir $@ /system
+	$(Q)$(NXFS_TOOL) mkdir $@ /system/font
+	$(Q)$(NXFS_TOOL) mkdir $@ /system/config
+	$(Q)$(NXFS_TOOL) mkdir $@ /system/session
+	$(Q)$(NXFS_TOOL) mkdir $@ /system/session/images
+	$(Q)$(NXFS_TOOL) mkdir $@ /system/service
+	$(Q)$(NXFS_TOOL) write $@ $(INIT_SCRIPT) /init.sh
+	$(Q)$(NXFS_TOOL) write $@ $(OS_CONFIG) /nos.cfg
+	$(Q)$(NXFS_TOOL) write $@ $(OS_CONFIG) /system/config/nos.cfg
+	$(Q)$(NXFS_TOOL) write $@ $(ROOT)/font.hex /system/font/font.hex
+	$(Q)$(NXFS_TOOL) write $@ $(ROOT)/bootx.cfg /home/bootx.txt
+	$(Q)$(NXFS_TOOL) write $@ $(ROOT)/config/ACTION.CAPS /home/action.caps
+	$(Q)$(NXFS_TOOL) write $@ $(FASM_TEST_SOURCE) /home/test.asm
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/HELLO.ELF /home/hello.elf
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/USH.ELF /home/ush.elf
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /home/nexbox.elf
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/USH.ELF /cmd/ush
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/nexbox
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/HELLO.ELF /cmd/hello
+	$(Q)for alias in $(CMD_SUITE_NAMES); do lower=$$(printf '%s' "$$alias" | tr 'A-Z' 'a-z'); $(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/$$lower; done
+
 $(NXFS_IMAGE): $(NXFS_FS)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
-	$(Q)truncate -s 16M $@
+	$(Q)truncate -s 80M $@
 	$(Q)parted -s $@ mklabel msdos
 	$(Q)parted -s $@ mkpart primary 1MiB 100%
 	$(Q)dd if=$(NXFS_FS) of=$@ conv=notrunc bs=512 seek=2048
@@ -359,7 +404,7 @@ CATDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/cat.o
 LSDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/ls.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
 WDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/wdemo.o
 USH_ELF_OBJS := $(BUILD)/user/apps/elf/ush.o $(BUILD)/user/apps/elf/ush_editor.o $(BUILD)/user/apps/elf/ush_vars.o $(BUILD)/user/apps/elf/ush_exec.o $(BUILD)/user/apps/elf/ush_parse.o
-NEXBOX_ELF_OBJS := $(BUILD)/user/apps/elf/nexbox/core/cmdsuite.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_dispatch.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_basic.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text.o $(BUILD)/user/apps/elf/nexbox/applets/audio/cmdsuite_audio.o $(BUILD)/user/apps/elf/nexbox/applets/editor/cmdsuite_editor.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_session.o $(BUILD)/user/apps/elf/nexbox/applets/proc/cmdsuite_proc.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug.o $(BUILD)/user/apps/elf/nexbox/applets/asm/cmdsuite_asm.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
+NEXBOX_ELF_OBJS := $(BUILD)/user/apps/elf/nexbox/core/cmdsuite.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_dispatch.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_basic.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text.o $(BUILD)/user/apps/elf/nexbox/applets/audio/cmdsuite_audio.o $(BUILD)/user/apps/elf/nexbox/applets/editor/cmdsuite_editor.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_session.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.o $(BUILD)/user/apps/elf/nexbox/applets/proc/cmdsuite_proc.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug.o $(BUILD)/user/apps/elf/nexbox/applets/asm/cmdsuite_asm.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
 
 $(eval $(call define_user_elf,HELLO.ELF,$(HELLO_ELF_OBJS)))
 $(eval $(call define_user_elf,KEYDEMO.ELF,$(KEYDEMO_ELF_OBJS)))
@@ -378,62 +423,19 @@ $(eval $(call define_user_elf,NEXBOX.ELF,$(NEXBOX_ELF_OBJS)))
 
 -include $(DEPFILES)
 
-$(IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3) $(BUILD)/kernel64.elf $(USER_ELF_BINS) $(RAMDISK_IMAGE) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCRIPT) $(OS_CONFIG) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
+$(IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOT_FS_IMAGE) $(ROOT_FS_IMAGE) | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s 128M $@
 	$(Q)parted -s $@ mklabel msdos
-	$(Q)parted -s $@ mkpart primary fat32 1MiB 100%
+	$(Q)parted -s $@ mkpart primary fat32 1MiB 49MiB
+	$(Q)parted -s $@ mkpart primary 49MiB 100%
 	$(Q)parted -s $@ set 1 boot on
-	$(Q)mkfs.fat -F 32 --offset 2048 $@
 	$(Q)dd if=$(BOOTX_STAGE1) of=$@ conv=notrunc bs=446 count=1
 	$(Q)dd if=$(BOOTX_STAGE1) of=$@ conv=notrunc bs=1 skip=510 seek=510 count=2
 	$(Q)dd if=$(BOOTX_STAGE2) of=$@ conv=notrunc bs=512 seek=1
-	$(Q)mmd -i $@@@1048576 ::/BOOT
-	$(Q)mmd -i $@@@1048576 ::/HOME
-	$(Q)mmd -i $@@@1048576 ::/CMD
-	$(Q)mmd -i $@@@1048576 ::/SYSTEM
-	$(Q)mmd -i $@@@1048576 ::/SYSTEM/FONT
-	$(Q)mmd -i $@@@1048576 ::/SYSTEM/CONFIG
-	$(Q)mmd -i $@@@1048576 ::/SYSTEM/SESSION
-	$(Q)mmd -i $@@@1048576 ::/SYSTEM/SESSION/IMAGES
-	$(Q)mmd -i $@@@1048576 ::/SYSTEM/SERVICE
-	$(Q)mcopy -i $@@@1048576 $(BOOTX_STAGE3) ::/BOOT/STAGE3.SYS
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/kernel64.elf ::/BOOT/NEX.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/HELLO.ELF ::/HOME/HELLO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/KEYDEMO.ELF ::/HOME/KEYDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/YIELDDEMO.ELF ::/HOME/YIELDDEMO.ELF
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/BADPTR.ELF ::/HOME/BADPTR.ELF
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/PFDEMO.ELF ::/HOME/PFDEMO.ELF
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/GPFDEMO.ELF ::/HOME/GPFDEMO.ELF
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/UDDEMO.ELF ::/HOME/UDDEMO.ELF
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/DEDEMO.ELF ::/HOME/DEDEMO.ELF
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/SLEEPDEMO.ELF ::/HOME/SLEEPDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/CATDEMO.ELF ::/HOME/CATDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/LSDEMO.ELF ::/HOME/LSDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/WDEMO.ELF ::/HOME/WDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/USH.ELF ::/HOME/USH.ELF
-	$(Q)mcopy -i $@@@1048576 $(ROOT)/config/ACTION.CAPS ::/HOME/ACTION.CAPS
-	$(Q)mcopy -o -i $@@@1048576 $(ROOT)/font.hex ::/SYSTEM/FONT/FONT.HEX
-	$(Q)mcopy -i $@@@1048576 $(FASM_TEST_SOURCE) ::/HOME/TEST.ASM
-	$(Q)mcopy -i $@@@1048576 $(INIT_SCRIPT) ::/INIT.SH
-	$(Q)mcopy -i $@@@1048576 $(OS_CONFIG) ::/SYSTEM/CONFIG/HEXOS.CFG
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/HELLO.ELF ::/CMD/HELLO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/KEYDEMO.ELF ::/CMD/KEYDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/YIELDDEMO.ELF ::/CMD/YIELDDEMO
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/BADPTR.ELF ::/CMD/BADPTR
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/PFDEMO.ELF ::/CMD/PFDEMO
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/GPFDEMO.ELF ::/CMD/GPFDEMO
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/UDDEMO.ELF ::/CMD/UDDEMO
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/DEDEMO.ELF ::/CMD/DEDEMO
-		$(Q)mcopy -i $@@@1048576 $(BUILD)/SLEEPDEMO.ELF ::/CMD/SLEEPDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/CATDEMO.ELF ::/CMD/CAT
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/LSDEMO.ELF ::/CMD/LS
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/WDEMO.ELF ::/CMD/WDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/USH.ELF ::/CMD/USH
-	$(Q)for alias in $(CMD_SUITE_NAMES); do mcopy -o -i $@@@1048576 $(BUILD)/NEXBOX.ELF ::/CMD/$$alias; done
-	$(Q)mcopy -i $@@@1048576 $(RAMDISK_IMAGE) ::/BOOT/RAMDISK.IMG
-	$(Q)mcopy -i $@@@1048576 $(ROOT)/bootx.cfg ::/BOOT/BOOTX.CFG
+	$(Q)dd if=$(BOOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(BOOT_PART_LBA)
+	$(Q)dd if=$(ROOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(ROOT_PART_LBA)
 
 run: $(IMAGE) $(NXFS_IMAGE)
 	qemu-system-x86_64 \
@@ -627,30 +629,37 @@ check-kernel: $(BUILD)/kernel64.elf
 	@readelf -l $(BUILD)/kernel64.elf | grep -q ' RWE ' && { printf '%s\n' '[check] error: kernel64.elf still has an RWX LOAD segment'; exit 1; } || true
 	@readelf -l $(BUILD)/kernel64.elf | grep -q 'LOAD'
 
-check-image: $(IMAGE) $(NXFS_IMAGE)
+check-image: $(IMAGE) $(NXFS_IMAGE) $(ROOT_FS_IMAGE)
 	@printf '%s\n' '[check] verifying boot image contents'
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'NEX +ELF'
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'STAGE3 +SYS'
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'RAMDISK +IMG'
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'BOOTX +CFG'
-	@mdir -i $(IMAGE)@@1048576 ::/SYSTEM/FONT | grep -Eq 'FONT +HEX'
-	@mdir -i $(IMAGE)@@1048576 ::/SYSTEM/CONFIG | grep -Eq 'HEXOS +CFG'
-	@mdir -i $(IMAGE)@@1048576 ::/SYSTEM/SESSION | grep -Eq 'IMAGES'
-	@mdir -i $(IMAGE)@@1048576 ::/HOME | grep -Eq 'USH +ELF'
-	@mdir -i $(IMAGE)@@1048576 ::/HOME | grep -Eq 'HELLO +ELF'
-	@mdir -i $(IMAGE)@@1048576 ::/CMD | grep -Ei 'MKDIR'
-	@mdir -i $(IMAGE)@@1048576 ::/CMD | grep -Ei 'SESSION'
-	@mdir -i $(IMAGE)@@1048576 ::/CMD | grep -Ei 'SERVICE'
-	@mdir -i $(IMAGE)@@1048576 ::/SYSTEM | grep -Eq 'SERVICE'
-	@mdir -i $(IMAGE)@@1048576 ::/ | grep -Eq 'INIT +SH'
-	@mdir -i $(IMAGE)@@1048576 ::/ | grep -Eq 'USH +ELF' && { printf '%s\n' '[check] error: unexpected root /USH.ELF copy in boot image'; exit 1; } || true
+	@printf '%s\n' '[check] verifying root NXFS contents'
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /init.sh
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/ush
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/nexbox
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/hello
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/ls
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/echo
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/vi
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/nexctl
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/sysinfo
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /home/ush.elf
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /home/hello.elf
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/config/nos.cfg
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/font/font.hex
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/session/images
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/service
 	@printf '%s\n' '[check] verifying ramdisk contents'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/HOME | grep -Eq 'USH +ELF'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/HOME | grep -Eq 'HELLO +ELF'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'MKDIR'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'SERVICE'
+	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'NEXCTL'
+	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'SYSINFO'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'INIT +SH'
-	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'NEXOS +CFG'
+	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'NOS +CFG'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'USH +ELF' && { printf '%s\n' '[check] error: unexpected root /USH.ELF copy in ramdisk'; exit 1; } || true
 
 clean:

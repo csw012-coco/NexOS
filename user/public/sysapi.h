@@ -254,6 +254,10 @@ struct syscall_mount_info {
     uint32_t part_index;
     uint32_t source_known;
     char target[NOS_NAME_BUFFER_SIZE];
+    uint32_t space_known;
+    uint32_t block_size;
+    uint64_t total_blocks;
+    uint64_t free_blocks;
 };
 
 struct syscall_boot_info {
@@ -427,6 +431,8 @@ struct syscall_machine_info {
     uint32_t cpuid_leaf1_ebx;
     uint32_t cpuid_leaf1_ecx;
     uint32_t cpuid_leaf1_edx;
+    uint32_t text_columns;
+    uint32_t text_rows;
 };
 
 struct syscall_block_read_info {

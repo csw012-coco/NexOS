@@ -22,6 +22,21 @@ struct ed_address_range {
 
 static struct ed_buffer g_ed_buffer;
 
+static uint32_t ed_read_stdin_line_local(char *line, uint32_t size) {
+    ssize_t got;
+
+    if (line == NULL || size == 0u) {
+        return 0u;
+    }
+    got = nex_read(STDIN_FILENO, line, size, NEX_READ_BLOCKING);
+    if (got <= 0) {
+        line[0] = '\0';
+        return 0u;
+    }
+    line[size - 1u] = '\0';
+    return (uint32_t)got;
+}
+
 static const char *ed_skip_spaces_local(const char *text) {
     while (text != NULL && (*text == ' ' || *text == '\t')) {
         text++;
@@ -128,7 +143,7 @@ static int ed_input_mode_local(struct ed_buffer *buffer, uint32_t insert_at) {
 
     for (;;) {
         write_str("! ");
-        if (read_line(STDIN_FILENO, line, sizeof(line)) == 0u) {
+        if (ed_read_stdin_line_local(line, sizeof(line)) == 0u) {
             return 0;
         }
         if (streq_local(line, ".")) {
@@ -385,6 +400,707 @@ static void ed_print_help_local(void) {
     write_str("append/insert/change mode ends with a single '.' line\n");
 }
 
+enum {
+    VI_KEY_ESC = 0x1b,
+    VI_KEY_UP = 0x101,
+    VI_KEY_DOWN,
+    VI_KEY_RIGHT,
+    VI_KEY_LEFT,
+    VI_MODE_NORMAL = 0,
+    VI_MODE_INSERT = 1
+};
+
+struct vi_screen {
+    uint32_t cols;
+    uint32_t rows;
+    uint32_t text_rows;
+    uint32_t status_row;
+};
+
+static struct ed_buffer g_vi_buffer;
+
+static void vi_query_screen_local(struct vi_screen *screen) {
+    struct syscall_machine_info info;
+
+    if (screen == NULL) {
+        return;
+    }
+    screen->cols = 80u;
+    screen->rows = 25u;
+    if (machine_info_query(&info) > 0) {
+        if (info.text_columns >= 20u) {
+            screen->cols = info.text_columns;
+        }
+        if (info.text_rows >= 5u) {
+            screen->rows = info.text_rows;
+        }
+    }
+    screen->text_rows = screen->rows > 1u ? screen->rows - 1u : 1u;
+    screen->status_row = screen->rows;
+}
+
+static uint32_t vi_line_len_local(const struct ed_buffer *buffer, uint32_t row) {
+    if (buffer == NULL || row >= buffer->count) {
+        return 0u;
+    }
+    return str_len_local(buffer->lines[row]);
+}
+
+static void vi_set_status_local(char *status, uint32_t size, const char *text) {
+    copy_line_local(status, text != NULL ? text : "", size);
+}
+
+static uint32_t vi_write_limited_local(const char *text, uint32_t limit) {
+    uint32_t written = 0u;
+
+    while (text != NULL && text[written] != '\0' && written < limit) {
+        write_stdout(&text[written], 1u);
+        written++;
+    }
+    return written;
+}
+
+static int vi_read_key_local(void) {
+    char ch = 0;
+    char seq1 = 0;
+    char seq2 = 0;
+
+    if (nex_read(STDIN_FILENO, &ch, 2u, NEX_READ_BLOCKING | NEX_READ_CHAR) <= 0) {
+        return 0;
+    }
+    if (ch != (char)VI_KEY_ESC) {
+        return (uint8_t)ch;
+    }
+    if (nex_read(STDIN_FILENO, &seq1, 2u, NEX_READ_NONBLOCK | NEX_READ_CHAR) <= 0) {
+        return VI_KEY_ESC;
+    }
+    if (seq1 != '[') {
+        return VI_KEY_ESC;
+    }
+    if (nex_read(STDIN_FILENO, &seq2, 2u, NEX_READ_NONBLOCK | NEX_READ_CHAR) <= 0) {
+        return VI_KEY_ESC;
+    }
+    switch (seq2) {
+        case 'A': return VI_KEY_UP;
+        case 'B': return VI_KEY_DOWN;
+        case 'C': return VI_KEY_RIGHT;
+        case 'D': return VI_KEY_LEFT;
+        default: return VI_KEY_ESC;
+    }
+}
+
+static void vi_clamp_cursor_local(struct ed_buffer *buffer, uint32_t *row_io, uint32_t *col_io) {
+    uint32_t len;
+
+    if (buffer == NULL || row_io == NULL || col_io == NULL) {
+        return;
+    }
+    if (buffer->count == 0u) {
+        buffer->count = 1u;
+        buffer->lines[0][0] = '\0';
+    }
+    if (*row_io >= buffer->count) {
+        *row_io = buffer->count - 1u;
+    }
+    len = vi_line_len_local(buffer, *row_io);
+    if (*col_io > len) {
+        *col_io = len;
+    }
+}
+
+static int vi_move_key_local(struct ed_buffer *buffer, int key, uint32_t *row_io, uint32_t *col_io) {
+    if (buffer == NULL || row_io == NULL || col_io == NULL) {
+        return 0;
+    }
+    if (key == VI_KEY_LEFT) {
+        if (*col_io != 0u) {
+            (*col_io)--;
+        }
+        return 1;
+    }
+    if (key == VI_KEY_RIGHT) {
+        if (*col_io < vi_line_len_local(buffer, *row_io)) {
+            (*col_io)++;
+        }
+        return 1;
+    }
+    if (key == VI_KEY_UP) {
+        if (*row_io != 0u) {
+            (*row_io)--;
+            vi_clamp_cursor_local(buffer, row_io, col_io);
+        }
+        return 1;
+    }
+    if (key == VI_KEY_DOWN) {
+        if (*row_io + 1u < buffer->count) {
+            (*row_io)++;
+            vi_clamp_cursor_local(buffer, row_io, col_io);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static int vi_update_view_local(uint32_t row,
+                                uint32_t col,
+                                const struct vi_screen *screen,
+                                uint32_t *top_row_io,
+                                uint32_t *left_col_io) {
+    int changed = 0;
+
+    if (screen == NULL || top_row_io == NULL || left_col_io == NULL) {
+        return 0;
+    }
+    if (row < *top_row_io) {
+        *top_row_io = row;
+        changed = 1;
+    } else if (row >= *top_row_io + screen->text_rows) {
+        *top_row_io = row - screen->text_rows + 1u;
+        changed = 1;
+    }
+    if (col < *left_col_io) {
+        *left_col_io = col;
+        changed = 1;
+    } else if (col >= *left_col_io + screen->cols) {
+        *left_col_io = col - screen->cols + 1u;
+        changed = 1;
+    }
+    return changed;
+}
+
+static uint32_t vi_visible_col_local(uint32_t cursor_col, uint32_t left_col, uint32_t cols) {
+    uint32_t out = cursor_col >= left_col ? cursor_col - left_col : 0u;
+
+    if (cols == 0u) {
+        return 0u;
+    }
+    return out < cols ? out : cols - 1u;
+}
+
+static void vi_render_text_line_local(struct ed_buffer *buffer,
+                                      uint32_t screen_row,
+                                      uint32_t buffer_row,
+                                      uint32_t left_col,
+                                      const struct vi_screen *screen) {
+    uint32_t cols = screen != NULL ? screen->cols : 80u;
+    uint32_t written = 0u;
+
+    printf("\x1b[%u;1H", screen_row);
+    if (buffer_row < buffer->count) {
+        const char *line = buffer->lines[buffer_row];
+        uint32_t len = str_len_local(line);
+
+        if (left_col < len) {
+            while (written < cols && line[left_col + written] != '\0') {
+                write_stdout(&line[left_col + written], 1u);
+                written++;
+            }
+        }
+    } else {
+        write_str("~");
+        written = 1u;
+    }
+    if (written < cols) {
+        write_str("\x1b[K");
+    }
+}
+
+static void vi_render_status_local(struct ed_buffer *buffer,
+                                   const struct vi_screen *screen,
+                                   uint32_t mode,
+                                   const char *status) {
+    uint32_t cols = screen != NULL ? screen->cols : 80u;
+    uint32_t status_row = screen != NULL ? screen->status_row : 25u;
+    uint32_t remaining = cols;
+    uint32_t written;
+
+    printf("\x1b[%u;1H", status_row);
+    written = vi_write_limited_local(mode == VI_MODE_INSERT ? "-- INSERT -- " : "-- NORMAL -- ", remaining);
+    remaining = remaining > written ? remaining - written : 0u;
+    written = vi_write_limited_local(buffer->path[0] != '\0' ? buffer->path : "[No Name]", remaining);
+    remaining = remaining > written ? remaining - written : 0u;
+    written = vi_write_limited_local(buffer->dirty ? " [+] " : " ", remaining);
+    remaining = remaining > written ? remaining - written : 0u;
+    if (status != NULL) {
+        (void)vi_write_limited_local(status, remaining);
+    }
+    write_str("\x1b[K");
+}
+
+static void vi_move_cursor_local(uint32_t cursor_row,
+                                 uint32_t cursor_col,
+                                 uint32_t top_row,
+                                 uint32_t left_col,
+                                 const struct vi_screen *screen) {
+    uint32_t cols = screen != NULL ? screen->cols : 80u;
+
+    printf("\x1b[%u;%uH",
+           (cursor_row - top_row) + 1u,
+           vi_visible_col_local(cursor_col, left_col, cols) + 1u);
+}
+
+static void vi_render_local(struct ed_buffer *buffer,
+                            uint32_t cursor_row,
+                            uint32_t cursor_col,
+                            uint32_t top_row,
+                            uint32_t left_col,
+                            const struct vi_screen *screen,
+                            uint32_t mode,
+                            const char *status) {
+    uint32_t i;
+    uint32_t text_rows = screen != NULL ? screen->text_rows : 24u;
+
+    write_str("\x1b[2J\x1b[H");
+    for (i = 0u; i < text_rows; i++) {
+        vi_render_text_line_local(buffer, i + 1u, top_row + i, left_col, screen);
+    }
+    vi_render_status_local(buffer, screen, mode, status);
+    vi_move_cursor_local(cursor_row, cursor_col, top_row, left_col, screen);
+}
+
+static int vi_insert_char_local(struct ed_buffer *buffer, uint32_t row, uint32_t *col_io, char ch) {
+    char *line;
+    uint32_t len;
+    uint32_t col;
+
+    if (buffer == NULL || col_io == NULL || row >= buffer->count) {
+        return 0;
+    }
+    line = buffer->lines[row];
+    len = str_len_local(line);
+    col = *col_io;
+    if (len + 1u >= ED_LINE_MAX || col > len) {
+        return 0;
+    }
+    for (uint32_t i = len + 1u; i > col; i--) {
+        line[i] = line[i - 1u];
+    }
+    line[col] = ch;
+    *col_io = col + 1u;
+    buffer->dirty = 1u;
+    return 1;
+}
+
+static int vi_delete_char_local(struct ed_buffer *buffer, uint32_t row, uint32_t col) {
+    char *line;
+    uint32_t len;
+
+    if (buffer == NULL || row >= buffer->count) {
+        return 0;
+    }
+    line = buffer->lines[row];
+    len = str_len_local(line);
+    if (col >= len) {
+        return 0;
+    }
+    for (uint32_t i = col; i < len; i++) {
+        line[i] = line[i + 1u];
+    }
+    buffer->dirty = 1u;
+    return 1;
+}
+
+static int vi_split_line_local(struct ed_buffer *buffer, uint32_t *row_io, uint32_t *col_io) {
+    char tail[ED_LINE_MAX];
+    uint32_t row;
+    uint32_t col;
+
+    if (buffer == NULL || row_io == NULL || col_io == NULL || buffer->count >= ED_BUFFER_LINES) {
+        return 0;
+    }
+    row = *row_io;
+    col = *col_io;
+    if (row >= buffer->count || col > str_len_local(buffer->lines[row])) {
+        return 0;
+    }
+    copy_line_local(tail, buffer->lines[row] + col, sizeof(tail));
+    buffer->lines[row][col] = '\0';
+    if (!ed_insert_slot_local(buffer, row + 1u, tail)) {
+        return 0;
+    }
+    *row_io = row + 1u;
+    *col_io = 0u;
+    return 1;
+}
+
+static int vi_join_backspace_local(struct ed_buffer *buffer, uint32_t *row_io, uint32_t *col_io) {
+    uint32_t row;
+    uint32_t prev_len;
+    uint32_t cur_len;
+
+    if (buffer == NULL || row_io == NULL || col_io == NULL || *row_io == 0u) {
+        return 0;
+    }
+    row = *row_io;
+    prev_len = str_len_local(buffer->lines[row - 1u]);
+    cur_len = str_len_local(buffer->lines[row]);
+    if (prev_len + cur_len >= ED_LINE_MAX) {
+        return 0;
+    }
+    copy_line_local(buffer->lines[row - 1u] + prev_len,
+                    buffer->lines[row],
+                    sizeof(buffer->lines[row - 1u]) - prev_len);
+    (void)ed_delete_range_local(buffer, row + 1u, row + 1u);
+    *row_io = row - 1u;
+    *col_io = prev_len;
+    return 1;
+}
+
+static int vi_delete_line_local(struct ed_buffer *buffer, uint32_t *row_io, uint32_t *col_io) {
+    if (buffer == NULL || row_io == NULL || col_io == NULL || buffer->count == 0u) {
+        return 0;
+    }
+    if (!ed_delete_range_local(buffer, *row_io + 1u, *row_io + 1u)) {
+        return 0;
+    }
+    if (buffer->count == 0u) {
+        buffer->count = 1u;
+        buffer->lines[0][0] = '\0';
+    }
+    if (*row_io >= buffer->count) {
+        *row_io = buffer->count - 1u;
+    }
+    *col_io = 0u;
+    buffer->dirty = 1u;
+    return 1;
+}
+
+static uint32_t vi_write_file_local(struct ed_buffer *buffer, const char *path) {
+    uint32_t i;
+    uint32_t written = 0u;
+    int fd;
+
+    if (buffer == NULL || path == NULL || path[0] == '\0') {
+        return 0u;
+    }
+    fd = open(path, O_CREAT | O_TRUNC);
+    if (fd < 0) {
+        return 0u;
+    }
+    for (i = 0u; i < buffer->count; i++) {
+        uint32_t len = str_len_local(buffer->lines[i]);
+
+        if (len != 0u && write_fd((uint32_t)fd, buffer->lines[i], len) != len) {
+            close((uint32_t)fd);
+            return 0u;
+        }
+        written += len;
+        if (write_fd((uint32_t)fd, "\n", 1u) != 1u) {
+            close((uint32_t)fd);
+            return 0u;
+        }
+        written++;
+    }
+    close((uint32_t)fd);
+    copy_line_local(buffer->path, path, sizeof(buffer->path));
+    buffer->dirty = 0u;
+    return written;
+}
+
+static int vi_read_command_local(char *out, uint32_t size, const struct vi_screen *screen) {
+    uint32_t len = 0u;
+    uint32_t row = screen != NULL ? screen->status_row : 25u;
+
+    if (out == NULL || size == 0u) {
+        return 0;
+    }
+    printf("\x1b[%u;1H\x1b[K:", row);
+    for (;;) {
+        int key = vi_read_key_local();
+
+        if (key == '\n' || key == '\r') {
+            out[len] = '\0';
+            return 1;
+        }
+        if (key == VI_KEY_ESC) {
+            out[0] = '\0';
+            return 0;
+        }
+        if (key == '\b' || key == 0x7f) {
+            if (len != 0u) {
+                len--;
+                write_str("\b \b");
+            }
+            continue;
+        }
+        if (key >= 0x20 && key <= 0x7e && len + 1u < size) {
+            out[len++] = (char)key;
+            write_stdout(&out[len - 1u], 1u);
+        }
+    }
+}
+
+int cmd_vi(int argc, char **argv) {
+    struct ed_buffer *buffer = &g_vi_buffer;
+    uint32_t row = 0u;
+    uint32_t col = 0u;
+    uint32_t top_row = 0u;
+    uint32_t left_col = 0u;
+    uint32_t mode = VI_MODE_NORMAL;
+    uint8_t pending_d = 0u;
+    char status[80];
+    struct vi_screen screen;
+    uint32_t dirty_row = 0u;
+    uint32_t last_cols = 0u;
+    uint32_t last_rows = 0u;
+    int full_repaint = 1;
+    int dirty_line = 0;
+    int dirty_status = 1;
+    int dirty_cursor = 1;
+
+    buffer->path[0] = '\0';
+    buffer->count = 0u;
+    buffer->current = 0u;
+    buffer->dirty = 0u;
+    status[0] = '\0';
+
+    if (argc > 2) {
+        write_err_usage("vi", " [path]\n");
+        return 1;
+    }
+    if (argc == 2 && argv[1][0] != '\0') {
+        copy_line_local(buffer->path, argv[1], sizeof(buffer->path));
+        if (!ed_load_file_local(buffer, argv[1])) {
+            buffer->count = 0u;
+            buffer->dirty = 0u;
+        }
+    }
+    if (buffer->count == 0u) {
+        buffer->count = 1u;
+        buffer->lines[0][0] = '\0';
+    }
+
+    for (;;) {
+        int key;
+
+        vi_query_screen_local(&screen);
+        if (screen.cols != last_cols || screen.rows != last_rows) {
+            last_cols = screen.cols;
+            last_rows = screen.rows;
+            full_repaint = 1;
+        }
+        vi_clamp_cursor_local(buffer, &row, &col);
+        if (vi_update_view_local(row, col, &screen, &top_row, &left_col)) {
+            full_repaint = 1;
+        }
+        if (full_repaint) {
+            vi_render_local(buffer, row, col, top_row, left_col, &screen, mode, status);
+        } else {
+            if (dirty_line && dirty_row >= top_row && dirty_row < top_row + screen.text_rows) {
+                vi_render_text_line_local(buffer, (dirty_row - top_row) + 1u, dirty_row, left_col, &screen);
+                dirty_cursor = 1;
+            }
+            if (dirty_status) {
+                vi_render_status_local(buffer, &screen, mode, status);
+                dirty_cursor = 1;
+            }
+            if (dirty_cursor) {
+                vi_move_cursor_local(row, col, top_row, left_col, &screen);
+            }
+        }
+        full_repaint = 0;
+        dirty_line = 0;
+        dirty_status = 0;
+        dirty_cursor = 0;
+        key = vi_read_key_local();
+        status[0] = '\0';
+
+        if (mode == VI_MODE_INSERT) {
+            if (key == VI_KEY_ESC) {
+                mode = VI_MODE_NORMAL;
+                dirty_status = 1;
+                dirty_cursor = 1;
+                continue;
+            }
+            if (vi_move_key_local(buffer, key, &row, &col)) {
+                dirty_cursor = 1;
+                continue;
+            }
+            if (key == '\n' || key == '\r') {
+                if (!vi_split_line_local(buffer, &row, &col)) {
+                    vi_set_status_local(status, sizeof(status), "line limit");
+                    dirty_status = 1;
+                    dirty_cursor = 1;
+                } else {
+                    full_repaint = 1;
+                }
+                continue;
+            }
+            if (key == '\b' || key == 0x7f) {
+                if (col != 0u) {
+                    col--;
+                    if (vi_delete_char_local(buffer, row, col)) {
+                        dirty_line = 1;
+                        dirty_row = row;
+                        dirty_status = 1;
+                    }
+                    dirty_cursor = 1;
+                } else {
+                    if (vi_join_backspace_local(buffer, &row, &col)) {
+                        full_repaint = 1;
+                    } else {
+                        dirty_cursor = 1;
+                    }
+                }
+                continue;
+            }
+            if (key >= 0x20 && key <= 0x7e) {
+                if (!vi_insert_char_local(buffer, row, &col, (char)key)) {
+                    vi_set_status_local(status, sizeof(status), "line full");
+                    dirty_status = 1;
+                } else {
+                    dirty_line = 1;
+                    dirty_row = row;
+                    dirty_status = 1;
+                }
+                dirty_cursor = 1;
+            }
+            continue;
+        }
+
+        if (pending_d && key != 'd') {
+            pending_d = 0u;
+            dirty_status = 1;
+        }
+        if (key == 'i') {
+            mode = VI_MODE_INSERT;
+            dirty_status = 1;
+            dirty_cursor = 1;
+            continue;
+        }
+        if (key == 'a') {
+            if (col < vi_line_len_local(buffer, row)) {
+                col++;
+            }
+            mode = VI_MODE_INSERT;
+            dirty_status = 1;
+            dirty_cursor = 1;
+            continue;
+        }
+        if (key == 'o' || key == 'O') {
+            uint32_t insert_at = key == 'o' ? row + 1u : row;
+
+            if (ed_insert_slot_local(buffer, insert_at, "")) {
+                row = insert_at;
+                col = 0u;
+                mode = VI_MODE_INSERT;
+                full_repaint = 1;
+            } else {
+                vi_set_status_local(status, sizeof(status), "buffer full");
+                dirty_status = 1;
+                dirty_cursor = 1;
+            }
+            continue;
+        }
+        if (key == 'h' || key == VI_KEY_LEFT) {
+            (void)vi_move_key_local(buffer, VI_KEY_LEFT, &row, &col);
+            dirty_cursor = 1;
+            continue;
+        }
+        if (key == 'l' || key == VI_KEY_RIGHT) {
+            (void)vi_move_key_local(buffer, VI_KEY_RIGHT, &row, &col);
+            dirty_cursor = 1;
+            continue;
+        }
+        if (key == 'k' || key == VI_KEY_UP) {
+            (void)vi_move_key_local(buffer, VI_KEY_UP, &row, &col);
+            dirty_cursor = 1;
+            continue;
+        }
+        if (key == 'j' || key == VI_KEY_DOWN) {
+            (void)vi_move_key_local(buffer, VI_KEY_DOWN, &row, &col);
+            dirty_cursor = 1;
+            continue;
+        }
+        if (key == '0') {
+            col = 0u;
+            dirty_cursor = 1;
+            continue;
+        }
+        if (key == '$') {
+            col = vi_line_len_local(buffer, row);
+            dirty_cursor = 1;
+            continue;
+        }
+        if (key == 'x') {
+            if (!vi_delete_char_local(buffer, row, col)) {
+                vi_set_status_local(status, sizeof(status), "nothing to delete");
+                dirty_status = 1;
+            } else {
+                dirty_line = 1;
+                dirty_row = row;
+                dirty_status = 1;
+            }
+            dirty_cursor = 1;
+            continue;
+        }
+        if (key == 'd') {
+            if (pending_d) {
+                (void)vi_delete_line_local(buffer, &row, &col);
+                pending_d = 0u;
+                full_repaint = 1;
+            } else {
+                pending_d = 1u;
+                vi_set_status_local(status, sizeof(status), "d");
+                dirty_status = 1;
+                dirty_cursor = 1;
+            }
+            continue;
+        }
+        if (key == ':') {
+            char command[64];
+            const char *path;
+            uint32_t written;
+
+            if (!vi_read_command_local(command, sizeof(command), &screen)) {
+                full_repaint = 1;
+                continue;
+            }
+            full_repaint = 1;
+            trim_line(command);
+            if (streq_local(command, "q")) {
+                if (buffer->dirty) {
+                    vi_set_status_local(status, sizeof(status), "modified; use :q!");
+                    dirty_status = 1;
+                    continue;
+                }
+                write_str("\x1b[2J\x1b[H");
+                return 0;
+            }
+            if (streq_local(command, "q!")) {
+                write_str("\x1b[2J\x1b[H");
+                return 0;
+            }
+            if (streq_local(command, "w") ||
+                streq_local(command, "wq") ||
+                streq_local(command, "x") ||
+                (command[0] == 'w' && command[1] == ' ')) {
+                path = command[0] == 'w' && command[1] == ' ' ? ed_skip_spaces_local(command + 2) : buffer->path;
+                if (path[0] == '\0') {
+                    vi_set_status_local(status, sizeof(status), "no file name");
+                    dirty_status = 1;
+                    continue;
+                }
+                written = vi_write_file_local(buffer, path);
+                if (written == 0u && buffer->count != 0u) {
+                    vi_set_status_local(status, sizeof(status), "write failed");
+                    dirty_status = 1;
+                    continue;
+                }
+                snprintf(status, sizeof(status), "%u bytes written", written);
+                dirty_status = 1;
+                if (streq_local(command, "wq") || streq_local(command, "x")) {
+                    write_str("\x1b[2J\x1b[H");
+                    return 0;
+                }
+                continue;
+            }
+            vi_set_status_local(status, sizeof(status), "commands: :w :q :q! :wq");
+            dirty_status = 1;
+        }
+    }
+}
+
 int cmd_ed(int argc, char **argv) {
     struct ed_buffer *buffer = &g_ed_buffer;
     char line[ED_LINE_MAX];
@@ -415,7 +1131,7 @@ int cmd_ed(int argc, char **argv) {
         char cmd;
 
         write_str(": ");
-        if (read_line(STDIN_FILENO, line, sizeof(line)) == 0u) {
+        if (ed_read_stdin_line_local(line, sizeof(line)) == 0u) {
             write_err_str("?\n");
             return 1;
         }

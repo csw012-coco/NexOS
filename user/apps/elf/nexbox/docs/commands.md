@@ -161,9 +161,14 @@ Commands:
 - `mkdir`
 - `rmdir`
 - `rm`
+- `stat`
+- `du`
+- `tree`
+- `file`
 - `blk`
 - `parts`
 - `fdisk`
+- `df`
 - `mounts`
 - `hotplug`
 - `fatls`
@@ -182,6 +187,11 @@ Notes:
 - `runelf` forces ELF execution.
 - `runbg` starts the command as a background job.
 - `fdisk` currently targets MBR-style partition editing.
+- `stat <path>` prints type, size, and raw filesystem attributes; `stat --table <path>` emits a typed table.
+- `du [-a] [-s] [path]` summarizes file or directory usage; `du --table <path>` emits `path`, `size`, and `type`.
+- `tree [path]` prints a recursive directory tree; `tree --table [path]` emits `path`, `depth`, `type`, and `size`.
+- `file <path>` guesses basic file kinds such as ELF, WAV, CPIO, text, config, assembly, script, binary, and directory.
+- `df` shows mounted filesystem space usage; `df --table` emits byte counts as a typed table.
 - `hotplug scan` mounts discovered partitions at `/media_diskXpY` when possible.
 - `hotplug mount <disk> <part>` mounts one partition at `/media_diskXpY`.
 - `hotplug watch` starts a background event job that reacts to `/event/block/change`.
@@ -193,9 +203,14 @@ Source:
 
 Commands:
 - `ed`
+- `vi`
+- `vim`
 
 Notes:
 - `ed` supports `[address]command` style editing such as `,p`, `2,5d`, `$p`, and `3c`.
+- `vi` and `vim` open the same small modal editor with normal, insert, and command modes.
+- Mini vi normal mode supports `h/j/k/l`, arrow keys, `i`, `a`, `o`, `O`, `x`, and `dd`.
+- Mini vi command mode supports `:w`, `:w <path>`, `:q`, `:q!`, `:wq`, and `:x`.
 
 ### Process
 
@@ -238,6 +253,7 @@ Source:
 Commands:
 - `dmesg`
 - `lspci`
+- `doctor`
 - `meminfo`
 - `minfo`
 - `cpuinfo`
@@ -245,6 +261,8 @@ Commands:
 
 Notes:
 - These applets are user-facing diagnostics, not shell builtins.
+- `doctor` summarizes core system health across kernel identity, memory, procfs, EventFS, storage, process, RTC, network, and audio queries.
+- `doctor --table` emits the same health checks as a typed table with `check`, `status`, and `detail` columns.
 - The same kernel snapshots are also exposed through procfs-lite:
   `/proc/meminfo`, `/proc/mounts`, `/proc/uptime`, `/proc/rtc`, `/proc/kmsg`, `/proc/actions`, and `/proc/<pid>/status`.
 - Storage drivers currently include legacy ATA and AHCI SATA. AHCI registers SATA disks as block devices such as `ahci0` and supports sector read/write with cache flush.
@@ -275,7 +293,7 @@ enumeration order.
 
 The current built-in applet list exposed by `help` is:
 
-`help actions action mapper echo clear pwd env which type ls cat less hexdump grep date wc head tail find on events as pick select sort-by count-by to view ed touch mv cp mkdir rmdir rm fasm blk parts fdisk mounts progs fatls fatfind fatread mount umount hotplug run runelf runbg ps session service jobs wait kill fg bg switch_root dmesg lspci ac97 audio tone wav mplay meminfo minfo uname cpuinfo dbg`
+`help actions action mapper echo clear pwd env which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm fasm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg switch_root dmesg lspci ac97 rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor meminfo minfo uname cpuinfo dbg`
 
 ## Naming Notes
 

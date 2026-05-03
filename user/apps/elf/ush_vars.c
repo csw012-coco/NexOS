@@ -839,10 +839,10 @@ void ush_init_vars_local(const char *cwd) {
         i++;
     }
     if (getenv("PATH") == NULL) {
-        (void)setenv("PATH", "/CMD", 1);
+        (void)setenv("PATH", "/cmd", 1);
     }
     if (getenv("SHELL") == NULL) {
-        (void)setenv("SHELL", "/CMD/USH", 1);
+        (void)setenv("SHELL", "/cmd/ush", 1);
     }
     ush_clear_script_args_local();
     ush_sync_pwd_var_local(cwd);

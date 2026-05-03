@@ -6,7 +6,7 @@
 
 enum {
     NXFS_BLOCK_SIZE = 512,
-    NXFS_MAX_INODES = 128,
+    NXFS_MAX_INODES = 256,
     NXFS_MAGIC = 0x4e584653u,
     NXFS_TYPE_FILE = 1,
     NXFS_TYPE_DIR = 2
@@ -77,3 +77,4 @@ int nxfs_read_file_range(struct nxfs_volume *vol,
                          void *buffer,
                          uint32_t buffer_size,
                          uint32_t *bytes_read);
+int nxfs_space_info(struct nxfs_volume *vol, uint32_t *block_size_out, uint64_t *total_blocks_out, uint64_t *free_blocks_out);

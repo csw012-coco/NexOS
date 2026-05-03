@@ -1,8 +1,6 @@
 #!/cmd/ush
 echo "Hello form NexOS!"
-mkdir new_root
-mount boot new_root
-echo "Switching root to new_root..."
-switch_root new_root
+echo "Switching root to disk0p2..."
+switch_root /dev/disk0p2
 service boot
-exec /ram/cmd/ush
+exec /cmd/ush

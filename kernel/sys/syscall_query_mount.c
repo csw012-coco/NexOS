@@ -37,6 +37,10 @@ static void syscall_init_mount_info(struct syscall_mount_info *info) {
     info->part_index = 0;
     info->source_known = 0;
     info->target[0] = '\0';
+    info->space_known = 0;
+    info->block_size = 0;
+    info->total_blocks = 0;
+    info->free_blocks = 0;
 }
 
 uint64_t syscall_handle_mount_query(uint32_t index, uint64_t user_info_addr) {
@@ -58,6 +62,7 @@ uint64_t syscall_handle_mount_query(uint32_t index, uint64_t user_info_addr) {
         info.part_index = mount.part_index;
         info.source_known = 1;
         syscall_mount_copy_name(info.target, sizeof(info.target), mount.name);
+        fs_service_fill_dynamic_space(g_syscall_vfs, index - offset, &info);
     }
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }

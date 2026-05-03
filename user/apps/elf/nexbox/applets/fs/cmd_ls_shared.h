@@ -4,4 +4,4 @@
 #include "user/libc/include/stdio.h"
 #include "user/libc/include/nexos/file.h"
 
-int cmd_ls_path(const char *path, int long_format);
+int cmd_ls_path(const char *path, int long_format, int show_all);

@@ -7,6 +7,21 @@
 #include "user/libc/include/nexos/string.h"
 #include "user/libc/include/nexos/system.h"
 
+static uint32_t read_stdin_line(char *line, uint32_t size) {
+    ssize_t got;
+
+    if (line == NULL || size == 0u) {
+        return 0u;
+    }
+    got = nex_read(STDIN_FILENO, line, size, NEX_READ_BLOCKING);
+    if (got <= 0) {
+        line[0] = '\0';
+        return 0u;
+    }
+    line[size - 1u] = '\0';
+    return (uint32_t)got;
+}
+
 int main(int argc, char **argv) {
     char path[32];
     char text[64];
@@ -22,7 +37,7 @@ int main(int argc, char **argv) {
 
     printf("wdemo ELF: enter path, mode (write/append/trunc), then one line\n");
     printf("file> ");
-    got = read_line(STDIN_FILENO, path, sizeof(path));
+    got = read_stdin_line(path, sizeof(path));
     if (got == 0) {
         eprintf("read failed\n");
         exit_with_code(1);
@@ -30,7 +45,7 @@ int main(int argc, char **argv) {
     trim_line(path);
 
     printf("mode> ");
-    got = read_line(STDIN_FILENO, mode, sizeof(mode));
+    got = read_stdin_line(mode, sizeof(mode));
     if (got == 0) {
         eprintf("read failed\n");
         exit_with_code(1);
@@ -49,7 +64,7 @@ int main(int argc, char **argv) {
     }
 
     printf("text> ");
-    got = read_line(STDIN_FILENO, text, sizeof(text));
+    got = read_stdin_line(text, sizeof(text));
     if (got == 0) {
         close((uint32_t)fd);
         eprintf("read failed\n");

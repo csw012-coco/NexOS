@@ -84,7 +84,6 @@ int vfs_open_fat32(struct vfs *vfs, const struct vfs_path *parsed, uint32_t flag
         int create_rc = -1;
 
         if ((flags & SYS_OPEN_CREAT) == 0) {
-            fat32_debug_lookup_path(fat32, parsed->child);
             return -1;
         }
         create_rc = fat32_create_path(fat32, parsed->child, &fat32_file);

@@ -1,6 +1,7 @@
 #include "kernel/internal/core/machine_info_internal.h"
 
 #include "hal/hal.h"
+#include "kernel/public/core/console.h"
 
 #define NOS_KERNEL_VERSION "0.1.0"
 
@@ -89,4 +90,6 @@ void kernel_fill_machine_info(struct syscall_machine_info *info) {
                                  info->cpuid_leaf0_edx,
                                  info->cpuid_leaf0_ecx);
     machine_info_fill_cpu_brand(info);
+    info->text_columns = console_width();
+    info->text_rows = console_rows();
 }

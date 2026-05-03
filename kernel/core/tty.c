@@ -565,6 +565,9 @@ void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
 
     if (tty->raw_input) {
         switch (event->keycode) {
+            case KEYBOARD_KEY_ESC:
+                tty_queue_char(tty, '\x1b');
+                return;
             case KEYBOARD_KEY_TAB:
                 tty_queue_char(tty, '\t');
                 return;

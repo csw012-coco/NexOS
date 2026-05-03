@@ -330,10 +330,16 @@ static void ush_config_apply_line_local(char *line) {
 
 static void ush_load_config_local(void) {
     char line[USH_LINE_MAX + 1];
-    int fd = open("/SYSTEM/CONFIG/HEXOS.CFG", 0);
+    int fd = open("/SYSTEM/CONFIG/NOS.CFG", 0);
 
     if (fd < 0) {
-        fd = open("SYSTEM/CONFIG/HEXOS.CFG", 0);
+        fd = open("SYSTEM/CONFIG/NOS.CFG", 0);
+    }
+    if (fd < 0) {
+        fd = open("/NOS.CFG", 0);
+    }
+    if (fd < 0) {
+        fd = open("NOS.CFG", 0);
     }
     if (fd < 0) {
         fd = open("/NEXOS.CFG", 0);

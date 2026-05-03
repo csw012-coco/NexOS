@@ -182,7 +182,10 @@ int kernel_try_run_init(struct vfs *vfs,
         return 0;
     }
 
-    kernel_config_load(vfs, "SYSTEM/CONFIG/HEXOS.CFG", &config);
+    kernel_config_load(vfs, "SYSTEM/CONFIG/NOS.CFG", &config);
+    if (!config.loaded) {
+        kernel_config_load(vfs, "NOS.CFG", &config);
+    }
     if (!config.loaded) {
         kernel_config_load(vfs, "NEXOS.CFG", &config);
     }

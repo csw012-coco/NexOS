@@ -83,7 +83,7 @@ static int text_contains_local(const char *text, const char *pattern) {
 }
 
 int cmd_help(void) {
-    write_str("cmd commands: help actions action mapper echo clear pwd env which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed touch mv cp mkdir rmdir rm fasm blk parts fdisk mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg switch_root dmesg lspci ac97 rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay meminfo minfo uname cpuinfo dbg\n");
+    write_str("cmd commands: help actions action mapper echo clear pwd env which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm fasm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg switch_root dmesg lspci ac97 rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo dbg\n");
     write_str("shell-only builtins: cd exit [code] exec set export alias functions history source .\n");
     write_str("multicall: nexbox <applet> [args]\n");
     write_str("set lists shell-local vars; env/export list exported environment\n");
@@ -214,28 +214,30 @@ int cmd_which_like(int argc, char **argv, const char *mode_name) {
 int cmd_ls(int argc, char **argv) {
     const char *path = ".";
     int long_format = 0;
+    int show_all = 0;
+    int path_set = 0;
 
-    if (argc > 3) {
-        write_err_usage("ls", " [-l] [path]\n");
-        return 1;
-    }
-    if (argc >= 2) {
-        if (streq_local(argv[1], "-l")) {
-            long_format = 1;
-            if (argc == 3) {
-                path = argv[2];
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '-' && argv[i][1] != '\0') {
+            for (uint32_t j = 1; argv[i][j] != '\0'; j++) {
+                if (argv[i][j] == 'l') {
+                    long_format = 1;
+                } else if (argv[i][j] == 'a') {
+                    show_all = 1;
+                } else {
+                    write_err_usage("ls", " [-a] [-l] [path]\n");
+                    return 1;
+                }
             }
+        } else if (!path_set) {
+            path = argv[i];
+            path_set = 1;
         } else {
-            path = argv[1];
-            if (argc == 3 && streq_local(argv[2], "-l")) {
-                long_format = 1;
-            } else if (argc == 3) {
-                write_err_usage("ls", " [-l] [path]\n");
-                return 1;
-            }
+            write_err_usage("ls", " [-a] [-l] [path]\n");
+            return 1;
         }
     }
-    return cmd_ls_path(path, long_format);
+    return cmd_ls_path(path, long_format, show_all);
 }
 
 int cmd_cat(int argc, char **argv) {

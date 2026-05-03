@@ -28,7 +28,6 @@ int fat32_create_path(struct fat32_volume *vol, const char *path, struct fat32_f
 int fat32_get_dir_entry(struct fat32_volume *vol, const struct fat32_file *dir, uint32_t index, struct fat32_file *out);
 int fat32_find_in_dir(struct fat32_volume *vol, const struct fat32_file *dir, const char *name83, struct fat32_file *out);
 int fat32_find_path(struct fat32_volume *vol, const char *path, struct fat32_file *out);
-void fat32_debug_lookup_path(struct fat32_volume *vol, const char *path);
 int fat32_mkdir_path(struct fat32_volume *vol, const char *path, struct fat32_file *out);
 int fat32_rmdir_path(struct fat32_volume *vol, const char *path);
 int fat32_unlink_path(struct fat32_volume *vol, const char *path);
@@ -47,3 +46,4 @@ int fat32_write_file_range(struct fat32_volume *vol,
                            const void *buffer,
                            uint32_t buffer_size,
                            uint32_t *bytes_written);
+int fat32_space_info(struct fat32_volume *vol, uint32_t *block_size_out, uint64_t *total_blocks_out, uint64_t *free_blocks_out);
