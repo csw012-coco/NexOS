@@ -27,6 +27,34 @@ output type:      text
 Friendly commands are for humans.
 Action commands are the stable semantic interface.
 
+## FD Substrate
+
+NexOS should keep the fd model as the execution substrate for OS resources.
+Files, devices, proc state, and event streams should remain reachable through the
+same small primitive set:
+
+```text
+open
+read
+write
+close
+readdir
+```
+
+The Action Layer does not replace this model. It sits above it and gives fd-backed
+operations a stable semantic shape.
+
+```text
+fd substrate:   open("/proc/meminfo") -> read(fd)
+friendly CLI:   cat /proc/meminfo
+action command: system.meminfo
+semantic caps:  system.inspect
+typed output:   table/system-memory
+```
+
+This keeps the kernel surface small and composable while letting NexBox, scripts,
+and automation understand intent, capability requirements, and output type.
+
 ## Mapper Layer
 
 The Mapper Layer is the official translation table between those two forms.
@@ -55,9 +83,15 @@ This keeps the user-facing CLI easy while giving tools a stable action object sh
 
 ## Strategy
 
-NexOS keeps the Unix substrate and adds structured layers above it.
+NexOS keeps the fd substrate and adds structured layers above it.
 
 ```text
+FD Layer
+  /dev/tty
+  /proc/meminfo
+  /event/file/change
+  /HOME/a.txt
+
 Friendly CLI
   cat a.txt
   ls /HOME
@@ -83,6 +117,13 @@ Typed Output Layer
 ```
 
 The short command remains valid. The action form exposes the meaning.
+
+The rule of thumb is:
+
+```text
+Everything stays file-like at the OS boundary.
+Important operations also become action-like at the semantic boundary.
+```
 
 ## EventFS
 
@@ -135,6 +176,8 @@ State remains in `/proc`, devices remain in `/dev`, and events live in `/event`.
 5. Typed output should be declared by the action and usable by pipes.
 6. Automation should prefer action names because they are more stable and inspectable.
 7. Event subscriptions should trigger actions, not raw shell fragments, when possible.
+8. New OS resources should prefer fd-backed `/dev`, `/proc`, `/event`, or filesystem surfaces before adding specialized syscall shapes.
+9. Actions should describe what an fd-backed operation means, not hide the fd model underneath.
 
 ## Why This Matters
 

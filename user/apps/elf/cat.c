@@ -5,11 +5,31 @@
 #include "user/libc/include/unistd.h"
 #include "user/libc/include/nexos/string.h"
 
+#define CAT_BUFFER_SIZE 512u
+
+static int cat_write_all(const char *buf, uint32_t bytes) {
+    uint32_t offset = 0;
+
+    while (offset < bytes) {
+        ssize_t written = write(STDOUT_FILENO, buf + offset, bytes - offset);
+
+        if (written < 0) {
+            return -1;
+        }
+        if (written == 0) {
+            return 0;
+        }
+        offset += (uint32_t)written;
+    }
+    return 1;
+}
+
 int main(int argc, char **argv) {
     char path[32];
-    char buf[64];
+    char buf[CAT_BUFFER_SIZE];
     int fd;
     uint32_t got;
+    int output_closed = 0;
 
     if (argc > 1) {
         strlcpy(path, sizeof(path), argv[1]);
@@ -31,18 +51,37 @@ int main(int argc, char **argv) {
     }
 
     for (;;) {
-        uint32_t bytes = (uint32_t)read(fd, buf, sizeof(buf));
+        ssize_t read_rc = read(fd, buf, sizeof(buf));
+        uint32_t bytes;
+        int write_rc;
 
-        if (bytes == 0) {
+        if (read_rc < 0) {
+            eprintf("read failed\n");
+            close((uint32_t)fd);
+            return 1;
+        }
+        if (read_rc == 0) {
             break;
         }
-        (void)write(STDOUT_FILENO, buf, bytes);
+        bytes = (uint32_t)read_rc;
+        write_rc = cat_write_all(buf, bytes);
+        if (write_rc < 0) {
+            eprintf("write failed\n");
+            close((uint32_t)fd);
+            return 1;
+        }
+        if (write_rc == 0) {
+            output_closed = 1;
+            break;
+        }
         if (bytes < sizeof(buf)) {
             break;
         }
     }
 
     close((uint32_t)fd);
-    printf("\n");
+    if (!output_closed) {
+        printf("\n");
+    }
     return 0;
 }

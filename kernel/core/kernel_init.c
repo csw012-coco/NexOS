@@ -1,6 +1,6 @@
 #include <stdint.h>
 #include "hal/hal.h"
-#include "bootx.h"
+#include "bootx/bootx.h"
 #include "fs/vfs.h"
 #include "kernel/internal/core/kernel_boot_internal.h"
 #include "kernel/internal/core/kernel_config_internal.h"
@@ -222,7 +222,7 @@ int kernel_try_run_init(struct vfs *vfs,
                                               &init_probe_offset,
                                               init_probe_buffer,
                                               4u,
-                                              SYS_READ_BLOCKING);
+                                              VFS_READ_BLOCKING);
         kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: init probe read", init_probe_bytes);
     } else {
         kernel_boot_trace(shell_tty, boot_trace_row, "kernel: init probe open fail");

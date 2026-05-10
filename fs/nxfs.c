@@ -6,14 +6,46 @@ enum {
     NXFS_ROOT_INODE = 0
 };
 
-static uint8_t g_nxfs_sector[512];
-
 static void nxfs_mem_copy(void *dest, const void *src, uint32_t size) {
     uint8_t *d = (uint8_t *)dest;
     const uint8_t *s = (const uint8_t *)src;
 
     for (uint32_t i = 0; i < size; i++) {
         d[i] = s[i];
+    }
+}
+
+static uint8_t *nxfs_cache_get(struct nxfs_volume *vol, uint32_t block) {
+    if (vol == 0) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < NXFS_CACHE_BLOCKS; i++) {
+        if (vol->cache[i].valid && vol->cache[i].block == block) {
+            return vol->cache[i].data;
+        }
+    }
+    return 0;
+}
+
+static void nxfs_cache_put(struct nxfs_volume *vol, uint32_t block, const uint8_t *data) {
+    uint32_t next;
+
+    if (vol == 0 || data == 0) {
+        return;
+    }
+    next = vol->cache_next % NXFS_CACHE_BLOCKS;
+    vol->cache[next].block = block;
+    vol->cache[next].valid = 1;
+    nxfs_mem_copy(vol->cache[next].data, data, NXFS_BLOCK_SIZE);
+
+    vol->cache_next = (next + 1u) % NXFS_CACHE_BLOCKS;
+}
+
+static void nxfs_cache_update(struct nxfs_volume *vol, uint32_t block, const uint8_t *data) {
+    uint8_t *cached = nxfs_cache_get(vol, block);
+
+    if (cached != 0) {
+        nxfs_mem_copy(cached, data, NXFS_BLOCK_SIZE);
     }
 }
 
@@ -26,20 +58,50 @@ static void nxfs_mem_set(void *dest, uint8_t value, uint32_t size) {
 }
 
 static int nxfs_read_block(struct nxfs_volume *vol, uint32_t block, void *buffer) {
+    uint8_t *cached;
+
     if (vol == 0 || !vol->mounted || vol->bdev == 0 || buffer == 0) {
         return -1;
     }
-    return blockdev_read(vol->bdev, vol->partition_lba + block, 1, buffer);
+    cached = nxfs_cache_get(vol, block);
+    if (cached != 0) {
+        nxfs_mem_copy(buffer, cached, NXFS_BLOCK_SIZE);
+        return 0;
+    }
+    if (blockdev_read(vol->bdev, vol->partition_lba + block, 1, buffer) != 0) {
+        return -1;
+    }
+    nxfs_cache_put(vol, block, (const uint8_t *)buffer);
+    return 0;
+}
+
+static int nxfs_read_blocks(struct nxfs_volume *vol,
+                            uint32_t start_block,
+                            uint32_t count,
+                            void *buffer) {
+    if (vol == 0 || !vol->mounted) return -1;
+
+    return blockdev_read(vol->bdev,
+                         vol->partition_lba + start_block,
+                         count,
+                         buffer);
 }
 
 static int nxfs_write_block(struct nxfs_volume *vol, uint32_t block, const void *buffer) {
     if (vol == 0 || !vol->mounted || vol->bdev == 0 || buffer == 0) {
         return -1;
     }
-    return blockdev_write(vol->bdev, vol->partition_lba + block, 1, buffer);
+    if (blockdev_write(vol->bdev, vol->partition_lba + block, 1, buffer) != 0) {
+        return -1;
+    }
+    nxfs_cache_update(vol, block, (const uint8_t *)buffer);
+    return 0;
 }
 
-static int nxfs_read_bytes(struct nxfs_volume *vol, uint32_t offset, void *buffer, uint32_t size) {
+static int nxfs_read_bytes(struct nxfs_volume *vol,
+                           uint32_t offset,
+                           void *buffer,
+                           uint32_t size) {
     uint8_t *out = (uint8_t *)buffer;
     uint32_t done = 0;
 
@@ -47,15 +109,40 @@ static int nxfs_read_bytes(struct nxfs_volume *vol, uint32_t offset, void *buffe
         uint32_t absolute = offset + done;
         uint32_t block = absolute / NXFS_BLOCK_SIZE;
         uint32_t block_off = absolute % NXFS_BLOCK_SIZE;
-        uint32_t chunk = NXFS_BLOCK_SIZE - block_off;
 
-        if (chunk > size - done) {
-            chunk = size - done;
+        // 🔍 캐시 먼저 확인
+        uint8_t *cached = nxfs_cache_get(vol, block);
+
+        if (cached) {
+            uint32_t chunk = NXFS_BLOCK_SIZE - block_off;
+            if (chunk > size - done) chunk = size - done;
+
+            nxfs_mem_copy(out + done, cached + block_off, chunk);
+            done += chunk;
+            continue;
         }
-        if (nxfs_read_block(vol, block, g_nxfs_sector) != 0) {
+
+        // 🚀 연속 블록 계산 (최대 8개)
+        uint32_t max_blocks = 8;
+        uint32_t remaining = (size - done + block_off + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
+
+        if (remaining < max_blocks) max_blocks = remaining;
+
+        uint8_t temp[NXFS_BLOCK_SIZE * 8];
+
+        if (nxfs_read_blocks(vol, block, max_blocks, temp) != 0) {
             return -1;
         }
-        nxfs_mem_copy(out + done, g_nxfs_sector + block_off, chunk);
+
+        // 💾 캐시에 저장 + 복사
+        for (uint32_t i = 0; i < max_blocks; i++) {
+            nxfs_cache_put(vol, block + i, temp + i * NXFS_BLOCK_SIZE);
+        }
+
+        uint32_t chunk = NXFS_BLOCK_SIZE - block_off;
+        if (chunk > size - done) chunk = size - done;
+
+        nxfs_mem_copy(out + done, temp + block_off, chunk);
         done += chunk;
     }
 
@@ -75,11 +162,11 @@ static int nxfs_write_bytes(struct nxfs_volume *vol, uint32_t offset, const void
         if (chunk > size - done) {
             chunk = size - done;
         }
-        if (nxfs_read_block(vol, block, g_nxfs_sector) != 0) {
+        if (nxfs_read_block(vol, block, vol->sector_buffer) != 0) {
             return -1;
         }
-        nxfs_mem_copy(g_nxfs_sector + block_off, in + done, chunk);
-        if (nxfs_write_block(vol, block, g_nxfs_sector) != 0) {
+        nxfs_mem_copy(vol->sector_buffer + block_off, in + done, chunk);
+        if (nxfs_write_block(vol, block, vol->sector_buffer) != 0) {
             return -1;
         }
         done += chunk;
@@ -162,43 +249,37 @@ static void nxfs_bitmap_bit_set(uint8_t *bitmap, uint32_t block, int used) {
     }
 }
 
-static int nxfs_bitmap_load_block(struct nxfs_volume *vol, uint32_t block, uint8_t *bitmap, uint32_t *bit_out) {
+static int nxfs_bitmap_set_range(struct nxfs_volume *vol, uint32_t start, uint32_t len, int used) {
     uint32_t bits_per_block = nxfs_bitmap_bits_per_block();
-    uint32_t bitmap_index;
-
-    if (vol == 0 || bitmap == 0 || block >= vol->super.total_blocks) {
-        return -1;
-    }
-    bitmap_index = block / bits_per_block;
-    if (bitmap_index >= nxfs_bitmap_block_count(vol)) {
-        return -1;
-    }
-    if (bit_out != 0) {
-        *bit_out = block % bits_per_block;
-    }
-    return nxfs_read_block(vol, vol->super.bitmap_start + bitmap_index, bitmap);
-}
-
-static int nxfs_bitmap_get(struct nxfs_volume *vol, uint32_t block, int *used_out) {
+    uint32_t done = 0;
     uint8_t bitmap[NXFS_BLOCK_SIZE];
-    uint32_t bit;
 
-    if (used_out == 0 || nxfs_bitmap_load_block(vol, block, bitmap, &bit) != 0) {
+    if (vol == 0 || len == 0 || start >= vol->super.total_blocks ||
+        start + len < start || start + len > vol->super.total_blocks) {
         return -1;
     }
-    *used_out = nxfs_bitmap_bit_get(bitmap, bit);
+    while (done < len) {
+        uint32_t block = start + done;
+        uint32_t bitmap_index = block / bits_per_block;
+        uint32_t bit = block % bits_per_block;
+        uint32_t chunk = bits_per_block - bit;
+
+        if (chunk > len - done) {
+            chunk = len - done;
+        }
+        if (bitmap_index >= nxfs_bitmap_block_count(vol) ||
+            nxfs_read_block(vol, vol->super.bitmap_start + bitmap_index, bitmap) != 0) {
+            return -1;
+        }
+        for (uint32_t i = 0; i < chunk; i++) {
+            nxfs_bitmap_bit_set(bitmap, bit + i, used);
+        }
+        if (nxfs_write_block(vol, vol->super.bitmap_start + bitmap_index, bitmap) != 0) {
+            return -1;
+        }
+        done += chunk;
+    }
     return 0;
-}
-
-static int nxfs_bitmap_set(struct nxfs_volume *vol, uint32_t block, int used) {
-    uint8_t bitmap[NXFS_BLOCK_SIZE];
-    uint32_t bit;
-
-    if (nxfs_bitmap_load_block(vol, block, bitmap, &bit) != 0) {
-        return -1;
-    }
-    nxfs_bitmap_bit_set(bitmap, bit, used);
-    return nxfs_write_block(vol, vol->super.bitmap_start + block / nxfs_bitmap_bits_per_block(), bitmap);
 }
 
 int nxfs_space_info(struct nxfs_volume *vol,
@@ -206,19 +287,33 @@ int nxfs_space_info(struct nxfs_volume *vol,
                     uint64_t *total_blocks_out,
                     uint64_t *free_blocks_out) {
     uint64_t free_blocks = 0;
+    uint32_t bits_per_block;
+    uint32_t bitmap_blocks;
+    uint8_t bitmap[NXFS_BLOCK_SIZE];
 
     if (vol == 0 || !vol->mounted || block_size_out == 0 ||
         total_blocks_out == 0 || free_blocks_out == 0) {
         return -1;
     }
-    for (uint32_t block = 0; block < vol->super.total_blocks; block++) {
-        int used = 0;
+    bits_per_block = nxfs_bitmap_bits_per_block();
+    bitmap_blocks = nxfs_bitmap_block_count(vol);
+    for (uint32_t bitmap_index = 0; bitmap_index < bitmap_blocks; bitmap_index++) {
+        uint32_t base_block = bitmap_index * bits_per_block;
+        uint32_t limit = bits_per_block;
 
-        if (nxfs_bitmap_get(vol, block, &used) != 0) {
+        if (base_block >= vol->super.total_blocks) {
+            break;
+        }
+        if (limit > vol->super.total_blocks - base_block) {
+            limit = vol->super.total_blocks - base_block;
+        }
+        if (nxfs_read_block(vol, vol->super.bitmap_start + bitmap_index, bitmap) != 0) {
             return -1;
         }
-        if (!used) {
-            free_blocks++;
+        for (uint32_t bit = 0; bit < limit; bit++) {
+            if (!nxfs_bitmap_bit_get(bitmap, bit)) {
+                free_blocks++;
+            }
         }
     }
     *block_size_out = NXFS_BLOCK_SIZE;
@@ -239,33 +334,54 @@ static int nxfs_find_free_inode(struct nxfs_volume *vol) {
 }
 
 static int nxfs_alloc_extent(struct nxfs_volume *vol, uint32_t len) {
+    uint32_t bits_per_block;
+    uint32_t bitmap_blocks;
+    uint32_t run_start = 0;
+    uint32_t run_len = 0;
+    uint8_t bitmap[NXFS_BLOCK_SIZE];
+
     if (vol == 0 || !vol->mounted || len == 0) {
         return -1;
     }
-    for (uint32_t start = vol->super.data_start; start + len <= vol->super.total_blocks; start++) {
-        int free = 1;
+    bits_per_block = nxfs_bitmap_bits_per_block();
+    bitmap_blocks = nxfs_bitmap_block_count(vol);
+    for (uint32_t bitmap_index = 0; bitmap_index < bitmap_blocks; bitmap_index++) {
+        uint32_t base_block = bitmap_index * bits_per_block;
+        uint32_t limit = bits_per_block;
 
-        for (uint32_t i = 0; i < len; i++) {
-            int used = 0;
+        if (base_block >= vol->super.total_blocks) {
+            break;
+        }
+        if (limit > vol->super.total_blocks - base_block) {
+            limit = vol->super.total_blocks - base_block;
+        }
+        if (nxfs_read_block(vol, vol->super.bitmap_start + bitmap_index, bitmap) != 0) {
+            return -1;
+        }
+        for (uint32_t bit = 0; bit < limit; bit++) {
+            uint32_t block = base_block + bit;
 
-            if (nxfs_bitmap_get(vol, start + i, &used) != 0) {
-                return -1;
+            if (block < vol->super.data_start) {
+                continue;
             }
-            if (used) {
-                free = 0;
-                start += i;
-                break;
+            if (nxfs_bitmap_bit_get(bitmap, bit)) {
+                run_len = 0;
+                continue;
+            }
+            if (run_len == 0) {
+                run_start = block;
+            }
+            run_len++;
+            if (run_len >= len) {
+                if (nxfs_bitmap_set_range(vol, run_start, len, 1) != 0) {
+                    return -1;
+                }
+                return (int)run_start;
             }
         }
-        if (!free) {
-            continue;
+        if (limit != bits_per_block) {
+            break;
         }
-        for (uint32_t i = 0; i < len; i++) {
-            if (nxfs_bitmap_set(vol, start + i, 1) != 0) {
-                return -1;
-            }
-        }
-        return (int)start;
     }
     return -1;
 }
@@ -274,12 +390,7 @@ static int nxfs_free_extent(struct nxfs_volume *vol, uint32_t start, uint32_t le
     if (vol == 0 || !vol->mounted || len == 0) {
         return 0;
     }
-    for (uint32_t i = 0; i < len; i++) {
-        if (nxfs_bitmap_set(vol, start + i, 0) != 0) {
-            return -1;
-        }
-    }
-    return 0;
+    return nxfs_bitmap_set_range(vol, start, len, 0);
 }
 
 static int nxfs_free_all_extents(struct nxfs_volume *vol, const struct nxfs_inode *inode) {
@@ -316,9 +427,9 @@ static int nxfs_ensure_blocks(struct nxfs_volume *vol, struct nxfs_inode *inode,
         if (start < 0 || nxfs_append_extent(&tmp, (uint32_t)start, chunk) != 0) {
             return -1;
         }
-        nxfs_mem_set(g_nxfs_sector, 0, sizeof(g_nxfs_sector));
+        nxfs_mem_set(vol->sector_buffer, 0, sizeof(vol->sector_buffer));
         for (uint32_t i = 0; i < chunk; i++) {
-            if (nxfs_write_block(vol, (uint32_t)start + i, g_nxfs_sector) != 0) {
+            if (nxfs_write_block(vol, (uint32_t)start + i, vol->sector_buffer) != 0) {
                 return -1;
             }
         }
@@ -623,11 +734,11 @@ int nxfs_mount(struct nxfs_volume *vol, struct block_device *bdev, uint32_t part
     }
 
     nxfs_mem_set(vol, 0, sizeof(*vol));
-    if (blockdev_read(bdev, partition_lba, 1, g_nxfs_sector) != 0) {
+    if (blockdev_read(bdev, partition_lba, 1, vol->sector_buffer) != 0) {
         return -1;
     }
 
-    nxfs_mem_copy(&vol->super, g_nxfs_sector, sizeof(vol->super));
+    nxfs_mem_copy(&vol->super, vol->sector_buffer, sizeof(vol->super));
     if (vol->super.magic != NXFS_MAGIC || vol->super.total_blocks == 0) {
         nxfs_mem_set(vol, 0, sizeof(*vol));
         return -1;

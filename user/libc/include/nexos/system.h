@@ -31,5 +31,6 @@ uint64_t page_alloc(void);
 int page_free(uint64_t user_page_addr);
 void yield(void);
 void sleep(uint32_t ticks);
+int reboot(void);
 __attribute__((noreturn)) void exit_with_code(uint64_t code);
 __attribute__((noreturn)) void exit(void);

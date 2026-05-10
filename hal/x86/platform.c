@@ -1,10 +1,17 @@
 #include "hal/x86/platform.h"
-#include "bootx.h"
+#include "bootx/bootx.h"
 #include "drivers/video/framebuffer.h"
 #include "drivers/video/vga.h"
 
 static volatile uint32_t g_hal_timer_ticks;
 static uint32_t g_hal_timer_hz;
+static uint64_t g_hal_next_mmio_virt = 0xffffffff82000000ull;
+
+enum {
+    HAL_MMIO_PAGE_SIZE = 4096u,
+    HAL_MMIO_PAGE_MASK = 0xfffffffffffff000ull,
+    HAL_MMIO_VIRT_LIMIT = 0xffffffff84000000ull
+};
 
 void hal_display_init(const struct bootx_console_info *console) {
     framebuffer_display_init(console);
@@ -74,6 +81,37 @@ void *hal_phys_direct_map(uint64_t phys_addr) {
     return hal_x86_paging_phys_direct_map_impl(phys_addr);
 }
 
+void *hal_mmio_map(uint64_t phys_addr, uint64_t length) {
+    uint64_t phys_base = phys_addr & HAL_MMIO_PAGE_MASK;
+    uint64_t page_off = phys_addr & ~HAL_MMIO_PAGE_MASK;
+    uint64_t bytes;
+    uint64_t pages;
+    uint64_t virt_base;
+
+    if (phys_addr == 0u || length == 0u) {
+        return 0;
+    }
+    if (phys_addr <= 0xffffffffull && length - 1u <= 0xffffffffull - phys_addr) {
+        return hal_phys_direct_map(phys_addr);
+    }
+    bytes = page_off + length;
+    pages = (bytes + HAL_MMIO_PAGE_SIZE - 1u) / HAL_MMIO_PAGE_SIZE;
+    virt_base = g_hal_next_mmio_virt;
+    if (virt_base + pages * HAL_MMIO_PAGE_SIZE > HAL_MMIO_VIRT_LIMIT) {
+        return 0;
+    }
+    for (uint64_t i = 0u; i < pages; i++) {
+        uint64_t virt = virt_base + i * HAL_MMIO_PAGE_SIZE;
+        uint64_t phys = phys_base + i * HAL_MMIO_PAGE_SIZE;
+
+        if (!hal_paging_map_page_with_exec(virt, phys, 0, 1, 0)) {
+            return 0;
+        }
+    }
+    g_hal_next_mmio_virt = virt_base + pages * HAL_MMIO_PAGE_SIZE;
+    return (void *)(uintptr_t)(virt_base + page_off);
+}
+
 void hal_timer_init(uint32_t pit_hz) {
     g_hal_timer_ticks = 0;
     g_hal_timer_hz = pit_hz;
@@ -107,19 +145,37 @@ uint8_t hal_keyboard_read_scancode(void) {
     return hal_x86_keyboard_read_scancode_impl();
 }
 
-uint16_t hal_display_read_cell(uint16_t row, uint16_t col) {
+static uint32_t hal_display_cell_from_vga(uint16_t cell) {
+    return ((uint32_t)((cell >> 8) & 0xffu) << HAL_DISPLAY_CELL_COLOR_SHIFT) |
+           (uint32_t)(cell & 0xffu);
+}
+
+static uint16_t hal_display_cell_to_vga(uint32_t cell) {
+    uint32_t codepoint = cell & HAL_DISPLAY_CELL_CODEPOINT_MASK;
+    uint8_t color = (uint8_t)(cell >> HAL_DISPLAY_CELL_COLOR_SHIFT);
+    uint8_t ch = '?';
+
+    if ((cell & HAL_DISPLAY_CELL_CONT) != 0u) {
+        ch = ' ';
+    } else if (codepoint <= 0xffu) {
+        ch = (uint8_t)codepoint;
+    }
+    return (uint16_t)(((uint16_t)color << 8) | ch);
+}
+
+uint32_t hal_display_read_cell(uint16_t row, uint16_t col) {
     if (framebuffer_display_active()) {
         return framebuffer_display_read_cell(row, col);
     }
-    return vga_read_cell(row, col);
+    return hal_display_cell_from_vga(vga_read_cell(row, col));
 }
 
-void hal_display_write_cell(uint16_t row, uint16_t col, uint16_t value) {
+void hal_display_write_cell(uint16_t row, uint16_t col, uint32_t value) {
     if (framebuffer_display_active()) {
         framebuffer_display_write_cell(row, col, value);
         return;
     }
-    vga_write_cell(row, col, value);
+    vga_write_cell(row, col, hal_display_cell_to_vga(value));
 }
 
 void hal_display_clear_row(uint16_t row, uint8_t color) {

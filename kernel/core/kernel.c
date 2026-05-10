@@ -1,10 +1,11 @@
 #include <stdint.h>
-#include "bootx.h"
+#include "bootx/bootx.h"
 #include "drivers/input/keyboard.h"
 #include "drivers/input/mouse.h"
 #include "drivers/net/rtl8139.h"
 #include "drivers/serial/uart.h"
 #include "drivers/usb/ehci.h"
+#include "drivers/usb/xhci.h"
 #include "hal/hal.h"
 #include "kernel/internal/core/kernel_boot_internal.h"
 #include "kernel/internal/core/kernel_init_internal.h"
@@ -162,6 +163,11 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
         hal_timer_notify_tick();
         timer_ticks++;
         while (ehci_poll_keyboard_event(&usb_event)) {
+            if (kernel_feed_keyboard_event(&usb_event, frame)) {
+                usb_signal = 1;
+            }
+        }
+        while (xhci_poll_keyboard_event(&usb_event)) {
             if (kernel_feed_keyboard_event(&usb_event, frame)) {
                 usb_signal = 1;
             }

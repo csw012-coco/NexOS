@@ -13,6 +13,12 @@ enum kernel_file_kind {
     KERNEL_FILE_PIPE_WRITE = 6
 };
 
+enum kernel_file_read_flags {
+    KERNEL_FILE_READ_BLOCKING = 0,
+    KERNEL_FILE_READ_NONBLOCK = 1u,
+    KERNEL_FILE_READ_CHAR = 2u
+};
+
 struct file;
 struct vfs;
 

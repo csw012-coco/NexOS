@@ -5,6 +5,10 @@
 #include "kernel/public/fs/fat32_types.h"
 #include "kernel/public/sys/system_limits.h"
 
+enum {
+    FAT32_SECTOR_SIZE = 512u
+};
+
 struct fat32_volume {
     struct block_device *bdev;
     uint32_t partition_lba;
@@ -17,6 +21,7 @@ struct fat32_volume {
     uint32_t cluster_count;
     uint8_t table_count;
     uint8_t mounted;
+    uint8_t sector_buffer[FAT32_SECTOR_SIZE];
 };
 
 int fat32_mount(struct fat32_volume *vol, struct block_device *bdev, uint32_t partition_lba);

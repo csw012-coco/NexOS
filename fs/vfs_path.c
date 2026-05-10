@@ -1,5 +1,4 @@
 #include "fs/vfs_internal.h"
-#include "kernel/public/sys/syscall.h"
 #include "lib/string.h"
 
 static int vfs_is_root_path(const char *path) {
@@ -83,7 +82,7 @@ int vfs_open_fat32(struct vfs *vfs, const struct vfs_path *parsed, uint32_t flag
     if (fat32_find_path(fat32, parsed->child, &fat32_file) != 0) {
         int create_rc = -1;
 
-        if ((flags & SYS_OPEN_CREAT) == 0) {
+        if ((flags & VFS_OPEN_CREATE) == 0) {
             return -1;
         }
         create_rc = fat32_create_path(fat32, parsed->child, &fat32_file);
@@ -119,7 +118,7 @@ int vfs_open_nxfs(struct vfs *vfs, const struct vfs_path *parsed, uint32_t flags
     }
     nxfs = (struct nxfs_volume *)mount.fs_data;
     if (nxfs_lookup_root(nxfs, parsed->child, &inode_index, &nxfs_inode) != 0) {
-        if ((flags & SYS_OPEN_CREAT) == 0 ||
+        if ((flags & VFS_OPEN_CREATE) == 0 ||
             nxfs_create_path(nxfs, parsed->child, &inode_index, &nxfs_inode) != 0) {
             return -1;
         }
@@ -407,13 +406,13 @@ int vfs_open(struct vfs *vfs, const char *path, uint32_t flags, struct vfs_node 
         return vfs_devfs_lookup(parsed.child, out);
     }
     if (parsed.mount_kind == VFS_MOUNT_PROCFS) {
-        if ((flags & SYS_OPEN_CREAT) != 0) {
+        if ((flags & VFS_OPEN_CREATE) != 0) {
             return -1;
         }
         return vfs_procfs_lookup(parsed.child, out);
     }
     if (parsed.mount_kind == VFS_MOUNT_EVENTFS) {
-        if ((flags & SYS_OPEN_CREAT) != 0) {
+        if ((flags & VFS_OPEN_CREATE) != 0) {
             return -1;
         }
         return vfs_eventfs_lookup(parsed.child, out);

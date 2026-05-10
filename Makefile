@@ -7,6 +7,8 @@ BOOT := $(ROOT)/boot
 BOOTX_DIR := $(ROOT)/bootx/bootx
 BOOTX_BUILD := $(BOOTX_DIR)/build
 IMAGE := $(ROOT)/NexOS.img
+BIOS_IMAGE := $(ROOT)/NexOS-bios.img
+UEFI_IMAGE := $(ROOT)/NexOS-uefi.img
 NXFS_IMAGE := $(ROOT)/nxfs.img
 RAMDISK_IMAGE := $(BUILD)/ramdisk.img
 RAMDISK_SIZE ?= 32M
@@ -28,11 +30,11 @@ Q ?= @
 CFLAGS64 := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -Wall -Wextra -O2 -I$(ROOT)
 USERCFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -Wall -Wextra -O2 -I$(ROOT)
 LDFLAGS64 := -nostdlib -static -m elf_x86_64
-USER_ELF_BINS := $(BUILD)/HELLO.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
+USER_ELF_BINS := $(BUILD)/HELLO.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
 INIT_SCRIPT := $(ROOT)/user/init/INIT.SH
 OS_CONFIG := $(ROOT)/config/NOS.CFG
 FASM_TEST_SOURCE := $(ROOT)/user/examples/fasm/test.asm
-CMD_SUITE_NAMES := NEXBOX HELP ACTIONS ACTION MAPPER ECHO CLEAR PWD ENV WHICH TYPE LS CAT LESS HEXDUMP GREP DATE HWCLOCK SLEEP WATCH ON EVENTS WC HEAD TAIL FIND AS PICK SELECT SORT-BY COUNT-BY TO VIEW ED VI VIM TOUCH MV CP MKDIR RMDIR RM FASM STAT DU TREE FILE BLK PARTS FDISK DF MOUNTS PROGS FATLS FATFIND FATREAD CPIO MOUNT UMOUNT HOTPLUG RUN RUNELF RUNBG PS SESSION SERVICE JOBS WAIT ALARM TIMEOUT KILL FG BG SWITCH_ROOT DMESG LSPCI AC97 RTL8139 RTL8139TX RTL8139RX ARP ROUTE NETSTAT PING DNS DHCP IFCONFIG HTTP WGET NC AUDIO TONE WAV MPLAY DOCTOR NEXCTL SYSINFO MEMINFO MINFO UNAME CPUINFO DBG
+CMD_SUITE_NAMES := NEXBOX HELP ACTIONS ACTION MAPPER ECHO CLEAR PWD ENV WHICH TYPE LS CAT LESS HEXDUMP GREP DATE HWCLOCK SLEEP WATCH ON EVENTS WC HEAD TAIL FIND AS PICK SELECT SORT-BY COUNT-BY TO VIEW ED VI VIM TOUCH MV CP MKDIR RMDIR RM ASM STAT DU TREE FILE BLK PARTS FDISK DF MOUNTS PROGS FATLS FATFIND FATREAD CPIO MOUNT UMOUNT HOTPLUG RUN RUNELF RUNBG PS SESSION SERVICE JOBS WAIT ALARM TIMEOUT KILL FG BG SWITCH_ROOT REBOOT DMESG LSPCI AC97 RTL8139 RTL8139TX RTL8139RX ARP ROUTE NETSTAT PING DNS DHCP IFCONFIG HTTP WGET NC AUDIO TONE WAV MPLAY DOCTOR NEXCTL SYSINFO MEMINFO MINFO UNAME CPUINFO DBG
 QEMU_AUDIODEV ?= pa,id=snd0
 QEMU_SERIAL ?= -serial stdio
 QEMU_NET ?= -nic user,model=rtl8139
@@ -46,9 +48,13 @@ QEMU_USB_MSC ?= -drive if=none,id=usbdisk,format=raw,file=$(NXFS_IMAGE) -device 
 QEMU_USB_HID ?= -device usb-kbd,bus=ehci.0
 QEMU_XHCI_MSC ?= -drive if=none,id=xhcidisk,format=raw,file=$(NXFS_IMAGE) -device qemu-xhci,id=xhci -device usb-storage,drive=xhcidisk,bus=xhci.0
 QEMU_XHCI_HID ?= -device usb-kbd,bus=xhci.0
+OVMF_CODE ?= /usr/share/OVMF/x64/OVMF_CODE.4m.fd
+OVMF_VARS_TEMPLATE ?= /usr/share/OVMF/x64/OVMF_VARS.4m.fd
+OVMF_VARS_IMAGE := $(BUILD)/OVMF_VARS.fd
 BOOTX_STAGE1 := $(BOOTX_BUILD)/stage1.bin
 BOOTX_STAGE2 := $(BOOTX_BUILD)/stage2.bin
 BOOTX_STAGE3 := $(BOOTX_BUILD)/stage3.sys
+BOOTX_UEFI := $(BOOTX_BUILD)/BOOTX64.EFI
 
 KERNEL_C_SRCS := \
 	kernel/core/kernel.c \
@@ -57,6 +63,7 @@ KERNEL_C_SRCS := \
 	kernel/core/kernel_config.c \
 	kernel/core/machine_info.c \
 	kernel/core/system_query.c \
+	kernel/core/system_power.c \
 	kernel/core/kernel_panic.c \
 	kernel/core/console.c \
 	kernel/core/tty.c \
@@ -83,6 +90,7 @@ KERNEL_C_SRCS := \
 	kernel/sys/syscall_query_rtl8139.c \
 	kernel/sys/syscall_query_audio.c \
 	kernel/sys/syscall_query_machine.c \
+	kernel/sys/syscall_power.c \
 	kernel/fs/fs_service_root_query.c \
 	kernel/fs/fs_service_mount_query.c \
 	kernel/fs/fs_service_path.c \
@@ -112,6 +120,7 @@ KERNEL_C_SRCS := \
 	drivers/storage/ahci.c \
 	drivers/storage/ata.c \
 	drivers/storage/ramdisk.c \
+	drivers/usb/usb_hid_keymap.c \
 	drivers/usb/ehci.c \
 	drivers/usb/xhci.c \
 	fs/fat32.c \
@@ -119,6 +128,10 @@ KERNEL_C_SRCS := \
 	fs/vfs.c \
 	fs/vfs_path.c \
 	fs/vfs_mount.c \
+	fs/vfs_devfs.c \
+	fs/vfs_procfs.c \
+	fs/vfs_eventfs.c \
+	fs/vfs_proc_actions.c \
 	fs/vfs_io.c \
 	drivers/video/framebuffer.c \
 	drivers/video/vga.c \
@@ -142,7 +155,9 @@ USER_NLIBC_C_SRCS := \
 	user/libc/std/string.c \
 	user/libc/std/io.c \
 	user/libc/std/printf.c \
+	user/libc/std/stdio_scan.c \
 	user/libc/std/env.c \
+	user/libc/std/malloc.c \
 	user/libc/std/stdlib.c
 
 USER_NLIBC_ASM_SRCS := \
@@ -168,6 +183,7 @@ USER_ELF_C_SRCS := \
 	user/apps/elf/ls.c \
 	user/apps/elf/nexbox/applets/fs/cmd_ls_shared.c \
 	user/apps/elf/wdemo.c \
+	user/apps/elf/forth.c \
 	user/apps/elf/ush.c \
 	user/apps/elf/ush_editor.c \
 	user/apps/elf/ush_vars.c \
@@ -175,9 +191,11 @@ USER_ELF_C_SRCS := \
 	user/apps/elf/ush_parse.c \
 	user/apps/elf/nexbox/core/cmdsuite.c \
 	user/apps/elf/nexbox/core/cmdsuite_dispatch.c \
+	user/apps/elf/nexbox/core/cmdsuite_action.c \
 	user/apps/elf/nexbox/applets/fs/cmdsuite_basic.c \
 	user/apps/elf/nexbox/applets/text/cmdsuite_text.c \
 	user/apps/elf/nexbox/applets/audio/cmdsuite_audio.c \
+	user/apps/elf/nexbox/applets/net/cmdsuite_net.c \
 	user/apps/elf/nexbox/applets/editor/cmdsuite_editor.c \
 	user/apps/elf/nexbox/applets/fs/cmdsuite_storage.c \
 	user/apps/elf/nexbox/applets/system/cmdsuite_session.c \
@@ -185,6 +203,7 @@ USER_ELF_C_SRCS := \
 	user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.c \
 	user/apps/elf/nexbox/applets/proc/cmdsuite_proc.c \
 	user/apps/elf/nexbox/applets/debug/cmdsuite_debug.c \
+	user/apps/elf/nexbox/applets/debug/cmdsuite_debug_doctor.c \
 	user/apps/elf/nexbox/applets/asm/cmdsuite_asm.c
 
 KERNEL_C_OBJS := $(addprefix $(BUILD)/,$(KERNEL_C_SRCS:.c=.o))
@@ -251,9 +270,11 @@ $(BUILD)/$(1): $(2) $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/ap
 	$$(do_ld_user)
 endef
 
-all: $(IMAGE) $(NXFS_IMAGE)
+all: images $(NXFS_IMAGE)
 
-.PHONY: all run dev run-ac97 dev-ac97 run-tap dev-tap run-hda-tap dev-hda-tap run-ac97-tap dev-ac97-tap tap-up tap-down clean distclean check check-kernel check-image check-deps oneoff-user
+images: $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE)
+
+.PHONY: all images run dev run-uefi dev-uefi run-ac97 dev-ac97 run-tap dev-tap run-hda-tap dev-hda-tap run-ac97-tap dev-ac97-tap tap-up tap-down clean distclean check check-kernel check-image check-deps oneoff-user
 .SILENT:
 
 check-deps:
@@ -296,6 +317,7 @@ $(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCR
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/CATDEMO.ELF ::/HOME/CATDEMO.ELF
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/LSDEMO.ELF ::/HOME/LSDEMO.ELF
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/WDEMO.ELF ::/HOME/WDEMO.ELF
+	$(Q)mcopy -i $@@@1048576 $(BUILD)/FORTH.ELF ::/HOME/FORTH.ELF
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/USH.ELF ::/HOME/USH.ELF
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/NEXBOX.ELF ::/HOME/NEXBOX.ELF
 	$(Q)mcopy -i $@@@1048576 $(ROOT)/config/ACTION.CAPS ::/HOME/ACTION.CAPS
@@ -314,6 +336,7 @@ $(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCR
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/CATDEMO.ELF ::/CMD/CAT
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/LSDEMO.ELF ::/CMD/LS
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/WDEMO.ELF ::/CMD/WDEMO
+	$(Q)mcopy -i $@@@1048576 $(BUILD)/FORTH.ELF ::/CMD/FORTH
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/USH.ELF ::/CMD/USH
 	$(Q)for alias in $(CMD_SUITE_NAMES); do mcopy -o -i $@@@1048576 $(BUILD)/NEXBOX.ELF ::/CMD/$$alias; done
 
@@ -330,15 +353,19 @@ $(NXFS_FS): $(NXFS_TOOL)
 	$(Q)rm -f $@
 	$(Q)$< mkfs $@
 
-$(BOOT_FS_IMAGE): $(BOOTX_STAGE3) $(BUILD)/kernel64.elf $(RAMDISK_IMAGE) $(ROOT)/bootx.cfg | $(BUILD)
+$(BOOT_FS_IMAGE): $(BOOTX_STAGE3) $(BOOTX_UEFI) $(BUILD)/kernel64.elf $(RAMDISK_IMAGE) $(ROOT)/bootx.cfg $(ROOT)/font.hex | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s 48M $@
 	$(Q)mkfs.fat -F 32 $@
 	$(Q)mmd -i $@ ::/BOOT
+	$(Q)mmd -i $@ ::/EFI
+	$(Q)mmd -i $@ ::/EFI/BOOT
 	$(Q)mcopy -i $@ $(BOOTX_STAGE3) ::/BOOT/STAGE3.SYS
+	$(Q)mcopy -i $@ $(BOOTX_UEFI) ::/EFI/BOOT/BOOTX64.EFI
 	$(Q)mcopy -i $@ $(BUILD)/kernel64.elf ::/BOOT/NEX.ELF
 	$(Q)mcopy -i $@ $(RAMDISK_IMAGE) ::/BOOT/RAMDISK.IMG
+	$(Q)mcopy -i $@ $(ROOT)/font.hex ::/BOOT/FONT.HEX
 	$(Q)mcopy -i $@ $(ROOT)/bootx.cfg ::/BOOT/BOOTX.CFG
 
 $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCRIPT) $(OS_CONFIG) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
@@ -361,11 +388,13 @@ $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.h
 	$(Q)$(NXFS_TOOL) write $@ $(ROOT)/config/ACTION.CAPS /home/action.caps
 	$(Q)$(NXFS_TOOL) write $@ $(FASM_TEST_SOURCE) /home/test.asm
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/HELLO.ELF /home/hello.elf
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/FORTH.ELF /home/forth.elf
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/USH.ELF /home/ush.elf
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /home/nexbox.elf
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/USH.ELF /cmd/ush
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/nexbox
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/HELLO.ELF /cmd/hello
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/FORTH.ELF /cmd/forth
 	$(Q)for alias in $(CMD_SUITE_NAMES); do lower=$$(printf '%s' "$$alias" | tr 'A-Z' 'a-z'); $(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/$$lower; done
 
 $(NXFS_IMAGE): $(NXFS_FS)
@@ -403,8 +432,9 @@ SLEEPDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/sleepdemo.o
 CATDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/cat.o
 LSDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/ls.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
 WDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/wdemo.o
+FORTH_ELF_OBJS := $(BUILD)/user/apps/elf/forth.o
 USH_ELF_OBJS := $(BUILD)/user/apps/elf/ush.o $(BUILD)/user/apps/elf/ush_editor.o $(BUILD)/user/apps/elf/ush_vars.o $(BUILD)/user/apps/elf/ush_exec.o $(BUILD)/user/apps/elf/ush_parse.o
-NEXBOX_ELF_OBJS := $(BUILD)/user/apps/elf/nexbox/core/cmdsuite.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_dispatch.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_basic.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text.o $(BUILD)/user/apps/elf/nexbox/applets/audio/cmdsuite_audio.o $(BUILD)/user/apps/elf/nexbox/applets/editor/cmdsuite_editor.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_session.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.o $(BUILD)/user/apps/elf/nexbox/applets/proc/cmdsuite_proc.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug.o $(BUILD)/user/apps/elf/nexbox/applets/asm/cmdsuite_asm.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
+NEXBOX_ELF_OBJS := $(BUILD)/user/apps/elf/nexbox/core/cmdsuite.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_dispatch.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_action.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_basic.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text.o $(BUILD)/user/apps/elf/nexbox/applets/audio/cmdsuite_audio.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net.o $(BUILD)/user/apps/elf/nexbox/applets/editor/cmdsuite_editor.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_session.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.o $(BUILD)/user/apps/elf/nexbox/applets/proc/cmdsuite_proc.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug_doctor.o $(BUILD)/user/apps/elf/nexbox/applets/asm/cmdsuite_asm.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
 
 $(eval $(call define_user_elf,HELLO.ELF,$(HELLO_ELF_OBJS)))
 $(eval $(call define_user_elf,KEYDEMO.ELF,$(KEYDEMO_ELF_OBJS)))
@@ -418,6 +448,7 @@ $(eval $(call define_user_elf,SLEEPDEMO.ELF,$(SLEEPDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,CATDEMO.ELF,$(CATDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,LSDEMO.ELF,$(LSDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,WDEMO.ELF,$(WDEMO_ELF_OBJS)))
+$(eval $(call define_user_elf,FORTH.ELF,$(FORTH_ELF_OBJS)))
 $(eval $(call define_user_elf,USH.ELF,$(USH_ELF_OBJS)))
 $(eval $(call define_user_elf,NEXBOX.ELF,$(NEXBOX_ELF_OBJS)))
 
@@ -436,6 +467,25 @@ $(IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOT_FS_IMAGE) $(ROOT_FS_IMAGE) | $(
 	$(Q)dd if=$(BOOTX_STAGE2) of=$@ conv=notrunc bs=512 seek=1
 	$(Q)dd if=$(BOOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(BOOT_PART_LBA)
 	$(Q)dd if=$(ROOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(ROOT_PART_LBA)
+
+$(BIOS_IMAGE): $(IMAGE) | $(BUILD)
+	$(call log_cmd,CP,$@)
+	$(Q)cp $(IMAGE) $@
+
+$(UEFI_IMAGE): $(BOOT_FS_IMAGE) $(ROOT_FS_IMAGE) | $(BUILD)
+	$(call log_cmd,IMAGE,$@)
+	$(Q)rm -f $@
+	$(Q)truncate -s 128M $@
+	$(Q)parted -s $@ mklabel gpt
+	$(Q)parted -s $@ mkpart ESP fat32 1MiB 49MiB
+	$(Q)parted -s $@ set 1 esp on
+	$(Q)parted -s $@ mkpart NexOS 49MiB 100%
+	$(Q)dd if=$(BOOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(BOOT_PART_LBA)
+	$(Q)dd if=$(ROOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(ROOT_PART_LBA)
+
+$(OVMF_VARS_IMAGE): $(OVMF_VARS_TEMPLATE) | $(BUILD)
+	$(call log_cmd,CP,$@)
+	$(Q)cp $< $@
 
 run: $(IMAGE) $(NXFS_IMAGE)
 	qemu-system-x86_64 \
@@ -457,6 +507,33 @@ dev: $(IMAGE) $(NXFS_IMAGE)
 	$(QEMU_NXFS_SATA) \
 		-device AC97,audiodev=snd0 \
 		-audiodev $(QEMU_AUDIODEV)
+
+run-uefi: $(UEFI_IMAGE) $(NXFS_IMAGE) $(OVMF_VARS_IMAGE)
+	qemu-system-x86_64 \
+	-machine q35 \
+	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	-drive if=pflash,format=raw,file=$(OVMF_VARS_IMAGE) \
+	$(QEMU_SERIAL) \
+	$(QEMU_NET) \
+	-drive if=ide,index=0,media=disk,format=raw,file=$(UEFI_IMAGE) \
+	$(QEMU_NXFS_SATA) \
+	-device AC97,audiodev=snd0 \
+	-audiodev $(QEMU_AUDIODEV)
+
+dev-uefi: $(UEFI_IMAGE) $(NXFS_IMAGE) $(OVMF_VARS_IMAGE)
+	qemu-system-x86_64 \
+	-machine q35 \
+	-no-reboot \
+	-no-shutdown \
+	-d int,cpu_reset \
+	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	-drive if=pflash,format=raw,file=$(OVMF_VARS_IMAGE) \
+	$(QEMU_SERIAL) \
+	$(QEMU_NET) \
+	-drive if=ide,index=0,media=disk,format=raw,file=$(UEFI_IMAGE) \
+	$(QEMU_NXFS_SATA) \
+	-device AC97,audiodev=snd0 \
+	-audiodev $(QEMU_AUDIODEV)
 
 run-hda: $(IMAGE) $(NXFS_IMAGE)
 	qemu-system-x86_64 \
@@ -629,12 +706,21 @@ check-kernel: $(BUILD)/kernel64.elf
 	@readelf -l $(BUILD)/kernel64.elf | grep -q ' RWE ' && { printf '%s\n' '[check] error: kernel64.elf still has an RWX LOAD segment'; exit 1; } || true
 	@readelf -l $(BUILD)/kernel64.elf | grep -q 'LOAD'
 
-check-image: $(IMAGE) $(NXFS_IMAGE) $(ROOT_FS_IMAGE)
-	@printf '%s\n' '[check] verifying boot image contents'
+check-image: $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE) $(NXFS_IMAGE) $(ROOT_FS_IMAGE)
+	@printf '%s\n' '[check] verifying BIOS boot image contents'
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'NEX +ELF'
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'STAGE3 +SYS'
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'RAMDISK +IMG'
+	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'FONT +HEX'
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'BOOTX +CFG'
+	@mdir -i $(IMAGE)@@1048576 ::/EFI/BOOT | grep -Eq 'BOOTX64 +EFI'
+	@printf '%s\n' '[check] verifying named BIOS image'
+	@mdir -i $(BIOS_IMAGE)@@1048576 ::/BOOT | grep -Eq 'NEX +ELF'
+	@printf '%s\n' '[check] verifying UEFI boot image contents'
+	@parted -s $(UEFI_IMAGE) print | grep -q 'Partition Table: gpt'
+	@parted -s $(UEFI_IMAGE) print | grep -q 'esp'
+	@mdir -i $(UEFI_IMAGE)@@1048576 ::/EFI/BOOT | grep -Eq 'BOOTX64 +EFI'
+	@mdir -i $(UEFI_IMAGE)@@1048576 ::/BOOT | grep -Eq 'NEX +ELF'
 	@printf '%s\n' '[check] verifying root NXFS contents'
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /init.sh
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/ush
@@ -663,7 +749,7 @@ check-image: $(IMAGE) $(NXFS_IMAGE) $(ROOT_FS_IMAGE)
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'USH +ELF' && { printf '%s\n' '[check] error: unexpected root /USH.ELF copy in ramdisk'; exit 1; } || true
 
 clean:
-	rm -rf $(BUILD) $(IMAGE)
+	rm -rf $(BUILD) $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE)
 
 distclean: clean
 	rm -rf $(NXFS_IMAGE)
@@ -672,4 +758,4 @@ distclean: clean
 bootx-loader:
 	$(Q)$(MAKE) -C $(BOOTX_DIR)
 
-$(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3): bootx-loader
+$(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3) $(BOOTX_UEFI): bootx-loader

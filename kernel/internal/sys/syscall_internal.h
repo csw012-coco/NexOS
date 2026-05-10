@@ -92,6 +92,7 @@ uint64_t syscall_handle_rtl8139_rx_dump(uint64_t user_info_addr);
 uint64_t syscall_handle_audio_query(uint32_t index, uint64_t user_info_addr);
 uint64_t syscall_handle_audio_tone(uint32_t index, uint32_t hz, uint32_t duration_ms);
 uint64_t syscall_handle_audio_play(uint32_t index, uint64_t user_info_addr);
+uint64_t syscall_handle_reboot(void);
 uint64_t syscall_handle_machine_info_query(uint64_t user_info_addr);
 uint64_t syscall_handle_rtc_query(uint64_t user_info_addr);
 uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint64_t user_info_addr);

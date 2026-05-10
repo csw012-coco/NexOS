@@ -11,6 +11,7 @@ enum {
     AHCI_MAX_PORTS = 32u,
     AHCI_MAX_DEVICES = 4u,
     AHCI_SECTOR_SIZE = 512u,
+    AHCI_MMIO_MAP_SIZE = 0x2000u,
 
     AHCI_GHC_AE = 1u << 31,
 
@@ -385,7 +386,7 @@ static void ahci_setup_port(struct ahci_device *dev) {
 
 void ahci_init(void) {
     struct pci_ahci_controller ahci;
-    uint32_t abar;
+    uint64_t abar;
     uint32_t pi;
 
     g_ahci_device_count = 0u;
@@ -399,17 +400,17 @@ void ahci_init(void) {
 
     pci_config_write16(ahci.bus, ahci.slot, ahci.function, 0x04,
                        (uint16_t)(pci_config_read16(ahci.bus, ahci.slot, ahci.function, 0x04) | 0x0006u));
-    abar = ahci.abar & 0xfffffff0u;
+    abar = (uint64_t)(ahci.abar & 0xfffffff0u);
     if (abar == 0u) {
         return;
     }
-    g_ahci_hba = (struct ahci_hba_mem *)hal_phys_direct_map(abar);
+    g_ahci_hba = (struct ahci_hba_mem *)hal_mmio_map(abar, AHCI_MMIO_MAP_SIZE);
     if (g_ahci_hba == 0) {
         return;
     }
     g_ahci_hba->ghc |= AHCI_GHC_AE;
     pi = g_ahci_hba->pi;
-    kprint("ahci: controller bus=%u slot=%u func=%u abar=%x pi=%x\n",
+    kprint("ahci: controller bus=%u slot=%u func=%u abar=%lx pi=%x\n",
            ahci.bus, ahci.slot, ahci.function, abar, pi);
 
     for (uint32_t port_index = 0; port_index < AHCI_MAX_PORTS && g_ahci_device_count < AHCI_MAX_DEVICES; port_index++) {

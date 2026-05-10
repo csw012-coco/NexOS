@@ -452,6 +452,26 @@ int ush_run_script_file(char *cwd, const char *path, int argc, char **argv) {
     return 0;
 }
 
+static void ush_bind_interactive_stdio(void) {
+    int tty_fd = open("/dev/tty", 0);
+
+    if (tty_fd < 0) {
+        return;
+    }
+    if (tty_fd != STDIN_FILENO) {
+        (void)dup2(tty_fd, STDIN_FILENO);
+    }
+    if (tty_fd != STDOUT_FILENO) {
+        (void)dup2(tty_fd, STDOUT_FILENO);
+    }
+    if (tty_fd != STDERR_FILENO) {
+        (void)dup2(tty_fd, STDERR_FILENO);
+    }
+    if (tty_fd > STDERR_FILENO) {
+        close((uint32_t)tty_fd);
+    }
+}
+
 int main(int argc, char **argv) {
     struct ush_editor editor = {0};
     char invoked_line[64];
@@ -472,6 +492,7 @@ int main(int argc, char **argv) {
         (void)ush_execute_line(cwd, invoked_line);
         return 0;
     }
+    ush_bind_interactive_stdio();
     ush_prompt_sync(cwd);
     for (;;) {
         ush_prompt_sync(cwd);

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
-#include "bootx.h"
+#include "bootx/bootx.h"
 
 void pmm_init(const struct bootx_memmap_entry *memmap,
               uint32_t memmap_count,

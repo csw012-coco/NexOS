@@ -89,7 +89,7 @@ static int process_read_exec_file(struct vfs *vfs,
         g_process_exec_read_result = PROCESS_EXEC_ERR_FILE_TOO_LARGE;
         return 0;
     }
-    read_rc = vfs_read(vfs, &node, &offset, g_elf_file_buffer, file_size, SYS_READ_BLOCKING);
+    read_rc = vfs_read(vfs, &node, &offset, g_elf_file_buffer, file_size, VFS_READ_BLOCKING);
     if (read_rc < 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
         g_process_exec_read_result = PROCESS_EXEC_ERR_FILE_READ;
@@ -277,7 +277,7 @@ static int process_probe_exec_file(struct vfs *vfs,
     if (to_read == 0u) {
         return 1;
     }
-    read_rc = vfs_read(vfs, &node, &offset, probe_out, to_read, SYS_READ_BLOCKING);
+    read_rc = vfs_read(vfs, &node, &offset, probe_out, to_read, VFS_READ_BLOCKING);
     if (read_rc < 0 || (uint32_t)read_rc != to_read) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
         return 0;

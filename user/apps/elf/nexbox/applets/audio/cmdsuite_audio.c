@@ -275,3 +275,86 @@ int cmd_wav(int argc, char **argv) {
 int cmd_mplay(int argc, char **argv) {
     return cmd_play_wav_like(argc, argv, "mplay");
 }
+
+int cmd_audio(int argc, char **argv) {
+    struct syscall_audio_info info;
+    uint32_t index = 0;
+    int printed = 0;
+
+    (void)argv;
+    if (argc > 1) {
+        write_err_usage("audio", "\n");
+        return 1;
+    }
+    while (audio_query(index, &info) > 0 && info.present) {
+        write_str("card ");
+        write_dec(index);
+        write_str(": ");
+        write_str(info.name[0] != '\0' ? info.name : "audio");
+        write_str(" rate=");
+        write_dec(info.sample_rate);
+        write_str("Hz ch=");
+        write_dec(info.channels);
+        write_str(" bits=");
+        write_dec(info.bits_per_sample);
+        write_str(" caps=");
+        if ((info.caps & NEX_AUDIO_CAP_PLAYBACK) != 0u) {
+            write_str("playback");
+        }
+        if ((info.caps & NEX_AUDIO_CAP_TONE) != 0u) {
+            write_str((info.caps & NEX_AUDIO_CAP_PLAYBACK) != 0u ? ",tone" : "tone");
+        }
+        write_str(" driver=");
+        if (info.driver_kind == NEX_AUDIO_DRIVER_AC97) {
+            write_str("ac97");
+        } else {
+            write_str("unknown");
+        }
+        write_str(" init=");
+        write_dec(info.initialized);
+        write_str("\n");
+        printed = 1;
+        index++;
+    }
+    if (!printed) {
+        write_str("audio: no devices\n");
+    }
+    return 0;
+}
+
+int cmd_tone(int argc, char **argv) {
+    uint32_t hz = 440u;
+    uint32_t duration_ms = 150u;
+    uint32_t device_index = 0u;
+    struct syscall_audio_info info;
+
+    if (argc > 4) {
+        write_err_usage("tone", " [hz] [ms] [device]\n");
+        return 1;
+    }
+    if (argc >= 2 && !parse_u32_local(argv[1], &hz)) {
+        write_err_usage("tone", " [hz] [ms] [device]\n");
+        return 1;
+    }
+    if (argc >= 3 && !parse_u32_local(argv[2], &duration_ms)) {
+        write_err_usage("tone", " [hz] [ms] [device]\n");
+        return 1;
+    }
+    if (argc >= 4 && !parse_u32_local(argv[3], &device_index)) {
+        write_err_usage("tone", " [hz] [ms] [device]\n");
+        return 1;
+    }
+    if (audio_query(device_index, &info) <= 0 || !info.present) {
+        write_err_str("tone: audio device not found\n");
+        return 1;
+    }
+    if ((info.caps & NEX_AUDIO_CAP_TONE) == 0u) {
+        write_err_str("tone: device does not support tone playback\n");
+        return 1;
+    }
+    if (audio_tone(device_index, hz, duration_ms) <= 0) {
+        write_err_str("tone: playback failed\n");
+        return 1;
+    }
+    return 0;
+}

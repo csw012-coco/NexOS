@@ -5,6 +5,10 @@
 
 struct block_device;
 
+enum {
+    BLOCKDEV_MAX_PARTITIONS = 128u
+};
+
 typedef int (*blockdev_read_fn)(struct block_device *dev, uint64_t lba, uint32_t count, void *buffer);
 typedef int (*blockdev_write_fn)(struct block_device *dev, uint64_t lba, uint32_t count, const void *buffer);
 
@@ -19,8 +23,9 @@ struct blockdev_partition {
     uint32_t index;
     uint8_t bootable;
     uint8_t type;
-    uint32_t start_lba;
-    uint32_t sector_count;
+    uint16_t flags;
+    uint64_t start_lba;
+    uint64_t sector_count;
 };
 
 struct block_device {
@@ -29,7 +34,7 @@ struct block_device {
     uint64_t block_count;
     uint32_t partition_count;
     uint8_t partition_cache_valid;
-    struct blockdev_partition partitions[4];
+    struct blockdev_partition partitions[BLOCKDEV_MAX_PARTITIONS];
     blockdev_read_fn read;
     blockdev_write_fn write;
     void *driver_data;

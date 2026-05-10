@@ -32,10 +32,22 @@ static void fs_service_set_copied(uint32_t *copied_out, uint32_t copied) {
     }
 }
 
+static uint32_t fs_service_map_read_flags(uint32_t syscall_flags) {
+    uint32_t flags = KERNEL_FILE_READ_BLOCKING;
+
+    if ((syscall_flags & SYS_READ_NONBLOCK) != 0) {
+        flags |= KERNEL_FILE_READ_NONBLOCK;
+    }
+    if ((syscall_flags & SYS_READ_CHAR) != 0) {
+        flags |= KERNEL_FILE_READ_CHAR;
+    }
+    return flags;
+}
+
 static uint32_t fs_service_stdin_copied_size(uint32_t size, uint32_t flags, int64_t bytes) {
     uint32_t copy_size = (uint32_t)bytes;
 
-    if ((flags & SYS_READ_CHAR) == 0 && copy_size < size) {
+    if ((flags & KERNEL_FILE_READ_CHAR) == 0 && copy_size < size) {
         copy_size++;
     }
     return copy_size;
@@ -57,6 +69,7 @@ uint64_t fs_service_read(struct process *proc,
                          uint32_t *copied_out) {
     struct file *file;
     uint32_t copy_size;
+    uint32_t file_flags;
 
     if (copied_out != 0) {
         *copied_out = 0;
@@ -68,22 +81,23 @@ uint64_t fs_service_read(struct process *proc,
     if (file == 0) {
         return 0;
     }
+    file_flags = fs_service_map_read_flags(flags);
     if (fd == SYS_FD_STDIN) {
-        if (flags & SYS_READ_NONBLOCK) {
-            int64_t bytes = file_read(file, vfs, buffer, size, flags);
+        if ((file_flags & KERNEL_FILE_READ_NONBLOCK) != 0) {
+            int64_t bytes = file_read(file, vfs, buffer, size, file_flags);
 
             if (bytes <= 0) {
                 return 0;
             }
-            copy_size = fs_service_stdin_copied_size(size, flags, bytes);
+            copy_size = fs_service_stdin_copied_size(size, file_flags, bytes);
             fs_service_set_copied(copied_out, copy_size);
             return (uint64_t)bytes;
         }
         for (;;) {
-            int64_t bytes = file_read(file, vfs, buffer, size, flags);
+            int64_t bytes = file_read(file, vfs, buffer, size, file_flags);
 
             if (bytes > 0) {
-                copy_size = fs_service_stdin_copied_size(size, flags, bytes);
+                copy_size = fs_service_stdin_copied_size(size, file_flags, bytes);
                 fs_service_set_copied(copied_out, copy_size);
                 return (uint64_t)bytes;
             }
@@ -100,13 +114,13 @@ uint64_t fs_service_read(struct process *proc,
         }
     }
     for (;;) {
-        int64_t bytes = file_read(file, vfs, buffer, size, flags);
+        int64_t bytes = file_read(file, vfs, buffer, size, file_flags);
 
         if (bytes < 0) {
             return (uint64_t)-1;
         }
         if (bytes == 0) {
-            if ((flags & SYS_READ_NONBLOCK) != 0 || !file_read_would_block(file)) {
+            if ((file_flags & KERNEL_FILE_READ_NONBLOCK) != 0 || !file_read_would_block(file)) {
                 return 0;
             }
             if (fs_service_read_interrupted_local(proc)) {

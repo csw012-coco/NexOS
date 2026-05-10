@@ -51,11 +51,6 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
             return syscall_handle_dup2((uint32_t)frame->rbx, (uint32_t)frame->rcx);
         case SYS_PIPE:
             return syscall_handle_pipe(frame->rbx);
-        case SYS_CLEAR:
-            if (g_syscall_tty != 0) {
-                tty_clear(g_syscall_tty);
-            }
-            return 0;
         case SYS_TICKS:
             if (g_syscall_ticks == 0) {
                 return 0;
@@ -152,6 +147,8 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
             return syscall_handle_rtl8139_tx_send(frame->rbx);
         case SYS_RTL8139_RX_DUMP:
             return syscall_handle_rtl8139_rx_dump(frame->rbx);
+        case SYS_REBOOT:
+            return syscall_handle_reboot();
         default:
             return 0;
     }

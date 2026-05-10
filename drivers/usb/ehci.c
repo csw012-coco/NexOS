@@ -3,6 +3,8 @@
 #include "block/blockdev.h"
 #include "drivers/bus/pci.h"
 #include "drivers/input/keyboard.h"
+#include "drivers/usb/usb_bytes.h"
+#include "drivers/usb/usb_hid_keymap.h"
 #include "hal/hal.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/mem/pmm.h"
@@ -10,10 +12,12 @@
 
 enum {
     EHCI_MAX_PORTS = 16u,
-    EHCI_MAX_MSC = 2u,
-    EHCI_MAX_HUBS = 2u,
-    EHCI_MAX_HID_KEYBOARDS = 2u,
+    EHCI_MAX_MSC = 4u,
+    EHCI_MAX_HUBS = 4u,
+    EHCI_MAX_HID_KEYBOARDS = 4u,
     EHCI_HID_EVENT_QUEUE_SIZE = 16u,
+    EHCI_HID_REPEAT_DELAY_TICKS = 35u,
+    EHCI_HID_REPEAT_RATE_TICKS = 5u,
     EHCI_MSC_DEBUG = 0u,
     EHCI_PAGE_SIZE = 4096u,
     EHCI_SECTOR_SIZE = 512u,
@@ -217,6 +221,9 @@ struct ehci_hid_keyboard {
     uint8_t interface_number;
     uint8_t interrupt_in_ep;
     uint8_t report_fail_logged;
+    uint8_t repeat_usage;
+    uint8_t repeat_active;
+    uint32_t repeat_ticks;
     uint16_t interrupt_in_mps;
     uint8_t last_report[8];
     struct ehci_msc_device xfer;
@@ -235,6 +242,7 @@ static uint32_t g_hid_event_head;
 static uint32_t g_hid_event_tail;
 static uint32_t g_hid_event_count;
 static uint32_t g_hid_poll_divider;
+static uint32_t g_hid_last_repeat_tick;
 static uint64_t g_async_head_phys;
 static uint64_t g_async_dummy_qtd_phys;
 static uint64_t g_periodic_list_phys;
@@ -426,43 +434,6 @@ static int ehci_reset_port(uint32_t port_index, uint32_t *port_out) {
         *port_out = port;
     }
     return (port & EHCI_PORT_ENABLE) != 0u;
-}
-
-static uint16_t ehci_read_u16le(const uint8_t *data) {
-    return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
-}
-
-static uint32_t ehci_read_u32le(const uint8_t *data) {
-    return (uint32_t)data[0] |
-           ((uint32_t)data[1] << 8) |
-           ((uint32_t)data[2] << 16) |
-           ((uint32_t)data[3] << 24);
-}
-
-static uint32_t ehci_read_u32be(const uint8_t *data) {
-    return ((uint32_t)data[0] << 24) |
-           ((uint32_t)data[1] << 16) |
-           ((uint32_t)data[2] << 8) |
-           (uint32_t)data[3];
-}
-
-static void ehci_write_u32le(uint8_t *data, uint32_t value) {
-    data[0] = (uint8_t)(value & 0xffu);
-    data[1] = (uint8_t)((value >> 8) & 0xffu);
-    data[2] = (uint8_t)((value >> 16) & 0xffu);
-    data[3] = (uint8_t)((value >> 24) & 0xffu);
-}
-
-static void ehci_write_u16le(uint8_t *data, uint16_t value) {
-    data[0] = (uint8_t)(value & 0xffu);
-    data[1] = (uint8_t)((value >> 8) & 0xffu);
-}
-
-static void ehci_write_u32be(uint8_t *data, uint32_t value) {
-    data[0] = (uint8_t)((value >> 24) & 0xffu);
-    data[1] = (uint8_t)((value >> 16) & 0xffu);
-    data[2] = (uint8_t)((value >> 8) & 0xffu);
-    data[3] = (uint8_t)(value & 0xffu);
 }
 
 static void ehci_write_name(char *dst, uint32_t index) {
@@ -747,9 +718,9 @@ static int ehci_control_transfer(struct ehci_msc_device *dev,
     memset(dev->setup, 0, 8u);
     dev->setup[0] = req->type;
     dev->setup[1] = req->request;
-    ehci_write_u16le(dev->setup + 2, req->value);
-    ehci_write_u16le(dev->setup + 4, req->index);
-    ehci_write_u16le(dev->setup + 6, req->length);
+    usb_write_u16le(dev->setup + 2, req->value);
+    usb_write_u16le(dev->setup + 4, req->index);
+    usb_write_u16le(dev->setup + 6, req->length);
     if (buffer != 0 && length != 0u && !data_in) {
         memcpy(dev->data, buffer, length);
     }
@@ -915,7 +886,7 @@ static void ehci_log_config_descriptor(const uint8_t *cfg, uint32_t length) {
         return;
     }
     kprint("ehci: cfg total=%u value=%u ifaces=%u attrs=%x maxpwr=%u\n",
-           (uint32_t)ehci_read_u16le(cfg + 2),
+           (uint32_t)usb_read_u16le(cfg + 2),
            (uint32_t)cfg[5],
            (uint32_t)cfg[4],
            (uint32_t)cfg[7],
@@ -946,7 +917,7 @@ static void ehci_log_config_descriptor(const uint8_t *cfg, uint32_t length) {
                    offset,
                    (uint32_t)cfg[offset + 2u],
                    (uint32_t)cfg[offset + 3u],
-                   (uint32_t)ehci_read_u16le(cfg + offset + 4u),
+                   (uint32_t)usb_read_u16le(cfg + offset + 4u),
                    (uint32_t)cfg[offset + 6u]);
         } else {
             kprint("ehci: cfg desc off=%u len=%u type=%u\n",
@@ -990,7 +961,7 @@ static int ehci_parse_msc_config(struct ehci_msc_device *dev, const uint8_t *cfg
         } else if (type == 5u && len >= 7u && in_msc) {
             uint8_t ep = cfg[offset + 2u];
             uint8_t attr = cfg[offset + 3u] & 0x03u;
-            uint16_t mps = ehci_read_u16le(cfg + offset + 4u);
+            uint16_t mps = usb_read_u16le(cfg + offset + 4u);
 
             if (attr == 2u && (ep & 0x80u) != 0u) {
                 dev->bulk_in_ep = ep;
@@ -1070,7 +1041,7 @@ static int ehci_parse_hid_keyboard_config(struct ehci_hid_keyboard *kbd, const u
         } else if (type == 5u && len >= 7u && in_keyboard) {
             uint8_t ep = cfg[offset + 2u];
             uint8_t attr = cfg[offset + 3u] & 0x03u;
-            uint16_t mps = ehci_read_u16le(cfg + offset + 4u);
+            uint16_t mps = usb_read_u16le(cfg + offset + 4u);
 
             if (attr == 3u && (ep & 0x80u) != 0u) {
                 kbd->interrupt_in_ep = ep;
@@ -1115,54 +1086,49 @@ static int ehci_hid_get_report(struct ehci_hid_keyboard *kbd, uint8_t report[8])
     return ehci_control_transfer(&kbd->xfer, kbd->address, kbd->xfer.bulk_in_mps, &req, report, 8u, 1u);
 }
 
-static enum keyboard_keycode ehci_hid_usage_to_keycode(uint8_t usage) {
-    static const enum keyboard_keycode usage_map[256] = {
-        [0x04] = KEYBOARD_KEY_A, [0x05] = KEYBOARD_KEY_B, [0x06] = KEYBOARD_KEY_C,
-        [0x07] = KEYBOARD_KEY_D, [0x08] = KEYBOARD_KEY_E, [0x09] = KEYBOARD_KEY_F,
-        [0x0a] = KEYBOARD_KEY_G, [0x0b] = KEYBOARD_KEY_H, [0x0c] = KEYBOARD_KEY_I,
-        [0x0d] = KEYBOARD_KEY_J, [0x0e] = KEYBOARD_KEY_K, [0x0f] = KEYBOARD_KEY_L,
-        [0x10] = KEYBOARD_KEY_M, [0x11] = KEYBOARD_KEY_N, [0x12] = KEYBOARD_KEY_O,
-        [0x13] = KEYBOARD_KEY_P, [0x14] = KEYBOARD_KEY_Q, [0x15] = KEYBOARD_KEY_R,
-        [0x16] = KEYBOARD_KEY_S, [0x17] = KEYBOARD_KEY_T, [0x18] = KEYBOARD_KEY_U,
-        [0x19] = KEYBOARD_KEY_V, [0x1a] = KEYBOARD_KEY_W, [0x1b] = KEYBOARD_KEY_X,
-        [0x1c] = KEYBOARD_KEY_Y, [0x1d] = KEYBOARD_KEY_Z,
-        [0x1e] = KEYBOARD_KEY_1, [0x1f] = KEYBOARD_KEY_2, [0x20] = KEYBOARD_KEY_3,
-        [0x21] = KEYBOARD_KEY_4, [0x22] = KEYBOARD_KEY_5, [0x23] = KEYBOARD_KEY_6,
-        [0x24] = KEYBOARD_KEY_7, [0x25] = KEYBOARD_KEY_8, [0x26] = KEYBOARD_KEY_9,
-        [0x27] = KEYBOARD_KEY_0,
-        [0x28] = KEYBOARD_KEY_ENTER,
-        [0x29] = KEYBOARD_KEY_ESC,
-        [0x2a] = KEYBOARD_KEY_BACKSPACE,
-        [0x2b] = KEYBOARD_KEY_TAB,
-        [0x2c] = KEYBOARD_KEY_SPACE,
-        [0x2d] = KEYBOARD_KEY_MINUS,
-        [0x2e] = KEYBOARD_KEY_EQUAL,
-        [0x2f] = KEYBOARD_KEY_LEFT_BRACKET,
-        [0x30] = KEYBOARD_KEY_RIGHT_BRACKET,
-        [0x31] = KEYBOARD_KEY_BACKSLASH,
-        [0x33] = KEYBOARD_KEY_SEMICOLON,
-        [0x34] = KEYBOARD_KEY_APOSTROPHE,
-        [0x35] = KEYBOARD_KEY_GRAVE,
-        [0x36] = KEYBOARD_KEY_COMMA,
-        [0x37] = KEYBOARD_KEY_PERIOD,
-        [0x38] = KEYBOARD_KEY_SLASH,
-        [0x39] = KEYBOARD_KEY_CAPS_LOCK,
-        [0x4a] = KEYBOARD_KEY_HOME,
-        [0x4b] = KEYBOARD_KEY_PAGE_UP,
-        [0x4c] = KEYBOARD_KEY_DELETE,
-        [0x4d] = KEYBOARD_KEY_END,
-        [0x4e] = KEYBOARD_KEY_PAGE_DOWN,
-        [0x4f] = KEYBOARD_KEY_RIGHT,
-        [0x50] = KEYBOARD_KEY_LEFT,
-        [0x51] = KEYBOARD_KEY_DOWN,
-        [0x52] = KEYBOARD_KEY_UP,
-        [0xe0] = KEYBOARD_KEY_LEFT_CTRL,
-        [0xe1] = KEYBOARD_KEY_LEFT_SHIFT,
-        [0xe4] = KEYBOARD_KEY_RIGHT_CTRL,
-        [0xe5] = KEYBOARD_KEY_RIGHT_SHIFT
-    };
+static int ehci_hid_report_contains_usage(const uint8_t report[8], uint8_t usage);
+static void ehci_hid_queue_event(struct keyboard_event event);
 
-    return usage_map[usage];
+static void ehci_hid_set_repeat_usage(struct ehci_hid_keyboard *kbd, uint8_t usage) {
+    if (kbd == 0 || kbd->repeat_usage == usage) {
+        return;
+    }
+    kbd->repeat_usage = usage;
+    kbd->repeat_active = usage != 0u ? 1u : 0u;
+    kbd->repeat_ticks = 0u;
+}
+
+static void ehci_hid_tick_repeat(struct ehci_hid_keyboard *kbd) {
+    uint32_t repeat_age;
+
+    if (kbd == 0 || !kbd->present || !kbd->repeat_active || kbd->repeat_usage == 0u) {
+        return;
+    }
+    if (!ehci_hid_report_contains_usage(kbd->last_report, kbd->repeat_usage)) {
+        ehci_hid_set_repeat_usage(kbd, 0u);
+        return;
+    }
+    kbd->repeat_ticks++;
+    if (kbd->repeat_ticks < EHCI_HID_REPEAT_DELAY_TICKS) {
+        return;
+    }
+    repeat_age = kbd->repeat_ticks - EHCI_HID_REPEAT_DELAY_TICKS;
+    if ((repeat_age % EHCI_HID_REPEAT_RATE_TICKS) != 0u) {
+        return;
+    }
+    ehci_hid_queue_event(keyboard_handle_keycode(usb_hid_usage_to_keycode(kbd->repeat_usage), 1));
+}
+
+static void ehci_hid_tick_repeats_once(void) {
+    uint32_t tick = hal_timer_current_ticks();
+
+    if (tick == g_hid_last_repeat_tick) {
+        return;
+    }
+    g_hid_last_repeat_tick = tick;
+    for (uint32_t i = 0u; i < g_hid_keyboard_count; i++) {
+        ehci_hid_tick_repeat(&g_hid_keyboards[i]);
+    }
 }
 
 static int ehci_hid_report_contains_usage(const uint8_t report[8], uint8_t usage) {
@@ -1199,10 +1165,15 @@ static int ehci_hid_pop_event(struct keyboard_event *out) {
 
 static void ehci_hid_process_report(struct ehci_hid_keyboard *kbd, const uint8_t report[8]) {
     static const uint8_t modifier_usages[8] = {0xe0u, 0xe1u, 0xe2u, 0xe3u, 0xe4u, 0xe5u, 0xe6u, 0xe7u};
+    uint8_t repeat_usage;
 
+    if (kbd == 0 || report == 0) {
+        return;
+    }
+    repeat_usage = kbd->repeat_usage;
     for (uint32_t i = 0; i < 8u; i++) {
         uint8_t mask = (uint8_t)(1u << i);
-        enum keyboard_keycode keycode = ehci_hid_usage_to_keycode(modifier_usages[i]);
+        enum keyboard_keycode keycode = usb_hid_usage_to_keycode(modifier_usages[i]);
 
         if (((kbd->last_report[0] ^ report[0]) & mask) == 0u) {
             continue;
@@ -1213,16 +1184,25 @@ static void ehci_hid_process_report(struct ehci_hid_keyboard *kbd, const uint8_t
         uint8_t usage = kbd->last_report[i];
 
         if (usage != 0u && !ehci_hid_report_contains_usage(report, usage)) {
-            ehci_hid_queue_event(keyboard_handle_keycode(ehci_hid_usage_to_keycode(usage), 0));
+            ehci_hid_queue_event(keyboard_handle_keycode(usb_hid_usage_to_keycode(usage), 0));
         }
     }
     for (uint32_t i = 2; i < 8u; i++) {
         uint8_t usage = report[i];
 
         if (usage != 0u && !ehci_hid_report_contains_usage(kbd->last_report, usage)) {
-            ehci_hid_queue_event(keyboard_handle_keycode(ehci_hid_usage_to_keycode(usage), 1));
+            ehci_hid_queue_event(keyboard_handle_keycode(usb_hid_usage_to_keycode(usage), 1));
+            if (usb_hid_usage_can_repeat(usage)) {
+                repeat_usage = usage;
+            }
         }
     }
+    if (repeat_usage == 0u) {
+        repeat_usage = usb_hid_first_repeat_usage(report);
+    } else if (!ehci_hid_report_contains_usage(report, repeat_usage)) {
+        repeat_usage = usb_hid_first_repeat_usage(report);
+    }
+    ehci_hid_set_repeat_usage(kbd, repeat_usage);
     memcpy(kbd->last_report, report, 8u);
 }
 
@@ -1248,9 +1228,9 @@ static int ehci_msc_command(struct ehci_msc_device *dev,
     dev->last_msc_residue = 0u;
     tag = ++dev->tag;
     memset(dev->cbw, 0, 31u);
-    ehci_write_u32le(dev->cbw + 0, MSC_CBW_SIGNATURE);
-    ehci_write_u32le(dev->cbw + 4, tag);
-    ehci_write_u32le(dev->cbw + 8, data_len);
+    usb_write_u32le(dev->cbw + 0, MSC_CBW_SIGNATURE);
+    usb_write_u32le(dev->cbw + 4, tag);
+    usb_write_u32le(dev->cbw + 8, data_len);
     dev->cbw[12] = data_in ? 0x80u : 0x00u;
     dev->cbw[13] = dev->msc_lun;
     dev->cbw[14] = cmd_len;
@@ -1314,9 +1294,9 @@ static int ehci_msc_command(struct ehci_msc_device *dev,
         if (ehci_bulk_transfer(dev, dev->bulk_in_ep, dev->bulk_in_mps,
                                &dev->bulk_in_toggle, dev->csw_phys, 13u, 1u, &csw_token,
                                EHCI_ASYNC_BULK_CSW_SPINS)) {
-            signature = ehci_read_u32le(dev->csw);
-            csw_tag = ehci_read_u32le(dev->csw + 4);
-            dev->last_msc_residue = ehci_read_u32le(dev->csw + 8);
+            signature = usb_read_u32le(dev->csw);
+            csw_tag = usb_read_u32le(dev->csw + 4);
+            dev->last_msc_residue = usb_read_u32le(dev->csw + 8);
             dev->last_msc_status = dev->csw[12];
             if (signature == MSC_CSW_SIGNATURE && csw_tag == tag) {
                 if (dev->last_msc_status == 0u) {
@@ -1603,7 +1583,7 @@ static int ehci_msc_buffer_has_transport_signature(const uint8_t *data) {
     if (data == 0) {
         return 0;
     }
-    signature = ehci_read_u32le(data);
+    signature = usb_read_u32le(data);
     return signature == MSC_CBW_SIGNATURE || signature == MSC_CSW_SIGNATURE;
 }
 
@@ -1615,7 +1595,7 @@ static int ehci_msc_sync_cache(struct ehci_msc_device *dev, uint64_t lba, uint32
     }
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = SCSI_SYNCHRONIZE_CACHE_10;
-    ehci_write_u32be(cmd + 2, (uint32_t)lba);
+    usb_write_u32be(cmd + 2, (uint32_t)lba);
     cmd[7] = (uint8_t)((count >> 8) & 0xffu);
     cmd[8] = (uint8_t)(count & 0xffu);
     if (ehci_msc_command_recover(dev, cmd, 10u, 0, 0u, 0u)) {
@@ -1709,8 +1689,8 @@ static int ehci_msc_read_capacity(struct ehci_msc_device *dev) {
     if (!ehci_msc_command_recover(dev, cmd, 10u, cap, 8u, 1u)) {
         return 0;
     }
-    last_lba = ehci_read_u32be(cap);
-    block_len = ehci_read_u32be(cap + 4);
+    last_lba = usb_read_u32be(cap);
+    block_len = usb_read_u32be(cap + 4);
     if (block_len != EHCI_SECTOR_SIZE) {
         kprint("ehci: MSC read capacity block_len=%x last_lba=%x\n", block_len, last_lba);
         return 0;
@@ -1836,7 +1816,7 @@ static int ehci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
             for (uint32_t attempt = 0; attempt < EHCI_MSC_RW_RETRIES; attempt++) {
                 memset(cmd, 0, sizeof(cmd));
                 cmd[0] = SCSI_READ_10;
-                ehci_write_u32be(cmd + 2, (uint32_t)lba);
+                usb_write_u32be(cmd + 2, (uint32_t)lba);
                 cmd[7] = (uint8_t)((readahead >> 8) & 0xffu);
                 cmd[8] = (uint8_t)(readahead & 0xffu);
                 if (ehci_msc_command_recover(dev,
@@ -1878,7 +1858,7 @@ static int ehci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
         for (uint32_t attempt = 0; attempt < EHCI_MSC_RW_RETRIES; attempt++) {
             memset(cmd, 0, sizeof(cmd));
             cmd[0] = SCSI_READ_10;
-            ehci_write_u32be(cmd + 2, (uint32_t)(lba + i));
+            usb_write_u32be(cmd + 2, (uint32_t)(lba + i));
             cmd[7] = 0u;
             cmd[8] = 1u;
             if (ehci_msc_command_recover(dev, cmd, 10u, out + i * EHCI_SECTOR_SIZE, EHCI_SECTOR_SIZE, 1u)) {
@@ -1891,7 +1871,7 @@ static int ehci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
                 }
                 memset(cmd, 0, sizeof(cmd));
                 cmd[0] = SCSI_READ_10;
-                ehci_write_u32be(cmd + 2, (uint32_t)(lba + i));
+                usb_write_u32be(cmd + 2, (uint32_t)(lba + i));
                 cmd[7] = 0u;
                 cmd[8] = 1u;
                 if (ehci_msc_command_recover(dev,
@@ -1951,7 +1931,7 @@ static int ehci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t
         for (uint32_t attempt = 0; attempt < EHCI_MSC_RW_RETRIES; attempt++) {
             memset(cmd, 0, sizeof(cmd));
             cmd[0] = SCSI_WRITE_10;
-            ehci_write_u32be(cmd + 2, (uint32_t)(lba + i));
+            usb_write_u32be(cmd + 2, (uint32_t)(lba + i));
             cmd[7] = 0u;
             cmd[8] = 1u;
             if (ehci_msc_command_recover(dev, cmd, 10u, (void *)(in + i * EHCI_SECTOR_SIZE), EHCI_SECTOR_SIZE, 0u)) {
@@ -1961,7 +1941,7 @@ static int ehci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t
                 }
                 memset(cmd, 0, sizeof(cmd));
                 cmd[0] = SCSI_READ_10;
-                ehci_write_u32be(cmd + 2, (uint32_t)(lba + i));
+                usb_write_u32be(cmd + 2, (uint32_t)(lba + i));
                 cmd[7] = 0u;
                 cmd[8] = 1u;
                 if (ehci_msc_command_recover(dev,
@@ -2046,8 +2026,8 @@ static void ehci_log_device_summary(struct ehci_msc_device *dev,
                (uint32_t)dev_desc[4],
                (uint32_t)dev_desc[5],
                (uint32_t)dev_desc[6],
-               (uint32_t)ehci_read_u16le(dev_desc + 8),
-               (uint32_t)ehci_read_u16le(dev_desc + 10),
+               (uint32_t)usb_read_u16le(dev_desc + 8),
+               (uint32_t)usb_read_u16le(dev_desc + 10),
                (uint32_t)mps0);
     } else {
         kprint("ehci: port%u dev addr=%u speed=%u cls=%x sub=%x proto=%x vid=%x pid=%x mps0=%u\n",
@@ -2057,8 +2037,8 @@ static void ehci_log_device_summary(struct ehci_msc_device *dev,
                (uint32_t)dev_desc[4],
                (uint32_t)dev_desc[5],
                (uint32_t)dev_desc[6],
-               (uint32_t)ehci_read_u16le(dev_desc + 8),
-               (uint32_t)ehci_read_u16le(dev_desc + 10),
+               (uint32_t)usb_read_u16le(dev_desc + 8),
+               (uint32_t)usb_read_u16le(dev_desc + 10),
                (uint32_t)mps0);
     }
 }
@@ -2135,10 +2115,10 @@ static int ehci_hub_get_port_status(struct ehci_msc_device *hub,
         return 0;
     }
     if (status_out != 0) {
-        *status_out = ehci_read_u16le(data);
+        *status_out = usb_read_u16le(data);
     }
     if (change_out != 0) {
-        *change_out = ehci_read_u16le(data + 2);
+        *change_out = usb_read_u16le(data + 2);
     }
     return 1;
 }
@@ -2315,7 +2295,7 @@ static int ehci_finish_device_enumeration(struct ehci_msc_device *dev,
     if (!ehci_get_descriptor(dev, dev->address, mps0, USB_DESC_CONFIGURATION, 0u, cfg, 9u)) {
         return 0;
     }
-    total_len = ehci_read_u16le(cfg + 2);
+    total_len = usb_read_u16le(cfg + 2);
     if (total_len > sizeof(cfg)) {
         total_len = sizeof(cfg);
     }
@@ -2493,6 +2473,7 @@ void ehci_init(void) {
     g_hid_event_tail = 0u;
     g_hid_event_count = 0u;
     g_hid_poll_divider = 0u;
+    g_hid_last_repeat_tick = 0u;
     g_async_head_phys = 0u;
     g_async_dummy_qtd_phys = 0u;
     g_periodic_list_phys = 0u;
@@ -2517,7 +2498,7 @@ void ehci_init(void) {
         if (mmio == 0u) {
             continue;
         }
-        g_ehci.cap = (volatile uint8_t *)hal_phys_direct_map(mmio);
+        g_ehci.cap = (volatile uint8_t *)hal_mmio_map(mmio, 0x1000u);
         if (g_ehci.cap == 0) {
             continue;
         }
@@ -2572,6 +2553,10 @@ int ehci_poll_keyboard_event(struct keyboard_event *out) {
     }
     if (g_hid_keyboard_count == 0u) {
         return 0;
+    }
+    ehci_hid_tick_repeats_once();
+    if (ehci_hid_pop_event(out)) {
+        return 1;
     }
     g_hid_poll_divider++;
     if ((g_hid_poll_divider & 3u) != 0u) {

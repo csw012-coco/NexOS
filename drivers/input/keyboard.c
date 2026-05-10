@@ -2,6 +2,8 @@
 
 static uint8_t g_shift_active;
 static uint8_t g_caps_lock_active;
+static uint8_t g_num_lock_active;
+static uint8_t g_scroll_lock_active;
 static uint8_t g_ctrl_active;
 static uint8_t g_extended_prefix_active;
 
@@ -44,6 +46,8 @@ static enum keyboard_keycode keyboard_lookup_keycode(uint8_t scancode, int exten
         [0x36] = KEYBOARD_KEY_RIGHT_SHIFT,
         [0x39] = KEYBOARD_KEY_SPACE,
         [0x3a] = KEYBOARD_KEY_CAPS_LOCK,
+        [0x45] = KEYBOARD_KEY_NUM_LOCK,
+        [0x46] = KEYBOARD_KEY_SCROLL_LOCK,
         [0x47] = KEYBOARD_KEY_HOME,
         [0x48] = KEYBOARD_KEY_UP,
         [0x49] = KEYBOARD_KEY_PAGE_UP,
@@ -148,6 +152,8 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
     event.shift = g_shift_active;
     event.ctrl = g_ctrl_active;
     event.caps_lock = g_caps_lock_active;
+    event.num_lock = g_num_lock_active;
+    event.scroll_lock = g_scroll_lock_active;
 
     if (scancode == 0xe0u) {
         g_extended_prefix_active = 1u;
@@ -176,6 +182,16 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
                 g_caps_lock_active ^= 1u;
             }
             break;
+        case KEYBOARD_KEY_NUM_LOCK:
+            if (!release) {
+                g_num_lock_active ^= 1u;
+            }
+            break;
+        case KEYBOARD_KEY_SCROLL_LOCK:
+            if (!release) {
+                g_scroll_lock_active ^= 1u;
+            }
+            break;
         default:
             break;
     }
@@ -185,6 +201,8 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
     event.shift = g_shift_active;
     event.ctrl = g_ctrl_active;
     event.caps_lock = g_caps_lock_active;
+    event.num_lock = g_num_lock_active;
+    event.scroll_lock = g_scroll_lock_active;
 
     if (!release) {
         event.ascii = keyboard_keycode_to_ascii(event.keycode, event.shift != 0, event.caps_lock != 0);
@@ -204,6 +222,8 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
     event.shift = g_shift_active;
     event.ctrl = g_ctrl_active;
     event.caps_lock = g_caps_lock_active;
+    event.num_lock = g_num_lock_active;
+    event.scroll_lock = g_scroll_lock_active;
 
     if (keycode == KEYBOARD_KEY_NONE) {
         return event;
@@ -223,6 +243,16 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
                 g_caps_lock_active ^= 1u;
             }
             break;
+        case KEYBOARD_KEY_NUM_LOCK:
+            if (!release) {
+                g_num_lock_active ^= 1u;
+            }
+            break;
+        case KEYBOARD_KEY_SCROLL_LOCK:
+            if (!release) {
+                g_scroll_lock_active ^= 1u;
+            }
+            break;
         default:
             break;
     }
@@ -230,6 +260,8 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
     event.shift = g_shift_active;
     event.ctrl = g_ctrl_active;
     event.caps_lock = g_caps_lock_active;
+    event.num_lock = g_num_lock_active;
+    event.scroll_lock = g_scroll_lock_active;
     if (!release) {
         event.ascii = keyboard_keycode_to_ascii(event.keycode, event.shift != 0, event.caps_lock != 0);
     }
@@ -238,6 +270,12 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
 
 int keyboard_is_ctrl_active(void) {
     return g_ctrl_active != 0;
+}
+
+uint8_t keyboard_led_state(void) {
+    return (uint8_t)((g_num_lock_active ? 1u : 0u) |
+                     (g_caps_lock_active ? 2u : 0u) |
+                     (g_scroll_lock_active ? 4u : 0u));
 }
 
 void keyboard_event_queue_push(const struct keyboard_event *event, uint32_t tick) {

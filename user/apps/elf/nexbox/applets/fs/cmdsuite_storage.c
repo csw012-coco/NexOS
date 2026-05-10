@@ -21,6 +21,24 @@ static void fdisk_put_le32(uint8_t *dst, uint32_t value) {
     dst[3] = (uint8_t)((value >> 24) & 0xffu);
 }
 
+static void storage_write_u64_dec(uint64_t value) {
+    char digits[21];
+    uint32_t pos = 0;
+
+    if (value == 0u) {
+        write_str("0");
+        return;
+    }
+    while (value != 0u && pos < sizeof(digits)) {
+        digits[pos++] = (char)('0' + (value % 10u));
+        value /= 10u;
+    }
+    while (pos > 0u) {
+        pos--;
+        write_stdout(&digits[pos], 1);
+    }
+}
+
 static uint8_t *fdisk_slot_ptr(uint8_t *mbr, uint32_t slot) {
     return mbr + FDISK_MBR_TABLE_OFFSET + slot * FDISK_MBR_ENTRY_SIZE;
 }
@@ -57,6 +75,8 @@ static const char *fdisk_partition_type_name(uint32_t type) {
             return "osx-boot";
         case 0xaf:
             return "hfs+";
+        case 0xee:
+            return "gpt-protective";
         default:
             return "unknown";
     }
@@ -468,9 +488,9 @@ int cmd_parts(int argc, char **argv) {
         write_str(" type=0x");
         write_hex_u32(info.type);
         write_str(" lba=");
-        write_dec(info.start_lba);
+        storage_write_u64_dec(info.start_lba);
         write_str(" sectors=");
-        write_dec(info.sector_count);
+        storage_write_u64_dec(info.sector_count);
         write_str(" boot=");
         write_str(info.bootable ? "yes" : "no");
         write_str("\n");

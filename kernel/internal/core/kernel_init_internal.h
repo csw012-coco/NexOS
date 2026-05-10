@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
-#include "bootx.h"
+#include "bootx/bootx.h"
 
 struct tty;
 struct vfs;

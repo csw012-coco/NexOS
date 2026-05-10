@@ -7,5 +7,7 @@ _start:
     and $-16, %rsp
     call __libc_start_main
 1:
-    hlt
-    jmp 1b
+    mov $0, %rax
+    xor %rbx, %rbx
+    int $0x40
+    ud2

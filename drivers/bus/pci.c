@@ -86,6 +86,12 @@ static void pci_fill_device_info(uint8_t bus, uint8_t slot, uint8_t function, st
 }
 
 int pci_find_device_by_class(uint8_t class_code, uint8_t subclass, struct pci_device_info *out) {
+    return pci_find_device_by_class_at(class_code, subclass, 0u, out);
+}
+
+int pci_find_device_by_class_at(uint8_t class_code, uint8_t subclass, uint32_t index, struct pci_device_info *out) {
+    uint32_t matched = 0u;
+
     if (out == 0) {
         return 0;
     }
@@ -115,6 +121,9 @@ int pci_find_device_by_class(uint8_t class_code, uint8_t subclass, struct pci_de
                 if (found_class != class_code || found_subclass != subclass) {
                     continue;
                 }
+                if (matched++ != index) {
+                    continue;
+                }
 
                 pci_fill_device_info((uint8_t)bus, slot, function, out);
                 return 1;
@@ -126,6 +135,12 @@ int pci_find_device_by_class(uint8_t class_code, uint8_t subclass, struct pci_de
 }
 
 int pci_find_device(uint16_t vendor_id, uint16_t device_id, struct pci_device_info *out) {
+    return pci_find_device_at(vendor_id, device_id, 0u, out);
+}
+
+int pci_find_device_at(uint16_t vendor_id, uint16_t device_id, uint32_t index, struct pci_device_info *out) {
+    uint32_t matched = 0u;
+
     if (out == 0) {
         return 0;
     }
@@ -146,6 +161,9 @@ int pci_find_device(uint16_t vendor_id, uint16_t device_id, struct pci_device_in
                     pci_config_read16((uint8_t)bus, slot, function, 0x02) != device_id) {
                     continue;
                 }
+                if (matched++ != index) {
+                    continue;
+                }
 
                 pci_fill_device_info((uint8_t)bus, slot, function, out);
                 return 1;
@@ -157,12 +175,16 @@ int pci_find_device(uint16_t vendor_id, uint16_t device_id, struct pci_device_in
 }
 
 int pci_find_ide_controller(struct pci_ide_controller *out) {
+    return pci_find_ide_controller_at(0u, out);
+}
+
+int pci_find_ide_controller_at(uint32_t index, struct pci_ide_controller *out) {
     struct pci_device_info device;
 
     if (out == 0) {
         return 0;
     }
-    if (!pci_find_device_by_class(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_IDE, &device)) {
+    if (!pci_find_device_by_class_at(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_IDE, index, &device)) {
         return 0;
     }
 
@@ -181,35 +203,47 @@ int pci_find_ide_controller(struct pci_ide_controller *out) {
 }
 
 int pci_find_ahci_controller(struct pci_ahci_controller *out) {
+    return pci_find_ahci_controller_at(0u, out);
+}
+
+int pci_find_ahci_controller_at(uint32_t index, struct pci_ahci_controller *out) {
+    uint32_t matched = 0u;
     struct pci_device_info device;
 
     if (out == 0) {
         return 0;
     }
-    if (!pci_find_device_by_class(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, &device) ||
-        device.prog_if != PCI_PROGIF_AHCI) {
-        return 0;
+    for (uint32_t i = 0u; pci_find_device_by_class_at(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, i, &device); i++) {
+        if (device.prog_if != PCI_PROGIF_AHCI) {
+            continue;
+        }
+        if (matched++ == index) {
+            out->bus = device.bus;
+            out->slot = device.slot;
+            out->function = device.function;
+            out->prog_if = device.prog_if;
+            out->irq_line = device.irq_line;
+            out->irq_pin = device.irq_pin;
+            out->vendor_id = device.vendor_id;
+            out->device_id = device.device_id;
+            out->abar = device.bar5;
+            return 1;
+        }
     }
-
-    out->bus = device.bus;
-    out->slot = device.slot;
-    out->function = device.function;
-    out->prog_if = device.prog_if;
-    out->irq_line = device.irq_line;
-    out->irq_pin = device.irq_pin;
-    out->vendor_id = device.vendor_id;
-    out->device_id = device.device_id;
-    out->abar = device.bar5;
-    return 1;
+    return 0;
 }
 
 int pci_find_ac97_controller(struct pci_ac97_controller *out) {
+    return pci_find_ac97_controller_at(0u, out);
+}
+
+int pci_find_ac97_controller_at(uint32_t index, struct pci_ac97_controller *out) {
     struct pci_device_info device;
 
     if (out == 0) {
         return 0;
     }
-    if (!pci_find_device_by_class(PCI_CLASS_MULTIMEDIA, PCI_SUBCLASS_AUDIO, &device)) {
+    if (!pci_find_device_by_class_at(PCI_CLASS_MULTIMEDIA, PCI_SUBCLASS_AUDIO, index, &device)) {
         return 0;
     }
 
@@ -232,47 +266,28 @@ int pci_find_ac97_controller(struct pci_ac97_controller *out) {
 
 int pci_find_ehci_controller_at(uint32_t index, struct pci_ehci_controller *out) {
     uint32_t matched = 0u;
+    struct pci_device_info device;
+
     if (out == 0) {
         return 0;
     }
-
-    for (uint16_t bus = 0; bus < 256; bus++) {
-        for (uint8_t slot = 0; slot < 32; slot++) {
-            uint8_t function_count = 1;
-
-            if (pci_config_read16((uint8_t)bus, slot, 0, 0x00) == 0xffffu) {
-                continue;
-            }
-            if ((pci_config_read8((uint8_t)bus, slot, 0, 0x0e) & 0x80u) != 0) {
-                function_count = 8;
-            }
-
-            for (uint8_t function = 0; function < function_count; function++) {
-                struct pci_device_info device;
-                uint16_t vendor_id = pci_config_read16((uint8_t)bus, slot, function, 0x00);
-
-                if (vendor_id == 0xffffu ||
-                    pci_config_read8((uint8_t)bus, slot, function, 0x0b) != PCI_CLASS_SERIAL_BUS ||
-                    pci_config_read8((uint8_t)bus, slot, function, 0x0a) != PCI_SUBCLASS_USB ||
-                    pci_config_read8((uint8_t)bus, slot, function, 0x09) != PCI_PROGIF_EHCI) {
-                    continue;
-                }
-                if (matched++ != index) {
-                    continue;
-                }
-                pci_fill_device_info((uint8_t)bus, slot, function, &device);
-                out->bus = device.bus;
-                out->slot = device.slot;
-                out->function = device.function;
-                out->prog_if = device.prog_if;
-                out->irq_line = device.irq_line;
-                out->irq_pin = device.irq_pin;
-                out->vendor_id = device.vendor_id;
-                out->device_id = device.device_id;
-                out->mmio_base = device.bar0;
-                return 1;
-            }
+    for (uint32_t i = 0u; pci_find_device_by_class_at(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB, i, &device); i++) {
+        if (device.prog_if != PCI_PROGIF_EHCI) {
+            continue;
         }
+        if (matched++ != index) {
+            continue;
+        }
+        out->bus = device.bus;
+        out->slot = device.slot;
+        out->function = device.function;
+        out->prog_if = device.prog_if;
+        out->irq_line = device.irq_line;
+        out->irq_pin = device.irq_pin;
+        out->vendor_id = device.vendor_id;
+        out->device_id = device.device_id;
+        out->mmio_base = device.bar0;
+        return 1;
     }
     return 0;
 }
@@ -282,25 +297,33 @@ int pci_find_ehci_controller(struct pci_ehci_controller *out) {
 }
 
 int pci_find_xhci_controller(struct pci_xhci_controller *out) {
+    return pci_find_xhci_controller_at(0u, out);
+}
+
+int pci_find_xhci_controller_at(uint32_t index, struct pci_xhci_controller *out) {
+    uint32_t matched = 0u;
     struct pci_device_info device;
 
     if (out == 0) {
         return 0;
     }
-    if (!pci_find_device_by_class(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB, &device) ||
-        device.prog_if != PCI_PROGIF_XHCI) {
-        return 0;
+    for (uint32_t i = 0u; pci_find_device_by_class_at(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB, i, &device); i++) {
+        if (device.prog_if != PCI_PROGIF_XHCI) {
+            continue;
+        }
+        if (matched++ == index) {
+            out->bus = device.bus;
+            out->slot = device.slot;
+            out->function = device.function;
+            out->prog_if = device.prog_if;
+            out->irq_line = device.irq_line;
+            out->irq_pin = device.irq_pin;
+            out->vendor_id = device.vendor_id;
+            out->device_id = device.device_id;
+            out->mmio_base_lo = device.bar0;
+            out->mmio_base_hi = device.bar1;
+            return 1;
+        }
     }
-
-    out->bus = device.bus;
-    out->slot = device.slot;
-    out->function = device.function;
-    out->prog_if = device.prog_if;
-    out->irq_line = device.irq_line;
-    out->irq_pin = device.irq_pin;
-    out->vendor_id = device.vendor_id;
-    out->device_id = device.device_id;
-    out->mmio_base_lo = device.bar0;
-    out->mmio_base_hi = device.bar1;
-    return 1;
+    return 0;
 }

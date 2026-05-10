@@ -18,5 +18,5 @@ struct console {
     uint32_t history_line_count;
     uint32_t cursor_line;
     uint32_t view_top_line;
-    uint16_t history[CONSOLE_SCROLLBACK_LINES][HAL_TEXT_WIDTH];
+    uint32_t history[CONSOLE_SCROLLBACK_LINES][HAL_TEXT_WIDTH];
 };

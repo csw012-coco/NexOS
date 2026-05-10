@@ -15,7 +15,7 @@ Layout:
 - `applets/proc/`: process and job-control commands
 - `applets/audio/`: tone, wav, mplay, audio inspection
 - `applets/debug/`: dmesg, pci, meminfo, machine/debug tools
-- `applets/asm/`: mini-FASM assembler applet
+- `applets/asm/`: mini assembler applet
 - `docs/`: NexBox-specific command and applet notes
 
 Docs:

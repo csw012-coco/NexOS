@@ -12,6 +12,7 @@ struct keyboard_event_record {
 struct keyboard_event keyboard_handle_scancode(uint8_t scancode);
 struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int pressed);
 int keyboard_is_ctrl_active(void);
+uint8_t keyboard_led_state(void);
 void keyboard_event_queue_push(const struct keyboard_event *event, uint32_t tick);
 int keyboard_event_queue_pop(struct keyboard_event_record *out);
 int keyboard_event_queue_get_after(uint32_t *cursor_io, struct keyboard_event_record *out);

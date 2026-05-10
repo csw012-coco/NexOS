@@ -39,6 +39,21 @@ static int fs_service_map_mount_kind(uint32_t syscall_kind, uint8_t *vfs_kind_ou
     }
 }
 
+static uint32_t fs_service_map_open_flags(uint32_t syscall_flags) {
+    uint32_t flags = 0;
+
+    if ((syscall_flags & SYS_OPEN_CREAT) != 0) {
+        flags |= VFS_OPEN_CREATE;
+    }
+    if ((syscall_flags & SYS_OPEN_TRUNC) != 0) {
+        flags |= VFS_OPEN_TRUNCATE;
+    }
+    if ((syscall_flags & SYS_OPEN_APPEND) != 0) {
+        flags |= VFS_OPEN_APPEND;
+    }
+    return flags;
+}
+
 static int fs_service_parse_disk_part_label(const char *text, uint32_t *disk_index_out, uint32_t *part_index_out) {
     uint32_t disk_index;
     uint32_t part_number;
@@ -234,14 +249,16 @@ uint64_t fs_service_open(struct process *proc, struct vfs *vfs, const char *path
     struct vfs_node node;
     uint64_t fd;
     uint32_t initial_offset = 0;
+    uint32_t vfs_flags;
 
     if (proc == 0 || !fs_service_valid_path_request(vfs, path)) {
         return (uint64_t)-1;
     }
-    if (vfs_open(vfs, path, flags, &node) != 0 || node.kind != VFS_NODE_FILE) {
+    vfs_flags = fs_service_map_open_flags(flags);
+    if (vfs_open(vfs, path, vfs_flags, &node) != 0 || node.kind != VFS_NODE_FILE) {
         return (uint64_t)-1;
     }
-    if (vfs_prepare_opened_node(vfs, &node, path, flags, &initial_offset) != 0) {
+    if (vfs_prepare_opened_node(vfs, &node, path, vfs_flags, &initial_offset) != 0) {
         return (uint64_t)-1;
     }
     fd = fs_service_open_node(proc, &node, path, &opened_file);

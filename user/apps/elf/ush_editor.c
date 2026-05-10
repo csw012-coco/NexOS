@@ -1,4 +1,5 @@
 #include "user/apps/elf/ush_shared.h"
+#include "user/libc/include/unistd.h"
 
 static char g_ush_prompt_path[64] = "/";
 static const char *g_ush_prompt_override = NULL;
@@ -80,11 +81,29 @@ static void lowercase_copy_local(char *dst, uint32_t dst_size, const char *src) 
     dst[i] = '\0';
 }
 
+static void ush_format_prompt(char *out, uint32_t out_size) {
+    char cwd[128];
+
+    if (out == NULL || out_size == 0) {
+        return;
+    }
+    if (getcwd(cwd, sizeof(cwd)) < 0 || cwd[0] == '\0') {
+        cwd[0] = '/';
+        cwd[1] = '\0';
+    }
+    if (snprintf(out, out_size, "[ush@%s]> ", cwd) < 0) {
+        copy_line_local(out, "[ush@/]> ", out_size);
+    }
+}
+
 static uint32_t ush_prompt_display_width(void) {
+    char prompt[160];
+
     if (g_ush_prompt_override != NULL) {
         return str_len_local(g_ush_prompt_override);
     }
-    return 6u + str_len_local(g_ush_prompt_path);
+    ush_format_prompt(prompt, sizeof(prompt));
+    return str_len_local(prompt );
 }
 
 static void ush_ansi_clear_line(void) {
@@ -447,9 +466,10 @@ void ush_write_error(const char *text) {
 }
 
 void ush_write_prompt(void) {
-    write_str("ush:");
-    write_str(g_ush_prompt_path);
-    write_str("> ");
+    char prompt[160];
+
+    ush_format_prompt(prompt, sizeof(prompt));
+    write_str(prompt);
 }
 
 void ush_prompt_sync(const char *cwd) {

@@ -4,9 +4,12 @@ CC := gcc
 LD := ld
 NASM := nasm
 QEMU_IMG := qemu-img
+CLANG := clang
+LLD_LINK := lld-link
 
 CFLAGS := -m32 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -Wall -Wextra -I$(ROOT)/include
 CFLAGS64 := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -Wall -Wextra -I$(ROOT)/include
+UEFI_CFLAGS := -target x86_64-unknown-windows -ffreestanding -fshort-wchar -fno-builtin -fno-stack-protector -mno-red-zone -Wall -Wextra -I$(ROOT)/include
 LDFLAGS32 := -m elf_i386
 LDFLAGS64 := -m elf_x86_64
 
@@ -16,7 +19,7 @@ STAGE2_OBJS := $(BUILD)/stage2_start.o $(BUILD)/realmode_stage2.o $(COMMON_C:$(R
 STAGE3_COMMON_C := $(ROOT)/common/runtime.c $(ROOT)/common/console.c $(ROOT)/common/disk.c $(ROOT)/common/fat16.c
 STAGE3_OBJS := $(BUILD)/stage3_start.o $(BUILD)/stage3_long_mode.o $(STAGE3_COMMON_C:$(ROOT)/common/%.c=$(BUILD)/common_stage3_%.o) $(BUILD)/stage3_main.o $(BUILD)/stage3_services.o
 
-all: $(BUILD)/bootx.img
+all: $(BUILD)/bootx.img $(BUILD)/BOOTX64.EFI
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -52,6 +55,12 @@ $(BUILD)/stage3_main.o: $(ROOT)/stage3/main.c | $(BUILD)
 $(BUILD)/stage3_services.o: $(ROOT)/stage3/services.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD)/uefi_main.obj: $(ROOT)/uefi/main.c $(ROOT)/include/bootx.h | $(BUILD)
+	$(CLANG) $(UEFI_CFLAGS) -c $< -o $@
+
+$(BUILD)/BOOTX64.EFI: $(BUILD)/uefi_main.obj
+	$(LLD_LINK) /subsystem:efi_application /entry:efi_main /nodefaultlib /out:$@ $<
+
 $(BUILD)/stage2.elf: $(STAGE2_OBJS) $(ROOT)/link/stage2.ld
 	$(LD) $(LDFLAGS32) -T $(ROOT)/link/stage2.ld -o $@ $(STAGE2_OBJS)
 
@@ -76,7 +85,7 @@ $(BUILD)/kernel64.o: $(ROOT)/sample-kernel64/kernel64.c
 $(BUILD)/kernel64.elf: $(BUILD)/kernel64.o $(ROOT)/link/kernel64.ld
 	$(LD) $(LDFLAGS64) -T $(ROOT)/link/kernel64.ld -o $@ $(BUILD)/kernel64.o
 
-$(BUILD)/bootx.img: $(BUILD)/stage2.bin $(BUILD)/stage1.bin $(BUILD)/stage3.sys $(BUILD)/kernel.elf $(BUILD)/kernel64.elf $(ROOT)/tools/bootx.cfg $(ROOT)/tools/INITRD.BIN
+$(BUILD)/bootx.img: $(BUILD)/stage2.bin $(BUILD)/stage1.bin $(BUILD)/stage3.sys $(BUILD)/BOOTX64.EFI $(BUILD)/kernel.elf $(BUILD)/kernel64.elf $(ROOT)/tools/bootx.cfg $(ROOT)/tools/INITRD.BIN
 	truncate -s 128M $@
 	parted -s $@ mklabel msdos
 	parted -s $@ mkpart primary fat32 1MiB 100%
@@ -86,8 +95,11 @@ $(BUILD)/bootx.img: $(BUILD)/stage2.bin $(BUILD)/stage1.bin $(BUILD)/stage3.sys 
 	dd if=$(BUILD)/stage1.bin of=$@ conv=notrunc bs=1 skip=510 seek=510 count=2
 	dd if=$(BUILD)/stage2.bin of=$@ conv=notrunc bs=512 seek=1
 	mmd -i $@@@1048576 ::/BOOT
+	mmd -i $@@@1048576 ::/EFI
+	mmd -i $@@@1048576 ::/EFI/BOOT
 	mmd -i $@@@1048576 ::/MOD
 	mcopy -i $@@@1048576 $(BUILD)/stage3.sys ::/STAGE3.SYS
+	mcopy -i $@@@1048576 $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 	mcopy -i $@@@1048576 $(BUILD)/kernel.elf ::/BOOT/KERNEL.ELF
 	mcopy -i $@@@1048576 $(BUILD)/kernel64.elf ::/BOOT/K64DEMO.ELF
 	mcopy -i $@@@1048576 $(ROOT)/tools/INITRD.BIN ::/MOD/INITRD.BIN

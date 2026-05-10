@@ -97,6 +97,25 @@ static void upper_in_place_local(char *text) {
     }
 }
 
+static char to_lower_ascii_local(char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (char)(ch + ('a' - 'A'));
+    }
+    return ch;
+}
+
+static void lower_in_place_local(char *text) {
+    uint32_t i = 0;
+
+    if (text == NULL) {
+        return;
+    }
+    while (text[i] != '\0') {
+        text[i] = to_lower_ascii_local(text[i]);
+        i++;
+    }
+}
+
 static int ends_with_ignore_case_local(const char *text, const char *suffix) {
     uint32_t text_len = str_len_local(text);
     uint32_t suffix_len = str_len_local(suffix);
@@ -582,6 +601,7 @@ static int ush_build_program_command(const char *arg,
 
 static int ush_build_cmd_search_command_from(const char *line,
                                              const char *cmd_dir,
+                                             int lower_name,
                                              char *out,
                                              uint32_t out_size) {
     char token[64];
@@ -595,7 +615,11 @@ static int ush_build_cmd_search_command_from(const char *line,
         out[0] = '\0';
         return 0;
     }
-    upper_in_place_local(token);
+    if (lower_name) {
+        lower_in_place_local(token);
+    } else {
+        upper_in_place_local(token);
+    }
 
     if (snprintf(out, out_size, "%s/%s", cmd_dir, token) < 0 || out[0] == '\0') {
         out[0] = '\0';
@@ -624,7 +648,11 @@ static int ush_build_cmd_search_command_from(const char *line,
 }
 
 static int ush_build_cmd_search_command(const char *line, char *out, uint32_t out_size) {
-    return ush_build_cmd_search_command_from(line, "/cmd", out, out_size);
+    return ush_build_cmd_search_command_from(line, "/cmd", 0, out, out_size);
+}
+
+static int ush_build_cmd_search_command_lower(const char *line, char *out, uint32_t out_size) {
+    return ush_build_cmd_search_command_from(line, "/cmd", 1, out, out_size);
 }
 
 static int ush_build_action_command(const char *line, char *out, uint32_t out_size) {
@@ -916,7 +944,25 @@ static int ush_try_external_command(char *cwd, const char *line, int *handled_ou
     }
 
     (void)cwd;
-    if (ush_build_cmd_search_command_from(line, "/ram/CMD", search_command, sizeof(search_command))) {
+    if (ush_build_cmd_search_command_from(line, "/ram/CMD", 0, search_command, sizeof(search_command))) {
+        rc = spawn(search_command, SYS_SPAWN_ELF, 0);
+        if (rc == 0) {
+            ush_report_foreground_exit_status();
+            if (handled_out != NULL) {
+                *handled_out = 1;
+            }
+            return ush_last_foreground_status_local();
+        }
+        if (rc < 0 && rc != -2) {
+            ush_report_exec_load_failure_local(search_command, rc);
+            if (handled_out != NULL) {
+                *handled_out = 1;
+            }
+            return 1;
+        }
+    }
+
+    if (ush_build_cmd_search_command_lower(line, search_command, sizeof(search_command))) {
         rc = spawn(search_command, SYS_SPAWN_ELF, 0);
         if (rc == 0) {
             ush_report_foreground_exit_status();

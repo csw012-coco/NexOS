@@ -1,6 +1,8 @@
 #include "user/apps/elf/nexbox/core/cmdsuite_shared.h"
 #include "user/apps/elf/nexbox/applets/fs/cmd_ls_shared.h"
 
+#define CMD_CAT_BUFFER_SIZE 512u
+
 static int starts_with_text_local(const char *text, const char *prefix) {
     uint32_t i = 0;
 
@@ -12,6 +14,23 @@ static int starts_with_text_local(const char *text, const char *prefix) {
             return 0;
         }
         i++;
+    }
+    return 1;
+}
+
+static int write_stdout_all_or_stop(const char *buf, uint32_t bytes) {
+    uint32_t offset = 0;
+
+    while (offset < bytes) {
+        ssize_t written = write(STDOUT_FILENO, buf + offset, bytes - offset);
+
+        if (written < 0) {
+            return -1;
+        }
+        if (written == 0) {
+            return 0;
+        }
+        offset += (uint32_t)written;
     }
     return 1;
 }
@@ -83,7 +102,7 @@ static int text_contains_local(const char *text, const char *pattern) {
 }
 
 int cmd_help(void) {
-    write_str("cmd commands: help actions action mapper echo clear pwd env which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm fasm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg switch_root dmesg lspci ac97 rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo dbg\n");
+    write_str("cmd commands: help actions action mapper echo clear pwd env which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo dbg\n");
     write_str("shell-only builtins: cd exit [code] exec set export alias functions history source .\n");
     write_str("multicall: nexbox <applet> [args]\n");
     write_str("set lists shell-local vars; env/export list exported environment\n");
@@ -241,10 +260,11 @@ int cmd_ls(int argc, char **argv) {
 }
 
 int cmd_cat(int argc, char **argv) {
-    char buf[64];
+    char buf[CMD_CAT_BUFFER_SIZE];
     char json_path[CMD_PATH_MAX + 8u];
     int fd = STDIN_FILENO;
     uint8_t last_was_newline = 1u;
+    int output_closed = 0;
     int json = 0;
     int path_index = 1;
 
@@ -303,12 +323,26 @@ int cmd_cat(int argc, char **argv) {
             break;
         }
         bytes = (uint32_t)read_rc;
-        (void)write(STDOUT_FILENO, buf, bytes);
+        {
+            int write_rc = write_stdout_all_or_stop(buf, bytes);
+
+            if (write_rc < 0) {
+                write_err_str("cat: write failed\n");
+                if (fd != STDIN_FILENO) {
+                    close((uint32_t)fd);
+                }
+                return 1;
+            }
+            if (write_rc == 0) {
+                output_closed = 1;
+                break;
+            }
+        }
         last_was_newline = buf[bytes - 1u] == '\n' ? 1u : 0u;
     }
     if (fd != STDIN_FILENO) {
         close((uint32_t)fd);
-        if (!last_was_newline) {
+        if (!output_closed && !last_was_newline) {
             write_str("\n");
         }
     }

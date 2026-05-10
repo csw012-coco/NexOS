@@ -23,6 +23,8 @@ enum keyboard_keycode {
     KEYBOARD_KEY_LEFT_CTRL,
     KEYBOARD_KEY_RIGHT_CTRL,
     KEYBOARD_KEY_CAPS_LOCK,
+    KEYBOARD_KEY_NUM_LOCK,
+    KEYBOARD_KEY_SCROLL_LOCK,
     KEYBOARD_KEY_A,
     KEYBOARD_KEY_B,
     KEYBOARD_KEY_C,
@@ -81,4 +83,6 @@ struct keyboard_event {
     uint8_t shift;
     uint8_t ctrl;
     uint8_t caps_lock;
+    uint8_t num_lock;
+    uint8_t scroll_lock;
 };

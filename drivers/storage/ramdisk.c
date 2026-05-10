@@ -98,6 +98,10 @@ static int ramdisk_module_is_writable(const char name[12]) {
     return name != 0 && streq(name, "RAMDISK IMG");
 }
 
+static int ramdisk_module_is_block_image(const char name[12]) {
+    return name != 0 && name[8] == 'I' && name[9] == 'M' && name[10] == 'G';
+}
+
 static void ramdisk_name_to_83(char out[12], const char *name) {
     uint32_t pos = 0;
     uint32_t ext = 8;
@@ -145,7 +149,8 @@ void ramdisk_init_from_boot_modules(const struct bootx_boot_info *boot_info) {
         struct ramdisk_device *ramdisk = &g_ramdisks[registered];
         uint64_t size = modules[i].size;
 
-        if (modules[i].address == 0 || size < RAMDISK_BLOCK_SIZE) {
+        if (modules[i].address == 0 || size < RAMDISK_BLOCK_SIZE ||
+            !ramdisk_module_is_block_image(modules[i].name)) {
             continue;
         }
         for (uint32_t j = 0; j < sizeof(ramdisk->name); j++) {

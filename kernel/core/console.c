@@ -16,6 +16,50 @@ static uint16_t console_text_rows(void) {
     return hal_display_text_rows();
 }
 
+static uint32_t console_pack_cell(uint32_t codepoint, uint8_t color, uint32_t flags) {
+    if (codepoint > 0x10ffffu || (codepoint >= 0xd800u && codepoint <= 0xdfffu)) {
+        codepoint = 0xfffdu;
+    }
+    return ((uint32_t)color << HAL_DISPLAY_CELL_COLOR_SHIFT) |
+           (flags & HAL_DISPLAY_CELL_FLAGS_MASK) |
+           (codepoint & HAL_DISPLAY_CELL_CODEPOINT_MASK);
+}
+
+static uint32_t console_blank_cell_with_color(uint8_t color) {
+    return console_pack_cell(' ', color, 0);
+}
+
+static uint8_t console_cell_is_wide(uint32_t cell) {
+    return (cell & HAL_DISPLAY_CELL_WIDE) != 0u;
+}
+
+static uint8_t console_cell_is_cont(uint32_t cell) {
+    return (cell & HAL_DISPLAY_CELL_CONT) != 0u;
+}
+
+static uint8_t console_codepoint_width(uint32_t codepoint) {
+    if ((codepoint >= 0x0300u && codepoint <= 0x036fu) ||
+        (codepoint >= 0x1ab0u && codepoint <= 0x1affu) ||
+        (codepoint >= 0x1dc0u && codepoint <= 0x1dffu) ||
+        (codepoint >= 0x20d0u && codepoint <= 0x20ffu) ||
+        (codepoint >= 0xfe20u && codepoint <= 0xfe2fu)) {
+        return 0;
+    }
+    if ((codepoint >= 0x1100u && codepoint <= 0x115fu) ||
+        (codepoint >= 0x2329u && codepoint <= 0x232au) ||
+        (codepoint >= 0x2e80u && codepoint <= 0xa4cfu) ||
+        (codepoint >= 0xac00u && codepoint <= 0xd7a3u) ||
+        (codepoint >= 0xf900u && codepoint <= 0xfaffu) ||
+        (codepoint >= 0xfe10u && codepoint <= 0xfe19u) ||
+        (codepoint >= 0xfe30u && codepoint <= 0xfe6fu) ||
+        (codepoint >= 0xff00u && codepoint <= 0xff60u) ||
+        (codepoint >= 0xffe0u && codepoint <= 0xffe6u) ||
+        (codepoint >= 0x20000u && codepoint <= 0x3fffdu)) {
+        return 2;
+    }
+    return 1;
+}
+
 static uint32_t console_live_top_line(const struct console *console) {
     uint16_t height = console_height(console);
 
@@ -33,16 +77,16 @@ static uint32_t console_line_to_slot(uint32_t line) {
     return line % CONSOLE_SCROLLBACK_LINES;
 }
 
-static uint16_t console_blank_cell(const struct console *console) {
-    return (uint16_t)(((uint16_t)console->default_color << 8) | (uint8_t)' ');
+static uint32_t console_blank_cell(const struct console *console) {
+    return console_blank_cell_with_color(console->default_color);
 }
 
-static uint16_t console_history_cell(const struct console *console, uint32_t line, uint16_t col) {
+static uint32_t console_history_cell(const struct console *console, uint32_t line, uint16_t col) {
     return console->history[console_line_to_slot(line)][col];
 }
 
 static void console_clear_history_line(struct console *console, uint32_t line, uint8_t color) {
-    uint16_t cell = (uint16_t)(((uint16_t)color << 8) | (uint8_t)' ');
+    uint32_t cell = console_blank_cell_with_color(color);
     uint32_t slot = console_line_to_slot(line);
 
     for (uint16_t col = 0; col < console_text_width(); col++) {
@@ -50,9 +94,61 @@ static void console_clear_history_line(struct console *console, uint32_t line, u
     }
 }
 
-static void console_set_history_cell(struct console *console, uint32_t line, uint16_t col, uint8_t color, char ch) {
+static void console_set_history_cell(struct console *console,
+                                     uint32_t line,
+                                     uint16_t col,
+                                     uint8_t color,
+                                     uint32_t codepoint,
+                                     uint32_t flags) {
     console->history[console_line_to_slot(line)][col] =
-        (uint16_t)(((uint16_t)color << 8) | (uint8_t)ch);
+        console_pack_cell(codepoint, color, flags);
+}
+
+static int console_visible_row_for_line(const struct console *console, uint32_t line, uint16_t *row_out) {
+    uint16_t height = console_height(console);
+
+    if (line < console->view_top_line || line >= console->view_top_line + height) {
+        return 0;
+    }
+    *row_out = (uint16_t)(console->top_row + (uint16_t)(line - console->view_top_line));
+    return 1;
+}
+
+static void console_write_display_cell_if_visible(const struct console *console, uint32_t line, uint16_t col) {
+    uint16_t row = 0;
+
+    if (console_visible_row_for_line(console, line, &row)) {
+        hal_display_write_cell(row, col, console_history_cell(console, line, col));
+    }
+}
+
+static void console_clear_overlapping_cells(struct console *console,
+                                            uint32_t line,
+                                            uint16_t col,
+                                            uint8_t cell_width,
+                                            uint8_t color) {
+    uint16_t text_width = console_text_width();
+    uint16_t start = col;
+    uint16_t end;
+    uint32_t blank = console_blank_cell_with_color(color);
+
+    if (text_width == 0u || col >= text_width) {
+        return;
+    }
+    end = (uint16_t)(col + (cell_width != 0u ? cell_width - 1u : 0u));
+    if (end >= text_width) {
+        end = (uint16_t)(text_width - 1u);
+    }
+    if (start > 0u && console_cell_is_cont(console_history_cell(console, line, start))) {
+        start--;
+    }
+    if (end + 1u < text_width && console_cell_is_wide(console_history_cell(console, line, end))) {
+        end++;
+    }
+    for (uint16_t cur = start; cur <= end; cur++) {
+        console->history[console_line_to_slot(line)][cur] = blank;
+        console_write_display_cell_if_visible(console, line, cur);
+    }
 }
 
 static void console_update_cursor_row(struct console *console) {
@@ -72,12 +168,12 @@ static void console_update_cursor_row(struct console *console) {
 }
 
 static void console_render_row(const struct console *console, uint16_t row) {
-    uint16_t blank = console_blank_cell(console);
+    uint32_t blank = console_blank_cell(console);
     uint32_t history_end = console->history_base_line + console->history_line_count;
     uint32_t line = console->view_top_line + (uint32_t)(row - console->top_row);
 
     for (uint16_t col = 0; col < console_text_width(); col++) {
-        uint16_t cell = blank;
+        uint32_t cell = blank;
 
         if (line >= console->history_base_line && line < history_end) {
             cell = console_history_cell(console, line, col);
@@ -259,47 +355,87 @@ void console_put_at(const struct console *console, uint16_t row, uint16_t col, c
 
     console_resume_live_view(mutable_console);
     line = console_row_to_line(mutable_console, row);
-    console_set_history_cell(mutable_console, line, col, color, ch);
-    hal_display_write_cell(row, col, console_history_cell(mutable_console, line, col));
+    console_clear_overlapping_cells(mutable_console, line, col, 1u, color);
+    console_set_history_cell(mutable_console, line, col, color, (uint8_t)ch, 0);
+    console_write_display_cell_if_visible(mutable_console, line, col);
     console_sync_cursor(mutable_console);
 }
 
 void console_putc(struct console *console, char ch, uint8_t color) {
+    console_put_codepoint(console, (uint8_t)ch, color);
+}
+
+void console_put_codepoint(struct console *console, uint32_t codepoint, uint8_t color) {
+    uint8_t cell_width;
+    uint16_t text_width;
+
     console_resume_live_view(console);
 
-    if (ch == '\n') {
+    if (codepoint == '\n') {
         console_newline(console);
         return;
     }
-    if (ch == '\r') {
+    if (codepoint == '\r') {
         console->cursor_col = 0;
         console_sync_cursor(console);
         return;
     }
-    if (ch == '\b') {
+    if (codepoint == '\b') {
         if (console->cursor_col != 0) {
             console->cursor_col--;
         } else if (console->cursor_line > console->history_base_line) {
             console->cursor_line--;
             console->cursor_col = (uint16_t)(console_text_width() - 1u);
         }
+        if (console->cursor_col > 0u &&
+            console_cell_is_cont(console_history_cell(console, console->cursor_line, console->cursor_col))) {
+            console->cursor_col--;
+        }
         console_update_cursor_row(console);
-        console_set_history_cell(console, console->cursor_line, console->cursor_col, color, ' ');
-        hal_display_write_cell(console->cursor_row,
-                               console->cursor_col,
-                               console_history_cell(console, console->cursor_line, console->cursor_col));
+        console_clear_overlapping_cells(console, console->cursor_line, console->cursor_col, 1u, color);
         console_sync_cursor(console);
         return;
     }
-    if (console->cursor_col >= console_text_width()) {
+    if (codepoint > 0x10ffffu || (codepoint >= 0xd800u && codepoint <= 0xdfffu)) {
+        codepoint = 0xfffdu;
+    }
+
+    cell_width = console_codepoint_width(codepoint);
+    if (cell_width == 0u) {
+        return;
+    }
+
+    text_width = console_text_width();
+    if (text_width == 0u) {
+        return;
+    }
+    if (cell_width > text_width) {
+        codepoint = '?';
+        cell_width = 1u;
+    }
+    if (console->cursor_col >= text_width ||
+        console->cursor_col + (uint16_t)cell_width > text_width) {
         console_newline(console);
     }
 
-    console_set_history_cell(console, console->cursor_line, console->cursor_col, color, ch);
-    hal_display_write_cell(console->cursor_row,
-                           console->cursor_col,
-                           console_history_cell(console, console->cursor_line, console->cursor_col));
-    console->cursor_col++;
+    console_clear_overlapping_cells(console, console->cursor_line, console->cursor_col, cell_width, color);
+    console_set_history_cell(console,
+                             console->cursor_line,
+                             console->cursor_col,
+                             color,
+                             codepoint,
+                             cell_width == 2u ? HAL_DISPLAY_CELL_WIDE : 0u);
+    console_write_display_cell_if_visible(console, console->cursor_line, console->cursor_col);
+    if (cell_width == 2u) {
+        console_set_history_cell(console,
+                                 console->cursor_line,
+                                 (uint16_t)(console->cursor_col + 1u),
+                                 color,
+                                 codepoint,
+                                 HAL_DISPLAY_CELL_CONT);
+        console_write_display_cell_if_visible(console, console->cursor_line, (uint16_t)(console->cursor_col + 1u));
+    }
+    console->cursor_col = (uint16_t)(console->cursor_col + cell_width);
     console_sync_cursor(console);
 }
 

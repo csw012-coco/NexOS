@@ -21,7 +21,7 @@
 #define KERNEL_SCRATCH_MAX (512 * 1024u)
 #define BOOTX_CMDLINE_MAX 160u
 #define BOOTX_MAX_MODULES 8u
-#define BOOTX_MAX_MEMMAP 8u
+#define BOOTX_MAX_MEMMAP 64u
 
 enum bootx_memmap_type {
     BOOTX_MEMMAP_USABLE = 1,

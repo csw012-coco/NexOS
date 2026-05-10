@@ -20,8 +20,6 @@ struct ed_address_range {
     int32_t end;
 };
 
-static struct ed_buffer g_ed_buffer;
-
 static uint32_t ed_read_stdin_line_local(char *line, uint32_t size) {
     ssize_t got;
 
@@ -416,8 +414,6 @@ struct vi_screen {
     uint32_t text_rows;
     uint32_t status_row;
 };
-
-static struct ed_buffer g_vi_buffer;
 
 static void vi_query_screen_local(struct vi_screen *screen) {
     struct syscall_machine_info info;
@@ -831,7 +827,7 @@ static int vi_read_command_local(char *out, uint32_t size, const struct vi_scree
 }
 
 int cmd_vi(int argc, char **argv) {
-    struct ed_buffer *buffer = &g_vi_buffer;
+    struct ed_buffer *buffer;
     uint32_t row = 0u;
     uint32_t col = 0u;
     uint32_t top_row = 0u;
@@ -848,16 +844,16 @@ int cmd_vi(int argc, char **argv) {
     int dirty_status = 1;
     int dirty_cursor = 1;
 
-    buffer->path[0] = '\0';
-    buffer->count = 0u;
-    buffer->current = 0u;
-    buffer->dirty = 0u;
-    status[0] = '\0';
-
     if (argc > 2) {
         write_err_usage("vi", " [path]\n");
         return 1;
     }
+    buffer = (struct ed_buffer *)calloc(1u, sizeof(*buffer));
+    if (buffer == NULL) {
+        write_err_str("vi: out of memory\n");
+        return 1;
+    }
+    status[0] = '\0';
     if (argc == 2 && argv[1][0] != '\0') {
         copy_line_local(buffer->path, argv[1], sizeof(buffer->path));
         if (!ed_load_file_local(buffer, argv[1])) {
@@ -1065,10 +1061,12 @@ int cmd_vi(int argc, char **argv) {
                     continue;
                 }
                 write_str("\x1b[2J\x1b[H");
+                free(buffer);
                 return 0;
             }
             if (streq_local(command, "q!")) {
                 write_str("\x1b[2J\x1b[H");
+                free(buffer);
                 return 0;
             }
             if (streq_local(command, "w") ||
@@ -1091,6 +1089,7 @@ int cmd_vi(int argc, char **argv) {
                 dirty_status = 1;
                 if (streq_local(command, "wq") || streq_local(command, "x")) {
                     write_str("\x1b[2J\x1b[H");
+                    free(buffer);
                     return 0;
                 }
                 continue;
@@ -1102,17 +1101,17 @@ int cmd_vi(int argc, char **argv) {
 }
 
 int cmd_ed(int argc, char **argv) {
-    struct ed_buffer *buffer = &g_ed_buffer;
+    struct ed_buffer *buffer;
     char line[ED_LINE_MAX];
     int quit_armed = 0;
 
-    buffer->path[0] = '\0';
-    buffer->count = 0u;
-    buffer->current = 0u;
-    buffer->dirty = 0u;
-
     if (argc > 2) {
         write_err_usage("ed", " [path]\n");
+        return 1;
+    }
+    buffer = (struct ed_buffer *)calloc(1u, sizeof(*buffer));
+    if (buffer == NULL) {
+        write_err_str("ed: out of memory\n");
         return 1;
     }
     if (argc == 2 && argv[1][0] != '\0') {
@@ -1133,6 +1132,7 @@ int cmd_ed(int argc, char **argv) {
         write_str(": ");
         if (ed_read_stdin_line_local(line, sizeof(line)) == 0u) {
             write_err_str("?\n");
+            free(buffer);
             return 1;
         }
         trim_line(line);
@@ -1286,6 +1286,7 @@ int cmd_ed(int argc, char **argv) {
                 quit_armed = 1;
                 continue;
             }
+            free(buffer);
             return 0;
         }
 

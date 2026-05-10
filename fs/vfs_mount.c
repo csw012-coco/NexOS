@@ -5,6 +5,14 @@ static int vfs_mount_fail(enum vfs_mount_error error) {
     return -(int)error;
 }
 
+static int vfs_lba_to_u32(uint64_t lba, uint32_t *out) {
+    if (out == 0 || lba > 0xffffffffull) {
+        return -1;
+    }
+    *out = (uint32_t)lba;
+    return 0;
+}
+
 static int vfs_mount_root_from_source(struct vfs *vfs,
                                       uint8_t mount_kind,
                                       struct block_device *dev,
@@ -44,7 +52,9 @@ static int vfs_resolve_mount_source(uint32_t disk_index,
         if (blockdev_partition_get(dev, part_index, &part) != 0) {
             return vfs_mount_fail(VFS_MOUNT_ERR_PARTITION_NOT_FOUND);
         }
-        *partition_lba_out = part.start_lba;
+        if (vfs_lba_to_u32(part.start_lba, partition_lba_out) != 0) {
+            return vfs_mount_fail(VFS_MOUNT_ERR_PARTITION_NOT_FOUND);
+        }
     }
     *dev_out = dev;
     return 0;

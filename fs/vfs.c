@@ -367,6 +367,11 @@ void vfs_init(struct vfs *vfs) {
     vfs->nxfs.mounted = 0;
     vfs->root_kind = VFS_MOUNT_NONE;
     vfs->root_slot = 0;
+    vfs->devfs_block_buffer[0] = 0;
+    vfs->procfs_text[0] = '\0';
+    vfs->eventfs_text[0] = '\0';
+    vfs->eventfs_text_size = 0;
+    vfs->eventfs_text_node = 0;
     for (uint32_t i = 0; i < VFS_MOUNT_SLOT_MAX; i++) {
         vfs_reset_mount_slot(vfs, i);
     }

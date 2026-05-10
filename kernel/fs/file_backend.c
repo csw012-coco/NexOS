@@ -21,7 +21,15 @@ static int64_t file_vfs_read(struct file *file,
                              void *buffer,
                              uint32_t size,
                              uint32_t flags) {
-    return vfs_read((struct vfs *)vfs, &file->vfs_node, &file->offset, buffer, size, flags);
+    uint32_t vfs_flags = VFS_READ_BLOCKING;
+
+    if ((flags & KERNEL_FILE_READ_NONBLOCK) != 0) {
+        vfs_flags |= VFS_READ_NONBLOCK;
+    }
+    if ((flags & KERNEL_FILE_READ_CHAR) != 0) {
+        vfs_flags |= VFS_READ_CHAR;
+    }
+    return vfs_read((struct vfs *)vfs, &file->vfs_node, &file->offset, buffer, size, vfs_flags);
 }
 
 static int64_t file_vfs_write(struct file *file,

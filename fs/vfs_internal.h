@@ -8,9 +8,6 @@
 enum {
     VFS_ATTR_DIR = 0x10u,
     VFS_NODE_FLAG_ROOT_VIEW = 0x1u,
-    VFS_NODE_FLAG_ROOT_DEV_EMITTED = 0x2u,
-    VFS_NODE_FLAG_ROOT_PROC_EMITTED = 0x4u,
-    VFS_NODE_FLAG_ROOT_EVENT_EMITTED = 0x8u,
     VFS_PROC_ROOT = 1u,
     VFS_PROC_MEMINFO = 2u,
     VFS_PROC_MOUNTS = 3u,
@@ -40,6 +37,7 @@ enum {
     VFS_DEV_MAJOR_TTY = 4u,
     VFS_DEV_MAJOR_MISC = 5u,
     VFS_DEV_MAJOR_BLOCK = 8u,
+    VFS_DEV_MAJOR_FRAMEBUFFER = 29u,
     VFS_DEV_TTY = 1u,
     VFS_DEV_NULL = 2u,
     VFS_DEV_ZERO = 3u,
@@ -48,7 +46,10 @@ enum {
     VFS_DEV_STDERR = 6u,
     VFS_DEV_BLOCK_DEVICE = 7u,
     VFS_DEV_BLOCK_PARTITION = 8u,
-    VFS_DEV_BLOCK_BUFFER_SIZE = 512u
+    VFS_DEV_FRAMEBUFFER = 9u,
+    VFS_DEV_BLOCK_BUFFER_SIZE = 512u,
+    VFS_PROC_TEXT_BUFFER_SIZE = 4096u,
+    VFS_EVENT_TEXT_BUFFER_SIZE = 2048u
 };
 
 struct vfs_path {
@@ -87,6 +88,17 @@ struct vfs_mount_instance {
     uint32_t partition_lba;
 };
 
+struct vfs_proc_action_entry {
+    const char *name;
+    const char *group;
+    const char *command;
+    const char *input_schema;
+    const char *output_schema;
+    uint32_t cap_flags;
+    const char *caps;
+    const char *summary;
+};
+
 struct vfs_mount_ops {
     int (*open_file)(struct vfs *vfs, const struct vfs_path *parsed, uint32_t flags, struct vfs_node *out);
     int (*open_dir)(struct vfs *vfs, const struct vfs_path *parsed, struct vfs_node *out);
@@ -113,6 +125,11 @@ struct vfs {
     struct nxfs_volume nxfs;
     uint8_t root_kind;
     uint32_t root_slot;
+    uint8_t devfs_block_buffer[VFS_DEV_BLOCK_BUFFER_SIZE];
+    char procfs_text[VFS_PROC_TEXT_BUFFER_SIZE];
+    char eventfs_text[VFS_EVENT_TEXT_BUFFER_SIZE];
+    uint32_t eventfs_text_size;
+    uint32_t eventfs_text_node;
     struct {
         uint8_t used;
         uint8_t kind;
@@ -140,6 +157,8 @@ int vfs_get_builtin_mount_info(const struct vfs *vfs, uint32_t index, struct vfs
 uint32_t vfs_builtin_mount_provider_count(void);
 const struct vfs_builtin_mount_provider *vfs_builtin_mount_provider_at(uint32_t index);
 const struct vfs_builtin_mount_provider *vfs_builtin_mount_provider(uint8_t kind);
+uint32_t vfs_proc_action_count(void);
+const struct vfs_proc_action_entry *vfs_proc_action_at(uint32_t index);
 const struct vfs_mount_ops *vfs_mount_ops(uint8_t mount_kind);
 int vfs_open_fat32(struct vfs *vfs, const struct vfs_path *parsed, uint32_t flags, struct vfs_node *out);
 int vfs_open_nxfs(struct vfs *vfs, const struct vfs_path *parsed, uint32_t flags, struct vfs_node *out);
@@ -203,16 +222,43 @@ int vfs_procfs_lookup(const char *name, struct vfs_node *out);
 int vfs_procfs_opendir(const char *name, struct vfs_node *out);
 int vfs_eventfs_lookup(const char *name, struct vfs_node *out);
 int vfs_eventfs_opendir(const char *name, struct vfs_node *out);
+int64_t vfs_read_from_procfs(struct vfs *vfs,
+                             struct vfs_node *node,
+                             uint32_t *offset_io,
+                             void *buffer,
+                             uint32_t size);
+int64_t vfs_read_from_eventfs(struct vfs *vfs,
+                              struct vfs_node *node,
+                              uint32_t *offset_io,
+                              void *buffer,
+                              uint32_t size);
+int64_t vfs_read_dir_procfs(struct vfs_node *node, uint32_t *index_io, struct vfs_dirent *entry);
+int64_t vfs_read_dir_eventfs(struct vfs_node *node, uint32_t *index_io, struct vfs_dirent *entry);
+int64_t vfs_read_from_devfs(struct vfs *vfs,
+                            struct vfs_node *node,
+                            uint32_t *offset_io,
+                            void *buffer,
+                            uint32_t size,
+                            uint32_t flags);
+int64_t vfs_write_to_devfs(struct vfs *vfs,
+                           struct vfs_node *node,
+                           uint32_t *offset_io,
+                           const void *buffer,
+                           uint32_t size);
+int64_t vfs_read_dir_devfs(uint32_t *index_io, struct vfs_dirent *entry);
+uint32_t vfs_devfs_file_size(const struct vfs_node *node);
 struct block_device *vfs_blockdev_from_node(const struct vfs_node *node,
                                             uint64_t *base_lba_out,
                                             uint64_t *block_count_out);
-int64_t vfs_blockdev_read_bytes(struct block_device *dev,
+int64_t vfs_blockdev_read_bytes(struct vfs *vfs,
+                                struct block_device *dev,
                                 uint64_t base_lba,
                                 uint64_t block_count,
                                 uint32_t *offset_io,
                                 void *buffer,
                                 uint32_t size);
-int64_t vfs_blockdev_write_bytes(struct block_device *dev,
+int64_t vfs_blockdev_write_bytes(struct vfs *vfs,
+                                 struct block_device *dev,
                                  uint64_t base_lba,
                                  uint64_t block_count,
                                  uint32_t *offset_io,

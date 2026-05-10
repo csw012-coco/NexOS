@@ -22,6 +22,12 @@ enum {
     HAL_TEXT_HEIGHT = 80
 };
 
+#define HAL_DISPLAY_CELL_CODEPOINT_MASK 0x001fffffu
+#define HAL_DISPLAY_CELL_WIDE 0x00200000u
+#define HAL_DISPLAY_CELL_CONT 0x00400000u
+#define HAL_DISPLAY_CELL_FLAGS_MASK 0x00e00000u
+#define HAL_DISPLAY_CELL_COLOR_SHIFT 24u
+
 void hal_paging_init(uint64_t kernel_phys_addr);
 void hal_display_load_font(const struct bootx_boot_info *boot_info);
 void hal_display_init(const struct bootx_console_info *console);
@@ -42,6 +48,7 @@ int hal_paging_unmap_page(uint64_t virt_addr, uint64_t *phys_addr);
 int hal_paging_get_mapping(uint64_t virt_addr, uint64_t *phys_addr);
 int hal_paging_get_mapping_info(uint64_t virt_addr, uint64_t *phys_addr, uint64_t *flags);
 void *hal_phys_direct_map(uint64_t phys_addr);
+void *hal_mmio_map(uint64_t phys_addr, uint64_t length);
 void hal_timer_init(uint32_t pit_hz);
 void hal_timer_notify_tick(void);
 uint32_t hal_timer_current_ticks(void);
@@ -49,8 +56,8 @@ uint32_t hal_timer_hz(void);
 void hal_irq_ack(uint8_t irq);
 void hal_irq_set_mask(uint8_t irq, int masked);
 uint8_t hal_keyboard_read_scancode(void);
-uint16_t hal_display_read_cell(uint16_t row, uint16_t col);
-void hal_display_write_cell(uint16_t row, uint16_t col, uint16_t value);
+uint32_t hal_display_read_cell(uint16_t row, uint16_t col);
+void hal_display_write_cell(uint16_t row, uint16_t col, uint32_t value);
 void hal_display_clear_row(uint16_t row, uint8_t color);
 void hal_display_put_at(uint16_t row, uint16_t col, uint8_t color, char ch);
 void hal_display_enable_cursor(uint8_t start, uint8_t end);

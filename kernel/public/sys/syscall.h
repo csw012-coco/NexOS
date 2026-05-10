@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
-#include "bootx.h"
+#include "bootx/bootx.h"
 #include "kernel/public/sys/system_limits.h"
 
 struct tty;
@@ -54,7 +54,8 @@ enum syscall_number {
     SYS_RTL8139_TX_TEST = 62,
     SYS_RTL8139_RX_DUMP = 63,
     SYS_RTL8139_TX_SEND = 64,
-    SYS_MAX = 65
+    SYS_REBOOT = 65,
+    SYS_MAX = 66
 };
 
 enum syscall_read_flags {
@@ -222,8 +223,8 @@ struct syscall_partition_info {
     uint32_t disk_index;
     uint32_t slot;
     uint32_t part_index;
-    uint32_t start_lba;
-    uint32_t sector_count;
+    uint64_t start_lba;
+    uint64_t sector_count;
     uint32_t type;
     uint32_t bootable;
 };

@@ -1,5 +1,6 @@
 #include "drivers/video/framebuffer.h"
 #include "drivers/video/framebuffer_font.h"
+#include "hal/hal.h"
 #include <stddef.h>
 #include "lib/string.h"
 
@@ -10,7 +11,16 @@ enum {
     FRAMEBUFFER_FONT_HEIGHT = 16,
     FRAMEBUFFER_FONT_HEIGHT_SMALL = 8,
     FRAMEBUFFER_CURSOR_UNDERLINE_ROWS = 2,
-    FRAMEBUFFER_CURSOR_BLINK_TICKS = 50
+    FRAMEBUFFER_CURSOR_BLINK_TICKS = 50,
+    FRAMEBUFFER_GLYPH_CACHE_SIZE = 2048,
+    FRAMEBUFFER_FONT_INDEX_PAGES = 0x1100
+};
+
+struct framebuffer_cached_glyph {
+    uint32_t codepoint;
+    uint8_t valid;
+    uint8_t width;
+    uint16_t rows[FRAMEBUFFER_FONT_HEIGHT];
 };
 
 struct framebuffer_display_state {
@@ -36,11 +46,17 @@ struct framebuffer_display_state {
     uint16_t cursor_row;
     uint16_t cursor_col;
     uint32_t cursor_blink_ticks;
-    uint16_t cells[FRAMEBUFFER_TEXT_MAX_ROWS][FRAMEBUFFER_TEXT_MAX_COLUMNS];
+    uint32_t cells[FRAMEBUFFER_TEXT_MAX_ROWS][FRAMEBUFFER_TEXT_MAX_COLUMNS];
 };
 
 static struct framebuffer_display_state g_framebuffer_display;
 static uint8_t g_framebuffer_active_font[256 * FRAMEBUFFER_FONT_HEIGHT];
+static struct framebuffer_cached_glyph g_framebuffer_glyph_cache[FRAMEBUFFER_GLYPH_CACHE_SIZE];
+static uint32_t g_framebuffer_glyph_cache_next;
+static const char *g_framebuffer_font_module_text;
+static uint32_t g_framebuffer_font_module_size;
+static uint32_t g_framebuffer_font_page_offsets[FRAMEBUFFER_FONT_INDEX_PAGES];
+static uint8_t g_framebuffer_font_page_valid[FRAMEBUFFER_FONT_INDEX_PAGES];
 
 static const uint32_t g_framebuffer_palette[16][3] = {
     {0x00u, 0x00u, 0x00u},
@@ -60,6 +76,27 @@ static const uint32_t g_framebuffer_palette[16][3] = {
     {0xffu, 0xffu, 0x55u},
     {0xffu, 0xffu, 0xffu}
 };
+
+static uint32_t framebuffer_pack_cell(uint32_t codepoint, uint8_t color, uint32_t flags) {
+    return ((uint32_t)color << HAL_DISPLAY_CELL_COLOR_SHIFT) |
+           (flags & HAL_DISPLAY_CELL_FLAGS_MASK) |
+           (codepoint & HAL_DISPLAY_CELL_CODEPOINT_MASK);
+}
+
+static uint32_t framebuffer_blank_cell(uint8_t color) {
+    return framebuffer_pack_cell(' ', color, 0);
+}
+
+static void framebuffer_glyph_cache_clear(void) {
+    g_framebuffer_glyph_cache_next = 0;
+    for (uint32_t i = 0; i < FRAMEBUFFER_GLYPH_CACHE_SIZE; i++) {
+        g_framebuffer_glyph_cache[i].valid = 0;
+    }
+    for (uint32_t i = 0; i < FRAMEBUFFER_FONT_INDEX_PAGES; i++) {
+        g_framebuffer_font_page_valid[i] = 0;
+        g_framebuffer_font_page_offsets[i] = 0;
+    }
+}
 
 static uint32_t framebuffer_pack_rgb(const struct framebuffer_display_state *state,
                                      uint8_t r,
@@ -171,21 +208,84 @@ static int framebuffer_parse_hex_byte(const char *text, uint8_t *value) {
     return 1;
 }
 
-static int framebuffer_parse_hex_codepoint(const char *text, uint32_t *value) {
+static int framebuffer_parse_hex_codepoint(const char *text,
+                                           uint32_t len,
+                                           uint32_t *digits_out,
+                                           uint32_t *value) {
     uint32_t result = 0;
+    uint32_t digits = 0;
 
     if (text == 0 || value == 0) {
         return 0;
     }
-    for (uint32_t i = 0; i < 4; i++) {
-        int digit = framebuffer_hex_digit_value(text[i]);
+    while (digits < len && text[digits] != ':') {
+        int digit = framebuffer_hex_digit_value(text[digits]);
+
         if (digit < 0) {
             return 0;
         }
+        if (digits >= 6u) {
+            return 0;
+        }
         result = (result << 4) | (uint32_t)digit;
+        digits++;
+    }
+    if (digits == 0u || digits >= len || text[digits] != ':' || result > 0x10ffffu) {
+        return 0;
+    }
+    if (digits_out != 0) {
+        *digits_out = digits;
     }
     *value = result;
     return 1;
+}
+
+static int framebuffer_parse_hex_glyph(const char *text,
+                                       uint32_t len,
+                                       uint8_t *width,
+                                       uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]) {
+    uint32_t bytes_per_row;
+
+    if (text == 0 || width == 0 || rows == 0) {
+        return 0;
+    }
+    if (len == FRAMEBUFFER_FONT_HEIGHT * 2u) {
+        bytes_per_row = 1;
+        *width = 8;
+    } else if (len == FRAMEBUFFER_FONT_HEIGHT * 4u) {
+        bytes_per_row = 2;
+        *width = 16;
+    } else {
+        return 0;
+    }
+
+    for (uint32_t row = 0; row < FRAMEBUFFER_FONT_HEIGHT; row++) {
+        uint16_t bits = 0;
+
+        for (uint32_t byte = 0; byte < bytes_per_row; byte++) {
+            uint8_t value = 0;
+
+            if (!framebuffer_parse_hex_byte(text + (row * bytes_per_row + byte) * 2u, &value)) {
+                return 0;
+            }
+            bits = (uint16_t)((bits << 8) | value);
+        }
+        rows[row] = bits;
+    }
+    return 1;
+}
+
+static int framebuffer_parse_hex_font_line(const char *line,
+                                           uint32_t len,
+                                           uint32_t *codepoint,
+                                           uint8_t *width,
+                                           uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]) {
+    uint32_t digits = 0;
+
+    if (!framebuffer_parse_hex_codepoint(line, len, &digits, codepoint)) {
+        return 0;
+    }
+    return framebuffer_parse_hex_glyph(line + digits + 1u, len - digits - 1u, width, rows);
 }
 
 static int framebuffer_module_name_eq(const char name[12], const char *target) {
@@ -196,9 +296,10 @@ static int framebuffer_module_name_eq(const char name[12], const char *target) {
     if (target == 0) {
         return 0;
     }
-    for (i = 0; i < sizeof(padded); i++) {
+    for (i = 0; i < sizeof(padded) - 1u; i++) {
         padded[i] = ' ';
     }
+    padded[sizeof(padded) - 1u] = '\0';
     while (target[i] != '\0' && out < 11u) {
         if (target[i] == '.') {
             out = 8u;
@@ -219,6 +320,9 @@ static void framebuffer_font_reset_to_builtin(void) {
     for (uint32_t i = 0; i < sizeof(g_framebuffer_active_font); i++) {
         g_framebuffer_active_font[i] = g_framebuffer_font[i];
     }
+    g_framebuffer_font_module_text = 0;
+    g_framebuffer_font_module_size = 0;
+    framebuffer_glyph_cache_clear();
 }
 
 static int framebuffer_try_load_hex_font_module(const struct bootx_module *module) {
@@ -231,32 +335,43 @@ static int framebuffer_try_load_hex_font_module(const struct bootx_module *modul
     }
 
     text = (const char *)(uintptr_t)module->address;
-    while (offset + 37u <= module->size) {
+    g_framebuffer_font_module_text = text;
+    g_framebuffer_font_module_size = module->size;
+    framebuffer_glyph_cache_clear();
+
+    while (offset < module->size) {
         uint32_t codepoint = 0;
         uint32_t line_start = offset;
+        uint32_t line_end;
+        uint8_t glyph_width = 0;
+        uint16_t rows[FRAMEBUFFER_FONT_HEIGHT];
 
         while (offset < module->size && text[offset] != '\n') {
             offset++;
         }
-        if (offset - line_start >= 37u &&
-            framebuffer_parse_hex_codepoint(text + line_start, &codepoint) &&
-            text[line_start + 4u] == ':' &&
-            codepoint <= 0xffu) {
+        line_end = offset;
+        if (line_end > line_start && text[line_end - 1u] == '\r') {
+            line_end--;
+        }
+        if (framebuffer_parse_hex_font_line(text + line_start,
+                                            line_end - line_start,
+                                            &codepoint,
+                                            &glyph_width,
+                                            rows)) {
+            uint32_t page = codepoint >> 8;
+
+            if (page < FRAMEBUFFER_FONT_INDEX_PAGES && g_framebuffer_font_page_valid[page] == 0u) {
+                g_framebuffer_font_page_valid[page] = 1u;
+                g_framebuffer_font_page_offsets[page] = line_start;
+            }
+        }
+        if (codepoint <= 0xffu && glyph_width == 8u) {
             uint32_t glyph_offset = codepoint * FRAMEBUFFER_FONT_HEIGHT;
-            int valid = 1;
 
             for (uint32_t row = 0; row < FRAMEBUFFER_FONT_HEIGHT; row++) {
-                uint8_t value = 0;
-
-                if (!framebuffer_parse_hex_byte(text + line_start + 5u + row * 2u, &value)) {
-                    valid = 0;
-                    break;
-                }
-                g_framebuffer_active_font[glyph_offset + row] = value;
+                g_framebuffer_active_font[glyph_offset + row] = (uint8_t)rows[row];
             }
-            if (valid) {
-                loaded_any = 1;
-            }
+            loaded_any = 1;
         }
         if (offset < module->size && text[offset] == '\n') {
             offset++;
@@ -266,23 +381,138 @@ static int framebuffer_try_load_hex_font_module(const struct bootx_module *modul
     return loaded_any;
 }
 
-static uint8_t framebuffer_font_row(uint8_t ch, uint8_t row, uint8_t cell_height) {
+static void framebuffer_copy_glyph_rows(uint16_t dst[FRAMEBUFFER_FONT_HEIGHT],
+                                        const uint16_t src[FRAMEBUFFER_FONT_HEIGHT]) {
+    for (uint32_t row = 0; row < FRAMEBUFFER_FONT_HEIGHT; row++) {
+        dst[row] = src[row];
+    }
+}
+
+static int framebuffer_find_cached_glyph(uint32_t codepoint,
+                                         uint8_t *width,
+                                         uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]) {
+    for (uint32_t i = 0; i < FRAMEBUFFER_GLYPH_CACHE_SIZE; i++) {
+        if (g_framebuffer_glyph_cache[i].valid != 0u &&
+            g_framebuffer_glyph_cache[i].codepoint == codepoint) {
+            *width = g_framebuffer_glyph_cache[i].width;
+            framebuffer_copy_glyph_rows(rows, g_framebuffer_glyph_cache[i].rows);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void framebuffer_store_cached_glyph(uint32_t codepoint,
+                                           uint8_t width,
+                                           const uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]) {
+    struct framebuffer_cached_glyph *glyph =
+        &g_framebuffer_glyph_cache[g_framebuffer_glyph_cache_next % FRAMEBUFFER_GLYPH_CACHE_SIZE];
+
+    glyph->codepoint = codepoint;
+    glyph->valid = 1u;
+    glyph->width = width;
+    framebuffer_copy_glyph_rows(glyph->rows, rows);
+    g_framebuffer_glyph_cache_next++;
+}
+
+static int framebuffer_find_module_glyph(uint32_t codepoint,
+                                         uint8_t *width,
+                                         uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]) {
+    uint32_t page = codepoint >> 8;
+    uint32_t offset;
+    const char *text = g_framebuffer_font_module_text;
+
+    if (text == 0 || g_framebuffer_font_module_size == 0u ||
+        page >= FRAMEBUFFER_FONT_INDEX_PAGES || g_framebuffer_font_page_valid[page] == 0u) {
+        return 0;
+    }
+
+    offset = g_framebuffer_font_page_offsets[page];
+    while (offset < g_framebuffer_font_module_size) {
+        uint32_t line_start = offset;
+        uint32_t line_end;
+        uint32_t current_codepoint = 0;
+        uint8_t current_width = 0;
+        uint16_t current_rows[FRAMEBUFFER_FONT_HEIGHT];
+
+        while (offset < g_framebuffer_font_module_size && text[offset] != '\n') {
+            offset++;
+        }
+        line_end = offset;
+        if (line_end > line_start && text[line_end - 1u] == '\r') {
+            line_end--;
+        }
+        if (framebuffer_parse_hex_font_line(text + line_start,
+                                            line_end - line_start,
+                                            &current_codepoint,
+                                            &current_width,
+                                            current_rows)) {
+            if (current_codepoint == codepoint) {
+                *width = current_width;
+                framebuffer_copy_glyph_rows(rows, current_rows);
+                framebuffer_store_cached_glyph(codepoint, current_width, current_rows);
+                return 1;
+            }
+            if (current_codepoint > codepoint || (current_codepoint >> 8) > page) {
+                return 0;
+            }
+        }
+        if (offset < g_framebuffer_font_module_size && text[offset] == '\n') {
+            offset++;
+        }
+    }
+    return 0;
+}
+
+static void framebuffer_get_glyph(uint32_t codepoint,
+                                  uint8_t *width,
+                                  uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]) {
+    if (codepoint <= 0xffu) {
+        *width = 8;
+        for (uint32_t row = 0; row < FRAMEBUFFER_FONT_HEIGHT; row++) {
+            rows[row] = g_framebuffer_active_font[codepoint * FRAMEBUFFER_FONT_HEIGHT + row];
+        }
+        return;
+    }
+    if (framebuffer_find_cached_glyph(codepoint, width, rows)) {
+        return;
+    }
+    if (framebuffer_find_module_glyph(codepoint, width, rows)) {
+        return;
+    }
+    if (codepoint != 0xfffdu && framebuffer_find_module_glyph(0xfffdu, width, rows)) {
+        return;
+    }
+
+    *width = 8;
+    for (uint32_t row = 0; row < FRAMEBUFFER_FONT_HEIGHT; row++) {
+        rows[row] = g_framebuffer_active_font['?' * FRAMEBUFFER_FONT_HEIGHT + row];
+    }
+}
+
+static uint16_t framebuffer_glyph_row_bits(const uint16_t rows[FRAMEBUFFER_FONT_HEIGHT],
+                                           uint8_t row,
+                                           uint8_t cell_height) {
     uint8_t font_row = row;
 
     if (cell_height == FRAMEBUFFER_FONT_HEIGHT_SMALL) {
         font_row = (uint8_t)(row * 2u);
     }
-    return g_framebuffer_active_font[(uint16_t)ch * FRAMEBUFFER_FONT_HEIGHT + font_row];
+    return rows[font_row];
 }
 
 static void framebuffer_render_cell(const struct framebuffer_display_state *state,
                                     uint16_t row,
                                     uint16_t col) {
-    uint16_t cell;
-    uint8_t ch;
+    uint32_t cell;
+    uint32_t codepoint;
+    uint32_t flags;
     uint8_t color;
     uint8_t fg;
     uint8_t bg;
+    uint8_t glyph_width = 8;
+    uint8_t right_half = 0;
+    uint16_t glyph_rows[FRAMEBUFFER_FONT_HEIGHT];
     uint32_t fg_pixel;
     uint32_t bg_pixel;
     uint32_t x = state->origin_x + (uint32_t)col * FRAMEBUFFER_FONT_WIDTH;
@@ -292,16 +522,43 @@ static void framebuffer_render_cell(const struct framebuffer_display_state *stat
     }
 
     cell = state->cells[row][col];
-    ch = (uint8_t)(cell & 0xffu);
-    color = (uint8_t)(cell >> 8);
+    codepoint = cell & HAL_DISPLAY_CELL_CODEPOINT_MASK;
+    flags = cell & HAL_DISPLAY_CELL_FLAGS_MASK;
+    color = (uint8_t)(cell >> HAL_DISPLAY_CELL_COLOR_SHIFT);
+    if ((flags & HAL_DISPLAY_CELL_CONT) != 0u) {
+        if (col > 0u) {
+            uint32_t prev = state->cells[row][col - 1u];
+
+            if ((prev & HAL_DISPLAY_CELL_WIDE) != 0u) {
+                codepoint = prev & HAL_DISPLAY_CELL_CODEPOINT_MASK;
+                color = (uint8_t)(prev >> HAL_DISPLAY_CELL_COLOR_SHIFT);
+                right_half = 1u;
+            } else {
+                codepoint = ' ';
+            }
+        } else {
+            codepoint = ' ';
+        }
+    }
+    if (codepoint == 0u) {
+        codepoint = ' ';
+    }
     fg = color & 0x0fu;
     bg = (color >> 4) & 0x0fu;
 
     fg_pixel = framebuffer_vga_color_to_pixel(state, fg);
     bg_pixel = framebuffer_vga_color_to_pixel(state, bg);
     framebuffer_fill_rect(state, x, y, FRAMEBUFFER_FONT_WIDTH, state->cell_height, bg_pixel);
+    framebuffer_get_glyph(codepoint, &glyph_width, glyph_rows);
     for (uint8_t glyph_row = 0; glyph_row < state->cell_height; glyph_row++) {
-        uint8_t bits = framebuffer_font_row(ch, glyph_row, state->cell_height);
+        uint16_t row_bits = framebuffer_glyph_row_bits(glyph_rows, glyph_row, state->cell_height);
+        uint8_t bits;
+
+        if (glyph_width == 16u) {
+            bits = right_half != 0u ? (uint8_t)(row_bits & 0xffu) : (uint8_t)(row_bits >> 8);
+        } else {
+            bits = right_half != 0u ? 0u : (uint8_t)row_bits;
+        }
         for (uint8_t glyph_col = 0; glyph_col < FRAMEBUFFER_FONT_WIDTH; glyph_col++) {
             if ((bits & (uint8_t)(0x80u >> glyph_col)) != 0u) {
                 framebuffer_write_pixel(state, x + glyph_col, y + glyph_row, fg_pixel);
@@ -394,7 +651,7 @@ void framebuffer_display_init(const struct bootx_console_info *console) {
 
     for (uint16_t row = 0; row < state->rows; row++) {
         for (uint16_t col = 0; col < state->columns; col++) {
-            state->cells[row][col] = 0x0720u;
+            state->cells[row][col] = framebuffer_blank_cell(0x07u);
         }
     }
     state->active = 1;
@@ -422,7 +679,69 @@ int framebuffer_display_active(void) {
     return g_framebuffer_display.active;
 }
 
-uint16_t framebuffer_display_read_cell(uint16_t row, uint16_t col) {
+uint32_t framebuffer_device_size(void) {
+    uint64_t size;
+
+    if (!g_framebuffer_display.active) {
+        return 0;
+    }
+    size = (uint64_t)g_framebuffer_display.pitch * g_framebuffer_display.height;
+    return size > 0xffffffffull ? 0xffffffffu : (uint32_t)size;
+}
+
+int64_t framebuffer_device_read(uint32_t *offset_io, void *buffer, uint32_t size) {
+    uint8_t *out = (uint8_t *)buffer;
+    uint32_t fb_size;
+    uint32_t copied;
+
+    if (!g_framebuffer_display.active || offset_io == 0 || buffer == 0) {
+        return -1;
+    }
+    if (size == 0) {
+        return 0;
+    }
+    fb_size = framebuffer_device_size();
+    if (*offset_io >= fb_size) {
+        return 0;
+    }
+    copied = size;
+    if (copied > fb_size - *offset_io) {
+        copied = fb_size - *offset_io;
+    }
+    for (uint32_t i = 0; i < copied; i++) {
+        out[i] = g_framebuffer_display.base[*offset_io + i];
+    }
+    *offset_io += copied;
+    return (int64_t)copied;
+}
+
+int64_t framebuffer_device_write(uint32_t *offset_io, const void *buffer, uint32_t size) {
+    const uint8_t *in = (const uint8_t *)buffer;
+    uint32_t fb_size;
+    uint32_t copied;
+
+    if (!g_framebuffer_display.active || offset_io == 0 || buffer == 0) {
+        return -1;
+    }
+    if (size == 0) {
+        return 0;
+    }
+    fb_size = framebuffer_device_size();
+    if (*offset_io >= fb_size) {
+        return 0;
+    }
+    copied = size;
+    if (copied > fb_size - *offset_io) {
+        copied = fb_size - *offset_io;
+    }
+    for (uint32_t i = 0; i < copied; i++) {
+        g_framebuffer_display.base[*offset_io + i] = in[i];
+    }
+    *offset_io += copied;
+    return (int64_t)copied;
+}
+
+uint32_t framebuffer_display_read_cell(uint16_t row, uint16_t col) {
     if (!g_framebuffer_display.active ||
         row >= g_framebuffer_display.rows ||
         col >= g_framebuffer_display.columns) {
@@ -431,7 +750,7 @@ uint16_t framebuffer_display_read_cell(uint16_t row, uint16_t col) {
     return g_framebuffer_display.cells[row][col];
 }
 
-void framebuffer_display_write_cell(uint16_t row, uint16_t col, uint16_t value) {
+void framebuffer_display_write_cell(uint16_t row, uint16_t col, uint32_t value) {
     if (!g_framebuffer_display.active ||
         row >= g_framebuffer_display.rows ||
         col >= g_framebuffer_display.columns) {
@@ -442,7 +761,7 @@ void framebuffer_display_write_cell(uint16_t row, uint16_t col, uint16_t value) 
 }
 
 void framebuffer_display_clear_row(uint16_t row, uint8_t color) {
-    uint16_t value = (uint16_t)(((uint16_t)color << 8) | (uint8_t)' ');
+    uint32_t value = framebuffer_blank_cell(color);
 
     if (!g_framebuffer_display.active || row >= g_framebuffer_display.rows) {
         return;
@@ -456,7 +775,7 @@ void framebuffer_display_clear_row(uint16_t row, uint8_t color) {
 }
 
 void framebuffer_display_put_at(uint16_t row, uint16_t col, uint8_t color, char ch) {
-    framebuffer_display_write_cell(row, col, (uint16_t)(((uint16_t)color << 8) | (uint8_t)ch));
+    framebuffer_display_write_cell(row, col, framebuffer_pack_cell((uint8_t)ch, color, 0));
 }
 
 void framebuffer_display_enable_cursor(uint8_t start, uint8_t end) {

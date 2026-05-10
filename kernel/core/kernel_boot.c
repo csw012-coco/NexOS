@@ -1,5 +1,5 @@
 #include <stdint.h>
-#include "bootx.h"
+#include "bootx/bootx.h"
 #include "block/blockdev.h"
 #include "drivers/audio/ac97.h"
 #include "drivers/bus/pci.h"

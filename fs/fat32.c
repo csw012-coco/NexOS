@@ -72,8 +72,6 @@ struct fat32_lfn_state {
     uint8_t total_entries;
 };
 
-static uint8_t sector_buffer[512];
-
 static void mem_copy(void *dest, const void *src, uint32_t size) {
     uint8_t *d = (uint8_t *)dest;
     const uint8_t *s = (const uint8_t *)src;
@@ -121,7 +119,8 @@ static int fat32_is_volume_dirent(const struct fat32_dirent *dirent) {
 
 static void fat32_log_probe_failure(uint32_t partition_lba,
                                     const char *reason,
-                                    const struct fat32_bpb *bpb) {
+                                    const struct fat32_bpb *bpb,
+                                    const uint8_t *sector_data) {
     if (!kprint_is_ready()) {
         return;
     }
@@ -132,8 +131,8 @@ static void fat32_log_probe_failure(uint32_t partition_lba,
     kprint("fat32: probe lba=%u failed: %s sig=%x%x jump=%x bps=%u spc=%u rsv=%u fats=%u rootent=%u tot16=%u tot32=%u spf16=%u spf32=%u root=%u label=%c%c%c%c%c%c%c%c\n",
            partition_lba,
            reason,
-           (uint32_t)sector_buffer[511],
-           (uint32_t)sector_buffer[510],
+           sector_data != 0 ? (uint32_t)sector_data[511] : 0u,
+           sector_data != 0 ? (uint32_t)sector_data[510] : 0u,
            (uint32_t)bpb->jump[0],
            (uint32_t)bpb->bytes_per_sector,
            (uint32_t)bpb->sectors_per_cluster,
@@ -248,10 +247,10 @@ static int fat32_next_cluster(struct fat32_volume *vol, uint32_t cluster, uint32
     fat_offset = cluster * 4u;
     fat_sector = vol->fat_start_lba + (fat_offset / 512u);
     fat_index = (fat_offset % 512u) / 4u;
-    if (fat32_read_sector(vol, fat_sector, sector_buffer) != 0) {
+    if (fat32_read_sector(vol, fat_sector, vol->sector_buffer) != 0) {
         return -1;
     }
-    entries = (uint32_t *)sector_buffer;
+    entries = (uint32_t *)vol->sector_buffer;
     *next = entries[fat_index] & 0x0fffffffu;
     if (*next != 0u && *next < FAT32_CLUSTER_END && !fat32_cluster_is_data(vol, *next)) {
         return -1;
@@ -316,12 +315,12 @@ static int fat32_write_fat_entry(struct fat32_volume *vol, uint32_t cluster, uin
         uint32_t fat_sector = vol->fat_start_lba + table * vol->sectors_per_fat + (fat_offset / 512u);
         uint32_t *entries;
 
-        if (fat32_read_sector(vol, fat_sector, sector_buffer) != 0) {
+        if (fat32_read_sector(vol, fat_sector, vol->sector_buffer) != 0) {
             return -1;
         }
-        entries = (uint32_t *)sector_buffer;
+        entries = (uint32_t *)vol->sector_buffer;
         entries[fat_index] = (entries[fat_index] & 0xf0000000u) | (value & 0x0fffffffu);
-        if (fat32_write_sector(vol, fat_sector, sector_buffer) != 0) {
+        if (fat32_write_sector(vol, fat_sector, vol->sector_buffer) != 0) {
             return -1;
         }
     }
@@ -335,9 +334,9 @@ static int fat32_zero_cluster(struct fat32_volume *vol, uint32_t cluster) {
         return -1;
     }
     cluster_lba = fat32_cluster_lba(vol, cluster);
-    mem_set(sector_buffer, 0, sizeof(sector_buffer));
+    mem_set(vol->sector_buffer, 0, sizeof(vol->sector_buffer));
     for (uint32_t sec = 0; sec < vol->sectors_per_cluster; sec++) {
-        if (fat32_write_sector(vol, cluster_lba + sec, sector_buffer) != 0) {
+        if (fat32_write_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
             return -1;
         }
     }
@@ -397,18 +396,18 @@ int fat32_space_info(struct fat32_volume *vol,
 static int fat32_update_dirent(struct fat32_volume *vol, const struct fat32_file *file) {
     struct fat32_dirent *dirent;
 
-    if (vol == 0 || file == 0 || file->dirent_lba == 0 || file->dirent_offset + sizeof(struct fat32_dirent) > sizeof(sector_buffer)) {
+    if (vol == 0 || file == 0 || file->dirent_lba == 0 || file->dirent_offset + sizeof(struct fat32_dirent) > sizeof(vol->sector_buffer)) {
         return -1;
     }
-    if (fat32_read_sector(vol, file->dirent_lba, sector_buffer) != 0) {
+    if (fat32_read_sector(vol, file->dirent_lba, vol->sector_buffer) != 0) {
         return -1;
     }
-    dirent = (struct fat32_dirent *)(sector_buffer + file->dirent_offset);
+    dirent = (struct fat32_dirent *)(vol->sector_buffer + file->dirent_offset);
     dirent->first_cluster_high = (uint16_t)(file->first_cluster >> 16);
     dirent->first_cluster_low = (uint16_t)(file->first_cluster & 0xffffu);
     dirent->file_size = file->size;
     dirent->attr = file->attributes;
-    return fat32_write_sector(vol, file->dirent_lba, sector_buffer);
+    return fat32_write_sector(vol, file->dirent_lba, vol->sector_buffer);
 }
 
 static void fat32_format_name83(const uint8_t raw[11], char *out) {
@@ -976,10 +975,10 @@ static int fat32_short_name_exists(struct fat32_volume *vol,
         for (uint32_t sec = 0; sec < vol->sectors_per_cluster; sec++) {
             struct fat32_dirent *dirents;
 
-            if (fat32_read_sector(vol, cluster_lba + sec, sector_buffer) != 0) {
+            if (fat32_read_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
                 return 0;
             }
-            dirents = (struct fat32_dirent *)sector_buffer;
+            dirents = (struct fat32_dirent *)vol->sector_buffer;
             for (uint32_t i = 0; i < 16u; i++) {
                 if (fat32_is_end_of_dirent(&dirents[i])) {
                     return 0;
@@ -1047,10 +1046,10 @@ static int fat32_locate_free_dirent_span(struct fat32_volume *vol,
         for (uint32_t sec = 0; sec < vol->sectors_per_cluster; sec++) {
             struct fat32_dirent *dirents;
 
-            if (fat32_read_sector(vol, cluster_lba + sec, sector_buffer) != 0) {
+            if (fat32_read_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
                 return -1;
             }
-            dirents = (struct fat32_dirent *)sector_buffer;
+            dirents = (struct fat32_dirent *)vol->sector_buffer;
             for (uint32_t i = 0; i < 16u; i++, raw_index++) {
                 if (fat32_is_end_of_dirent(&dirents[i]) || fat32_is_deleted_dirent(&dirents[i])) {
                     lbas_out[run] = cluster_lba + sec;
@@ -1140,14 +1139,14 @@ static int fat32_write_raw_dirent(struct fat32_volume *vol,
                                   uint32_t offset,
                                   const void *dirent,
                                   uint32_t size) {
-    if (vol == 0 || dirent == 0 || offset + size > sizeof(sector_buffer)) {
+    if (vol == 0 || dirent == 0 || offset + size > sizeof(vol->sector_buffer)) {
         return -1;
     }
-    if (fat32_read_sector(vol, lba, sector_buffer) != 0) {
+    if (fat32_read_sector(vol, lba, vol->sector_buffer) != 0) {
         return -1;
     }
-    mem_copy(sector_buffer + offset, dirent, size);
-    return fat32_write_sector(vol, lba, sector_buffer);
+    mem_copy(vol->sector_buffer + offset, dirent, size);
+    return fat32_write_sector(vol, lba, vol->sector_buffer);
 }
 
 static void fat32_populate_lfn_dirent(struct fat32_lfn_dirent *lfn,
@@ -1310,16 +1309,16 @@ static int fat32_delete_entry_chain(struct fat32_volume *vol,
         struct fat32_dirent *dirent;
 
         if (fat32_raw_entry_position(vol, dir, raw_index, &lba, &offset) != 0 ||
-            fat32_read_sector(vol, lba, sector_buffer) != 0) {
+            fat32_read_sector(vol, lba, vol->sector_buffer) != 0) {
             return -1;
         }
-        dirent = (struct fat32_dirent *)(sector_buffer + offset);
+        dirent = (struct fat32_dirent *)(vol->sector_buffer + offset);
         dirent->name[0] = 0xe5;
         if (i == 0u) {
             dirent->file_size = 0u;
             fat32_set_dirent_cluster(dirent, 0u);
         }
-        if (fat32_write_sector(vol, lba, sector_buffer) != 0) {
+        if (fat32_write_sector(vol, lba, vol->sector_buffer) != 0) {
             return -1;
         }
     }
@@ -1332,10 +1331,10 @@ static int fat32_init_directory_cluster(struct fat32_volume *vol, uint32_t self_
     if (vol == 0 || !vol->mounted || !fat32_cluster_is_data(vol, self_cluster)) {
         return -1;
     }
-    if (fat32_read_sector(vol, fat32_cluster_lba(vol, self_cluster), sector_buffer) != 0) {
+    if (fat32_read_sector(vol, fat32_cluster_lba(vol, self_cluster), vol->sector_buffer) != 0) {
         return -1;
     }
-    dirents = (struct fat32_dirent *)sector_buffer;
+    dirents = (struct fat32_dirent *)vol->sector_buffer;
     mem_set(dirents, 0, sizeof(struct fat32_dirent) * 2u);
 
     mem_set(dirents[0].name, ' ', sizeof(dirents[0].name));
@@ -1349,7 +1348,7 @@ static int fat32_init_directory_cluster(struct fat32_volume *vol, uint32_t self_
     dirents[1].attr = FAT32_ATTR_DIRECTORY;
     fat32_set_dirent_cluster(&dirents[1], fat32_cluster_is_data(vol, parent_cluster) ? parent_cluster : vol->root_cluster);
 
-    return fat32_write_sector(vol, fat32_cluster_lba(vol, self_cluster), sector_buffer);
+    return fat32_write_sector(vol, fat32_cluster_lba(vol, self_cluster), vol->sector_buffer);
 }
 
 static int fat32_free_cluster_chain(struct fat32_volume *vol, uint32_t first_cluster) {
@@ -1492,18 +1491,18 @@ int fat32_mount(struct fat32_volume *vol, struct block_device *bdev, uint32_t pa
         (uint64_t)partition_lba >= bdev->block_count) {
         return -1;
     }
-    if (blockdev_read(bdev, partition_lba, 1, sector_buffer) != 0) {
-        fat32_log_probe_failure(partition_lba, "read", 0);
+    if (blockdev_read(bdev, partition_lba, 1, vol->sector_buffer) != 0) {
+        fat32_log_probe_failure(partition_lba, "read", 0, 0);
         return -1;
     }
 
-    bpb = (struct fat32_bpb *)sector_buffer;
-    if (sector_buffer[510] != 0x55u || sector_buffer[511] != 0xaau) {
-        fat32_log_probe_failure(partition_lba, "signature", bpb);
+    bpb = (struct fat32_bpb *)vol->sector_buffer;
+    if (vol->sector_buffer[510] != 0x55u || vol->sector_buffer[511] != 0xaau) {
+        fat32_log_probe_failure(partition_lba, "signature", bpb, vol->sector_buffer);
         return -1;
     }
     if (bpb->jump[0] != 0xebu && bpb->jump[0] != 0xe9u) {
-        fat32_log_probe_failure(partition_lba, "jump", bpb);
+        fat32_log_probe_failure(partition_lba, "jump", bpb, vol->sector_buffer);
         return -1;
     }
     if (bpb->bytes_per_sector != 512 ||
@@ -1515,7 +1514,7 @@ int fat32_mount(struct fat32_volume *vol, struct block_device *bdev, uint32_t pa
         bpb->root_entry_count != 0u ||
         bpb->table_size_16 != 0u ||
         bpb->table_size_32 == 0u) {
-        fat32_log_probe_failure(partition_lba, "bpb", bpb);
+        fat32_log_probe_failure(partition_lba, "bpb", bpb, vol->sector_buffer);
         return -1;
     }
 
@@ -1526,19 +1525,19 @@ int fat32_mount(struct fat32_volume *vol, struct block_device *bdev, uint32_t pa
         total_sectors > bdev->block_count - (uint64_t)partition_lba ||
         fat_region_sectors >= (uint64_t)total_sectors ||
         (uint64_t)partition_lba + (uint64_t)total_sectors > 0x100000000ull) {
-        fat32_log_probe_failure(partition_lba, "geometry", bpb);
+        fat32_log_probe_failure(partition_lba, "geometry", bpb, vol->sector_buffer);
         return -1;
     }
     data_sectors = total_sectors - (uint32_t)fat_region_sectors;
     cluster_count = data_sectors / bpb->sectors_per_cluster;
     if (cluster_count == 0u ||
         (uint64_t)bpb->table_size_32 * 128u < (uint64_t)cluster_count + 2u) {
-        fat32_log_probe_failure(partition_lba, "clusters", bpb);
+        fat32_log_probe_failure(partition_lba, "clusters", bpb, vol->sector_buffer);
         return -1;
     }
     vol->cluster_count = cluster_count;
     if (!fat32_cluster_is_data(vol, bpb->root_cluster)) {
-        fat32_log_probe_failure(partition_lba, "root_cluster", bpb);
+        fat32_log_probe_failure(partition_lba, "root_cluster", bpb, vol->sector_buffer);
         mem_set(vol, 0, sizeof(*vol));
         return -1;
     }
@@ -1867,10 +1866,10 @@ int fat32_read_file(struct fat32_volume *vol, const struct fat32_file *file, voi
         for (uint32_t sec = 0; sec < vol->sectors_per_cluster && written < file->size; sec++) {
             uint32_t remaining = file->size - written;
             uint32_t copy_size = remaining < 512 ? remaining : 512;
-            if (fat32_read_sector(vol, cluster_lba + sec, sector_buffer) != 0) {
+            if (fat32_read_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
                 return -1;
             }
-            mem_copy(out + written, sector_buffer, copy_size);
+            mem_copy(out + written, vol->sector_buffer, copy_size);
             written += copy_size;
         }
         if (written >= file->size) {
@@ -1921,7 +1920,7 @@ int fat32_read_file_range(struct fat32_volume *vol,
             uint32_t sector_copy_start;
             uint32_t copy_size;
 
-            if (fat32_read_sector(vol, cluster_lba + sec, sector_buffer) != 0) {
+            if (fat32_read_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
                 return -1;
             }
             if (!fat32_calc_sector_window(sector_start,
@@ -1935,7 +1934,7 @@ int fat32_read_file_range(struct fat32_volume *vol,
                 continue;
             }
             mem_copy(out + written,
-                     sector_buffer + (sector_copy_start - sector_start),
+                     vol->sector_buffer + (sector_copy_start - sector_start),
                      copy_size);
             written += copy_size;
             file_offset += 512u;
@@ -2025,7 +2024,7 @@ int fat32_write_file_range(struct fat32_volume *vol,
             uint32_t sector_copy_start;
             uint32_t copy_size;
 
-            if (fat32_read_sector(vol, cluster_lba + sec, sector_buffer) != 0) {
+            if (fat32_read_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
                 return -1;
             }
             if (!fat32_calc_sector_window(sector_start,
@@ -2038,10 +2037,10 @@ int fat32_write_file_range(struct fat32_volume *vol,
                 file_offset += 512u;
                 continue;
             }
-            mem_copy(sector_buffer + (sector_copy_start - sector_start),
+            mem_copy(vol->sector_buffer + (sector_copy_start - sector_start),
                      in + written,
                      copy_size);
-            if (fat32_write_sector(vol, cluster_lba + sec, sector_buffer) != 0) {
+            if (fat32_write_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
                 return -1;
             }
             written += copy_size;

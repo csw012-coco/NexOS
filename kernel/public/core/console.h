@@ -11,6 +11,7 @@ void console_set_cursor(struct console *console, uint16_t row, uint16_t col);
 uint16_t console_get_cursor_row(const struct console *console);
 uint16_t console_get_cursor_col(const struct console *console);
 void console_putc(struct console *console, char ch, uint8_t color);
+void console_put_codepoint(struct console *console, uint32_t codepoint, uint8_t color);
 void console_write(struct console *console, const char *text, uint8_t color);
 void console_write_dec(struct console *console, uint32_t value, uint8_t color);
 void console_write_hex64(struct console *console, uint64_t value, uint8_t color);

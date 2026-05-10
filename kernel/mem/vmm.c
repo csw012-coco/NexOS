@@ -93,39 +93,6 @@ static uint32_t vmm_page_chunk_size(uint64_t virt, uint64_t remaining, uint64_t 
     return (uint32_t)chunk;
 }
 
-static int vmm_apply_mapped_range(uint64_t start,
-                                  uint64_t size,
-                                  const uint8_t *src,
-                                  void (*apply_fn)(void *dest, const void *src, uint64_t size)) {
-    uint64_t offset = 0;
-
-    if (apply_fn == 0) {
-        return 0;
-    }
-    while (offset < size) {
-        uint64_t virt = start + offset;
-        uint64_t phys;
-        uint64_t phys_page;
-        uint64_t page_off;
-        uint64_t chunk = vmm_page_chunk_size(virt, size - offset, &page_off);
-        void *dest;
-
-        if (!vmm_query(virt, &phys)) {
-            return 0;
-        }
-        phys_page = phys & ~(uint64_t)(VMM_PAGE_SIZE - 1u);
-        dest = (uint8_t *)hal_phys_direct_map(phys_page) + page_off;
-        apply_fn(dest, src != 0 ? src + offset : 0, chunk);
-        offset += chunk;
-    }
-    return 1;
-}
-
-static void vmm_zero_apply(void *dest, const void *src, uint64_t size) {
-    (void)src;
-    vmm_mem_set(dest, 0, size);
-}
-
 uint64_t vmm_current_root(void) {
     return hal_paging_current_root();
 }
@@ -288,27 +255,45 @@ int vmm_copy_user_cstr(char *dest, uint64_t user_addr, uint32_t max_len) {
 }
 
 int vmm_zero_range(uint64_t start, uint64_t size) {
-    return vmm_apply_mapped_range(start, size, 0, vmm_zero_apply);
+    uint64_t offset = 0;
+
+    while (offset < size) {
+        uint64_t virt = start + offset;
+        uint64_t phys;
+        uint64_t phys_page;
+        uint64_t page_off;
+        uint32_t chunk = vmm_page_chunk_size(virt, size - offset, &page_off);
+        uint8_t *dest;
+
+        if (!vmm_query(virt, &phys)) {
+            return 0;
+        }
+        phys_page = phys & ~(uint64_t)(VMM_PAGE_SIZE - 1u);
+        dest = (uint8_t *)hal_phys_direct_map(phys_page);
+        vmm_mem_set(dest + page_off, 0, chunk);
+        offset += chunk;
+    }
+    return 1;
 }
 
 int vmm_copy_to_range(uint64_t dest, const uint8_t *src, uint64_t size) {
     uint64_t offset = 0;
-    uint8_t bounce[VMM_COPY_BOUNCE_SIZE];
 
-    if (src == 0) {
-        return 0;
-    }
-
+    if (src == 0) return 0;
     while (offset < size) {
-        uint64_t chunk = size - offset;
+        uint64_t virt = dest + offset;
+        uint64_t phys;
+        uint64_t phys_page;
+        uint64_t page_off;
+        uint32_t chunk = vmm_page_chunk_size(virt, size - offset, &page_off);
+        uint8_t *out;
 
-        if (chunk > sizeof(bounce)) {
-            chunk = sizeof(bounce);
-        }
-        vmm_mem_copy(bounce, src + offset, chunk);
-        if (!vmm_apply_mapped_range(dest + offset, chunk, bounce, vmm_mem_copy)) {
+        if (!vmm_query(virt, &phys)) {
             return 0;
         }
+        phys_page = phys & ~(uint64_t)(VMM_PAGE_SIZE - 1u);
+        out = (uint8_t *)hal_phys_direct_map(phys_page);
+        vmm_mem_copy(out + page_off, src + offset, chunk);
         offset += chunk;
     }
     return 1;

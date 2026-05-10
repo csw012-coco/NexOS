@@ -1036,114 +1036,119 @@ static int fasm_reopen_source(const char *path) {
     return cmd_open_resolved_path(path, 0);
 }
 
-int cmd_fasm(int argc, char **argv) {
-    struct fasm_state state;
+int cmd_asm(int argc, char **argv) {
+    struct fasm_state *state;
     struct fasm_output out;
     char output_path[CMD_PATH_MAX];
     int src_fd;
     int out_fd;
+    int rc = 1;
 
     if (argc < 2 || argc > 3) {
-        write_str("usage: fasm <source.asm> [output]\n");
+        write_str("usage: asm <source.asm> [output]\n");
         write_str("subset: format elf64|binary, entry, org, labels, const/equ, bits 64, db/dw/dd/dq,\n");
         write_str("        mov/xor/push/pop/jmp/call/jz/jnz/int/nop/ret/syscall/int3/hlt\n");
         return argc == 1 ? 0 : 1;
     }
 
-    state.label_count = 0;
-    state.format = FASM_FMT_ELF64;
-    state.line_number = 0;
-    state.origin = FASM_USER_ELF_BASE;
-    state.offset = 0;
-    state.entry_value = FASM_USER_ELF_BASE;
-    state.entry_expr[0] = '\0';
-    state.entry_defined = 0u;
-    state.error_text[0] = '\0';
+    state = (struct fasm_state *)calloc(1u, sizeof(*state));
+    if (state == NULL) {
+        write_err_str("asm: out of memory\n");
+        return 1;
+    }
+
+    state->format = FASM_FMT_ELF64;
+    state->origin = FASM_USER_ELF_BASE;
+    state->entry_value = FASM_USER_ELF_BASE;
 
     src_fd = fasm_reopen_source(argv[1]);
     if (src_fd < 0) {
-        write_err_str("fasm: source open failed\n");
-        return 1;
+        write_err_str("asm: source open failed\n");
+        goto out_free_state;
     }
-    if (!fasm_run_pass(&state, src_fd, NULL)) {
+    if (!fasm_run_pass(state, src_fd, NULL)) {
         close((uint32_t)src_fd);
-        write_err_str("fasm: line ");
-        write_dec(state.line_number);
+        write_err_str("asm: line ");
+        write_dec(state->line_number);
         write_err_str(": ");
-        write_err_str(state.error_text[0] != '\0' ? state.error_text : "parse failed");
+        write_err_str(state->error_text[0] != '\0' ? state->error_text : "parse failed");
         write_err_str("\n");
-        return 1;
+        goto out_free_state;
     }
     close((uint32_t)src_fd);
 
-    if (state.entry_defined) {
-        if (!fasm_eval_expression(&state, state.entry_expr, state.origin, &state.entry_value)) {
-            write_err_str("fasm: invalid entry expression\n");
-            return 1;
+    if (state->entry_defined) {
+        if (!fasm_eval_expression(state, state->entry_expr, state->origin, &state->entry_value)) {
+            write_err_str("asm: invalid entry expression\n");
+            goto out_free_state;
         }
     } else {
-        state.entry_value = state.origin;
+        state->entry_value = state->origin;
     }
 
-    if (state.format == FASM_FMT_ELF64) {
-        if (state.origin < FASM_USER_ELF_BASE || state.origin + state.offset > FASM_USER_ELF_LIMIT) {
-            write_err_str("fasm: elf image outside NexOS user range\n");
-            return 1;
+    if (state->format == FASM_FMT_ELF64) {
+        if (state->origin < FASM_USER_ELF_BASE || state->origin + state->offset > FASM_USER_ELF_LIMIT) {
+            write_err_str("asm: elf image outside NexOS user range\n");
+            goto out_free_state;
         }
-        if (state.entry_value < state.origin || state.entry_value >= state.origin + state.offset + 1u) {
-            if (state.offset != 0u) {
-                write_err_str("fasm: entry outside output image\n");
-                return 1;
+        if (state->entry_value < state->origin || state->entry_value >= state->origin + state->offset + 1u) {
+            if (state->offset != 0u) {
+                write_err_str("asm: entry outside output image\n");
+                goto out_free_state;
             }
         }
     }
 
     if (argc >= 3) {
         copy_line_local(output_path, argv[2], sizeof(output_path));
-    } else if (!fasm_derive_output_path(output_path, sizeof(output_path), argv[1], state.format)) {
-        write_err_str("fasm: could not derive output path\n");
-        return 1;
+    } else if (!fasm_derive_output_path(output_path, sizeof(output_path), argv[1], state->format)) {
+        write_err_str("asm: could not derive output path\n");
+        goto out_free_state;
     }
 
     out_fd = open(output_path, O_CREAT | O_TRUNC);
     if (out_fd < 0) {
-        write_err_str("fasm: output open failed\n");
-        return 1;
+        write_err_str("asm: output open failed\n");
+        goto out_free_state;
     }
     out.fd = out_fd;
 
-    if (state.format == FASM_FMT_ELF64 && !fasm_write_elf_header(&state, &out)) {
+    if (state->format == FASM_FMT_ELF64 && !fasm_write_elf_header(state, &out)) {
         close((uint32_t)out_fd);
-        write_err_str("fasm: output write failed\n");
-        return 1;
+        write_err_str("asm: output write failed\n");
+        goto out_free_state;
     }
 
     src_fd = fasm_reopen_source(argv[1]);
     if (src_fd < 0) {
         close((uint32_t)out_fd);
-        write_err_str("fasm: source reopen failed\n");
-        return 1;
+        write_err_str("asm: source reopen failed\n");
+        goto out_free_state;
     }
-    state.offset = 0;
-    state.line_number = 0;
-    state.error_text[0] = '\0';
-    if (!fasm_run_pass(&state, src_fd, &out)) {
+    state->offset = 0;
+    state->line_number = 0;
+    state->error_text[0] = '\0';
+    if (!fasm_run_pass(state, src_fd, &out)) {
         close((uint32_t)src_fd);
         close((uint32_t)out_fd);
-        write_err_str("fasm: line ");
-        write_dec(state.line_number);
+        write_err_str("asm: line ");
+        write_dec(state->line_number);
         write_err_str(": ");
-        write_err_str(state.error_text[0] != '\0' ? state.error_text : "emit failed");
+        write_err_str(state->error_text[0] != '\0' ? state->error_text : "emit failed");
         write_err_str("\n");
-        return 1;
+        goto out_free_state;
     }
     close((uint32_t)src_fd);
     close((uint32_t)out_fd);
 
-    write_str("fasm: wrote ");
+    write_str("asm: wrote ");
     write_str(output_path);
     write_str(" (");
-    write_dec((uint32_t)state.offset);
-    write_str(state.format == FASM_FMT_ELF64 ? " bytes of code, elf64)\n" : " bytes, binary)\n");
-    return 0;
+    write_dec((uint32_t)state->offset);
+    write_str(state->format == FASM_FMT_ELF64 ? " bytes of code, elf64)\n" : " bytes, binary)\n");
+    rc = 0;
+
+out_free_state:
+    free(state);
+    return rc;
 }

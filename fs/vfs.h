@@ -25,6 +25,18 @@ enum {
     VFS_PARTITION_RAW = 0xffffffffu
 };
 
+enum vfs_open_flags {
+    VFS_OPEN_CREATE = 1u,
+    VFS_OPEN_TRUNCATE = 2u,
+    VFS_OPEN_APPEND = 4u
+};
+
+enum vfs_read_flags {
+    VFS_READ_BLOCKING = 0,
+    VFS_READ_NONBLOCK = 1u,
+    VFS_READ_CHAR = 2u
+};
+
 struct vfs;
 
 void vfs_init(struct vfs *vfs);

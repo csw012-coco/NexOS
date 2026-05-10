@@ -5,6 +5,8 @@
 
 #define BOOTX_MAGIC 0x42545831u
 #define BOOTX_PROTOCOL_VERSION 0x0003u
+#define BOOTX_MAX_MODULES 8u
+#define BOOTX_MAX_MEMMAP 64u
 
 enum bootx_memmap_type {
     BOOTX_MEMMAP_USABLE = 1,

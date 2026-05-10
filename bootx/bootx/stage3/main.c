@@ -676,15 +676,22 @@ static void load_elf32_and_jump(const struct bootx_stage3_params *params, const 
 
     memset(&selected_console, 0, sizeof(selected_console));
     memset(&video, 0, sizeof(video));
-    if (parse_video_request(entry, &video) != 0) {
-        fail("bad video= option");
-    }
-    if (entry_wants_framebuffer(entry)
-            && bios_init_framebuffer(&selected_console, video.width, video.height, video.bpp) == 0) {
-        using_framebuffer = 1;
-        debug_puts("stage3: framebuffer enabled\n");
-    } else if (entry_wants_framebuffer(entry)) {
-        debug_puts("stage3: framebuffer request failed\n");
+    int wants_fb = entry_wants_framebuffer(entry);
+
+    if (wants_fb) {
+        if (parse_video_request(entry, &video) != 0) {
+            fail("bad video= option");
+        }
+
+        if (bios_init_framebuffer(&selected_console,
+                                video.width,
+                                video.height,
+                                video.bpp) == 0) {
+            using_framebuffer = 1;
+            debug_puts("stage3: framebuffer enabled\n");
+        } else {
+            debug_puts("stage3: framebuffer request failed\n");
+        }
     }
 
     prepare_proto(params, entry, &selected_console);
@@ -737,15 +744,22 @@ static void load_elf64_and_jump(const struct bootx_stage3_params *params, const 
 
     memset(&selected_console, 0, sizeof(selected_console));
     memset(&video, 0, sizeof(video));
-    if (parse_video_request(entry, &video) != 0) {
-        fail("bad video= option");
-    }
-    if (entry_wants_framebuffer(entry)
-            && bios_init_framebuffer(&selected_console, video.width, video.height, video.bpp) == 0) {
-        using_framebuffer = 1;
-        debug_puts("stage3: framebuffer enabled\n");
-    } else if (entry_wants_framebuffer(entry)) {
-        debug_puts("stage3: framebuffer request failed\n");
+    int wants_fb = entry_wants_framebuffer(entry);
+
+    if (wants_fb) {
+        if (parse_video_request(entry, &video) != 0) {
+            fail("bad video= option");
+        }
+
+        if (bios_init_framebuffer(&selected_console,
+                                video.width,
+                                video.height,
+                                video.bpp) == 0) {
+            using_framebuffer = 1;
+            debug_puts("stage3: framebuffer enabled\n");
+        } else {
+            debug_puts("stage3: framebuffer request failed\n");
+        }
     }
 
     prepare_proto(params, entry, &selected_console);

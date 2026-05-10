@@ -1,5 +1,6 @@
 #include "user/libc/include/nlibc.h"
 #include "user/libc/sys/syscall.h"
+#include "user/libc/include/nexos/file.h"
 
 uint64_t syscall4(uint64_t number,
                   uint64_t arg0,
@@ -222,10 +223,6 @@ int rtc_query(struct syscall_rtc_info *info) {
     return sys_query(SYS_QUERY_RTC, 0, 0, info);
 }
 
-void clear(void) {
-    (void)syscall4(SYS_CLEAR, 0, 0, 0, 0);
-}
-
 int exec(const char *name) {
     int rc = (int)syscall4(SYS_EXEC, (uint64_t)(uintptr_t)name, (uint64_t)(uintptr_t)environ, 0, 0);
 
@@ -282,6 +279,10 @@ void yield(void) {
 
 void sleep(uint32_t tick_count) {
     (void)syscall4(SYS_SLEEP, tick_count, 0, 0, 0);
+}
+
+int reboot(void) {
+    return (int)syscall4(SYS_REBOOT, 0, 0, 0, 0);
 }
 
 void exit_with_code(uint64_t code) {

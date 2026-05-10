@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
-#include "bootx.h"
+#include "bootx/bootx.h"
 
 int kernel_boot_info_valid(const struct bootx_boot_info *boot_info);
 uint64_t kernel_detect_phys_base(const struct bootx_boot_info *boot_info);

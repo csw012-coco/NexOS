@@ -1,6 +1,5 @@
 #include "kernel/internal/fs/file_device_backend.h"
 #include "fs/vfs_internal.h"
-#include "kernel/public/sys/syscall.h"
 #include "kernel/public/core/tty.h"
 
 static void file_device_init_with_ops(struct file *file, uint8_t kind, const struct file_ops *ops) {
@@ -39,8 +38,8 @@ static int64_t file_device_tty_read(struct file *file,
     if (tty == NULL || buffer == NULL || size == 0) {
         return 0;
     }
-    mode = (flags & SYS_READ_CHAR) != 0 ? TTY_READ_CHAR : TTY_READ_LINE;
-    tty_set_raw_input(tty, (flags & SYS_READ_CHAR) != 0);
+    mode = (flags & KERNEL_FILE_READ_CHAR) != 0 ? TTY_READ_CHAR : TTY_READ_LINE;
+    tty_set_raw_input(tty, (flags & KERNEL_FILE_READ_CHAR) != 0);
     return tty_read(tty, (char *)buffer, size, mode);
 }
 

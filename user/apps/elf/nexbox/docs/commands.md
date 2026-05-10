@@ -7,6 +7,17 @@ The runtime binary is `NEXBOX.ELF`, and the normal entry path is `/CMD/NEXBOX`.
 Design strategy:
 - [Friendly CLI + Action CLI Strategy](/home/csw012/nos/docs/cli_action_strategy.md)
 
+NexBox follows the NexOS fd-substrate rule: kernel resources stay accessible
+through file descriptors, while NexBox adds action metadata, capability checks,
+typed output, and automation on top.
+
+```text
+fd layer:      open/read/write/readdir on /dev, /proc, /event, and files
+friendly CLI:  cat /event/file/change
+action layer:  event.read source=file.change
+policy layer:  caps such as event.read, fs.read, audio.play
+```
+
 ## Invocation
 
 NexBox supports two entry styles:
@@ -278,10 +289,10 @@ Source:
 - `/home/csw012/nos/user/apps/elf/nexbox/applets/asm/`
 
 Commands:
-- `fasm`
+- `asm`
 
 Notes:
-- This is a small FASM-like assembler for NexOS, not a full upstream FASM port.
+- This is a small assembler for NexOS, not a full upstream FASM port.
 
 ### Boot Root
 
@@ -293,7 +304,7 @@ enumeration order.
 
 The current built-in applet list exposed by `help` is:
 
-`help actions action mapper echo clear pwd env which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm fasm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg switch_root dmesg lspci ac97 rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor meminfo minfo uname cpuinfo dbg`
+`help actions action mapper echo clear pwd env which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo dbg`
 
 ## Naming Notes
 
