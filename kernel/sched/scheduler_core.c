@@ -14,9 +14,9 @@ void job_restore_foreground(void) {
     job_bind_foreground_session();
     if (g_user_session.process.image_kind != PROCESS_IMAGE_NONE) {
         g_current_user_raw_entry = g_user_session.process.entry;
-        job_set_tty_foreground_pid(g_user_session.process.pid);
+        job_set_process_foreground_pid(&g_user_session.process, g_user_session.process.pid);
     } else {
-        job_set_tty_foreground_pid(0);
+        job_clear_process_foreground_pid(&g_user_session.process);
     }
 }
 

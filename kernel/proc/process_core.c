@@ -31,7 +31,6 @@ struct job_runtime g_bg_runtimes[USER_PROCESS_LIMIT];
 uint8_t g_nested_kernel_stacks[USER_PROCESS_LIMIT][NOS_KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 uint32_t g_scheduler_next_slot;
 uint32_t g_nested_kernel_stack_depth;
-uint32_t g_tty_foreground_pid;
 
 static int process_session_has_image(const struct process_session *session) {
     return session != NULL && session->process.image_kind != PROCESS_IMAGE_NONE;
@@ -317,10 +316,6 @@ int job_process_ignores_sigint(const struct process *proc) {
            streq(base, "ush.elf");
 }
 
-void job_set_tty_foreground_pid(uint32_t pid) {
-    g_tty_foreground_pid = pid;
-}
-
 struct process *process_alloc_slot(struct process_session *session, const struct process *parent_proc) {
     struct address_space *address_space;
 
@@ -387,7 +382,6 @@ void process_init(struct tty *tty, volatile uint32_t *timer_ticks) {
     process_clear_slot_state(&g_user_session.process);
     process_init_reserved_window(&g_user_session.address_space);
     g_scheduler_next_slot = 0;
-    g_tty_foreground_pid = 0;
     (void)timer_ticks;
 }
 

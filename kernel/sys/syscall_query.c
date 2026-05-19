@@ -1,5 +1,9 @@
 #include "kernel/internal/sys/syscall_internal.h"
 #include "kernel/internal/core/system_query_internal.h"
+#include "kernel/internal/fs/file_internal.h"
+#include "kernel/internal/proc/process_internal_base.h"
+#include "fs/vfs_internal.h"
+#include "kernel/public/core/tty.h"
 
 static void syscall_copy_name(char *dst, uint32_t dst_size, const char *src) {
     uint32_t i = 0;
@@ -137,6 +141,86 @@ uint64_t syscall_handle_part_query(uint32_t disk_index, uint32_t slot, uint64_t 
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }
 
+static void syscall_tty_info_set(struct syscall_tty_info *info,
+                                 uint32_t kind,
+                                 uint32_t index,
+                                 const char *path) {
+    if (info == 0) {
+        return;
+    }
+    info->kind = kind;
+    info->index = index;
+    info->active = kind == SYS_TTY_KIND_VIRTUAL && index == tty_active_index();
+    syscall_copy_name(info->path, sizeof(info->path), path);
+}
+
+static int syscall_tty_info_from_handle(struct syscall_tty_info *info, const void *handle) {
+    uint32_t i;
+
+    if (handle == 0) {
+        return 0;
+    }
+    for (i = 0; i < TTY_VIRTUAL_COUNT; i++) {
+        if (handle == tty_virtual(i)) {
+            if (i == 0u) {
+                syscall_tty_info_set(info, SYS_TTY_KIND_VIRTUAL, i, "/dev/tty");
+            } else if (i == 1u) {
+                syscall_tty_info_set(info, SYS_TTY_KIND_VIRTUAL, i, "/dev/tty2");
+            } else {
+                syscall_tty_info_set(info, SYS_TTY_KIND_VIRTUAL, i, "/dev/tty3");
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int syscall_tty_info_from_file(struct syscall_tty_info *info, const struct file *file) {
+    if (file == 0 || !file_is_active(file)) {
+        return 0;
+    }
+    if (file->private_data != 0 &&
+        (file->kind == KERNEL_FILE_TTY_STDIN ||
+         file->kind == KERNEL_FILE_TTY_STDOUT ||
+         file->kind == KERNEL_FILE_TTY_STDERR ||
+         file->kind == KERNEL_FILE_VFS)) {
+        if (syscall_tty_info_from_handle(info, file->private_data)) {
+            return 1;
+        }
+    }
+    if (file->kind == KERNEL_FILE_VFS &&
+        file->vfs_node.mount_kind == VFS_MOUNT_DEVFS &&
+        file->vfs_node.aux_index == VFS_DEV_TTYS0) {
+        syscall_tty_info_set(info, SYS_TTY_KIND_SERIAL, 0u, "/dev/ttyS0");
+        return 1;
+    }
+    return 0;
+}
+
+uint64_t syscall_handle_tty_query(uint32_t fd, uint64_t user_info_addr) {
+    struct syscall_tty_info info;
+    const struct process *proc;
+
+    if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
+        return syscall_kill_bad_user_pointer();
+    }
+    if (fd >= NOS_PROCESS_FILE_MAX) {
+        return 0;
+    }
+    proc = process_current();
+    if (proc == 0) {
+        return 0;
+    }
+    info.kind = SYS_TTY_KIND_NONE;
+    info.index = 0;
+    info.active = 0;
+    info.path[0] = '\0';
+    if (!syscall_tty_info_from_file(&info, &proc->files[fd])) {
+        return 0;
+    }
+    return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
+}
+
 uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint64_t user_info_addr) {
     switch (kind) {
         case SYS_QUERY_BOOT_INFO:
@@ -167,6 +251,8 @@ uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint6
             return syscall_handle_pci_query(user_info_addr);
         case SYS_QUERY_AC97:
             return syscall_handle_ac97_query(user_info_addr);
+        case SYS_QUERY_HDA:
+            return syscall_handle_hda_query(user_info_addr);
         case SYS_QUERY_RTL8139:
             return syscall_handle_rtl8139_query(user_info_addr);
         case SYS_QUERY_AUDIO:
@@ -175,6 +261,8 @@ uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint6
             return syscall_handle_machine_info_query(user_info_addr);
         case SYS_QUERY_RTC:
             return syscall_handle_rtc_query(user_info_addr);
+        case SYS_QUERY_TTY:
+            return syscall_handle_tty_query((uint32_t)arg0, user_info_addr);
         default:
             return 0;
     }

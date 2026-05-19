@@ -30,11 +30,11 @@ Q ?= @
 CFLAGS64 := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -Wall -Wextra -O2 -I$(ROOT)
 USERCFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -Wall -Wextra -O2 -I$(ROOT)
 LDFLAGS64 := -nostdlib -static -m elf_x86_64
-USER_ELF_BINS := $(BUILD)/HELLO.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
+USER_ELF_BINS := $(BUILD)/HELLO.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/GUIDEMO.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
 INIT_SCRIPT := $(ROOT)/user/init/INIT.SH
 OS_CONFIG := $(ROOT)/config/NOS.CFG
 FASM_TEST_SOURCE := $(ROOT)/user/examples/fasm/test.asm
-CMD_SUITE_NAMES := NEXBOX HELP ACTIONS ACTION MAPPER ECHO CLEAR PWD ENV WHICH TYPE LS CAT LESS HEXDUMP GREP DATE HWCLOCK SLEEP WATCH ON EVENTS WC HEAD TAIL FIND AS PICK SELECT SORT-BY COUNT-BY TO VIEW ED VI VIM TOUCH MV CP MKDIR RMDIR RM ASM STAT DU TREE FILE BLK PARTS FDISK DF MOUNTS PROGS FATLS FATFIND FATREAD CPIO MOUNT UMOUNT HOTPLUG RUN RUNELF RUNBG PS SESSION SERVICE JOBS WAIT ALARM TIMEOUT KILL FG BG SWITCH_ROOT REBOOT DMESG LSPCI AC97 RTL8139 RTL8139TX RTL8139RX ARP ROUTE NETSTAT PING DNS DHCP IFCONFIG HTTP WGET NC AUDIO TONE WAV MPLAY DOCTOR NEXCTL SYSINFO MEMINFO MINFO UNAME CPUINFO DBG
+CMD_SUITE_NAMES := NEXBOX HELP ACTIONS ACTION MAPPER ECHO CLEAR PWD TTY ENV FONT WHICH TYPE LS CAT LESS HEXDUMP GREP DATE HWCLOCK SLEEP WATCH ON EVENTS WC HEAD TAIL FIND AS PICK SELECT SORT-BY COUNT-BY TO VIEW ED VI VIM TOUCH MV CP MKDIR RMDIR RM ASM STAT DU TREE FILE BLK PARTS FDISK DF MOUNTS PROGS FATLS FATFIND FATREAD CPIO MOUNT UMOUNT HOTPLUG RUN RUNELF RUNBG PS SESSION SERVICE JOBS WAIT ALARM TIMEOUT KILL FG BG SWITCH_ROOT REBOOT DMESG LSPCI AC97 HDA RTL8139 RTL8139TX RTL8139RX ARP ROUTE NETSTAT PING DNS DHCP IFCONFIG HTTP WGET NC AUDIO TONE WAV MPLAY DOCTOR NEXCTL SYSINFO MEMINFO MINFO UNAME CPUINFO CONFIG DBG
 QEMU_AUDIODEV ?= pa,id=snd0
 QEMU_SERIAL ?= -serial stdio
 QEMU_NET ?= -nic user,model=rtl8139
@@ -45,9 +45,9 @@ QEMU_NET_TAP_SUDO ?= sudo
 QEMU_NET_TAP ?= -netdev tap,id=n0,ifname=$(QEMU_NET_TAP_IFNAME),script=no,downscript=no -device rtl8139,netdev=n0
 QEMU_NXFS_SATA ?= -drive if=none,id=nxfsdisk,format=raw,file=$(NXFS_IMAGE) -device ich9-ahci,id=ahci -device ide-hd,drive=nxfsdisk,bus=ahci.0
 QEMU_USB_MSC ?= -drive if=none,id=usbdisk,format=raw,file=$(NXFS_IMAGE) -device usb-ehci,id=ehci -device usb-storage,drive=usbdisk,bus=ehci.0
-QEMU_USB_HID ?= -device usb-kbd,bus=ehci.0
+QEMU_USB_HID ?= -device usb-kbd,bus=ehci.0 -device usb-mouse,bus=ehci.0
 QEMU_XHCI_MSC ?= -drive if=none,id=xhcidisk,format=raw,file=$(NXFS_IMAGE) -device qemu-xhci,id=xhci -device usb-storage,drive=xhcidisk,bus=xhci.0
-QEMU_XHCI_HID ?= -device usb-kbd,bus=xhci.0
+QEMU_XHCI_HID ?= -device usb-kbd,bus=xhci.0 -device usb-mouse,bus=xhci.0
 OVMF_CODE ?= /usr/share/OVMF/x64/OVMF_CODE.4m.fd
 OVMF_VARS_TEMPLATE ?= /usr/share/OVMF/x64/OVMF_VARS.4m.fd
 OVMF_VARS_IMAGE := $(BUILD)/OVMF_VARS.fd
@@ -61,6 +61,9 @@ KERNEL_C_SRCS := \
 	kernel/core/kernel_boot.c \
 	kernel/core/kernel_init.c \
 	kernel/core/kernel_config.c \
+	kernel/core/clipboard.c \
+	kernel/core/device_poll.c \
+	kernel/core/graphics_service.c \
 	kernel/core/machine_info.c \
 	kernel/core/system_query.c \
 	kernel/core/system_power.c \
@@ -91,6 +94,8 @@ KERNEL_C_SRCS := \
 	kernel/sys/syscall_query_audio.c \
 	kernel/sys/syscall_query_machine.c \
 	kernel/sys/syscall_power.c \
+	kernel/sys/syscall_event.c \
+	kernel/sys/syscall_gfx.c \
 	kernel/fs/fs_service_root_query.c \
 	kernel/fs/fs_service_mount_query.c \
 	kernel/fs/fs_service_path.c \
@@ -113,6 +118,7 @@ KERNEL_C_SRCS := \
 	drivers/audio/audio.c \
 	drivers/bus/pci.c \
 	drivers/audio/ac97.c \
+	drivers/audio/hda.c \
 	drivers/net/net_event.c \
 	drivers/net/rtl8139.c \
 	drivers/rtc/cmos.c \
@@ -121,18 +127,37 @@ KERNEL_C_SRCS := \
 	drivers/storage/ata.c \
 	drivers/storage/ramdisk.c \
 	drivers/usb/usb_hid_keymap.c \
+	drivers/usb/ehci_core.c \
+	drivers/usb/ehci_hid.c \
+	drivers/usb/ehci_msc.c \
+	drivers/usb/ehci_msc_block.c \
+	drivers/usb/ehci_hub.c \
 	drivers/usb/ehci.c \
+	drivers/usb/xhci_core.c \
+	drivers/usb/xhci_hid.c \
+	drivers/usb/xhci_msc.c \
+	drivers/usb/xhci_msc_block.c \
+	drivers/usb/xhci_hub.c \
+	drivers/usb/xhci_controller.c \
 	drivers/usb/xhci.c \
+	fs/fat32_core.c \
+	fs/fat32_name.c \
+	fs/fat32_dir.c \
+	fs/fat32_file.c \
 	fs/fat32.c \
 	fs/nxfs.c \
+	fs/nxfs_io.c \
 	fs/vfs.c \
 	fs/vfs_path.c \
 	fs/vfs_mount.c \
 	fs/vfs_devfs.c \
 	fs/vfs_procfs.c \
+	fs/vfs_procfs_format.c \
 	fs/vfs_eventfs.c \
+	fs/vfs_eventfs_format.c \
 	fs/vfs_proc_actions.c \
 	fs/vfs_io.c \
+	drivers/video/surface.c \
 	drivers/video/framebuffer.c \
 	drivers/video/vga.c \
 	drivers/input/keyboard.c \
@@ -183,6 +208,7 @@ USER_ELF_C_SRCS := \
 	user/apps/elf/ls.c \
 	user/apps/elf/nexbox/applets/fs/cmd_ls_shared.c \
 	user/apps/elf/wdemo.c \
+	user/apps/elf/guidemo.c \
 	user/apps/elf/forth.c \
 	user/apps/elf/ush.c \
 	user/apps/elf/ush_editor.c \
@@ -194,9 +220,20 @@ USER_ELF_C_SRCS := \
 	user/apps/elf/nexbox/core/cmdsuite_action.c \
 	user/apps/elf/nexbox/applets/fs/cmdsuite_basic.c \
 	user/apps/elf/nexbox/applets/text/cmdsuite_text.c \
+	user/apps/elf/nexbox/applets/text/cmdsuite_text_events.c \
+	user/apps/elf/nexbox/applets/text/cmdsuite_text_table.c \
 	user/apps/elf/nexbox/applets/audio/cmdsuite_audio.c \
 	user/apps/elf/nexbox/applets/net/cmdsuite_net.c \
+	user/apps/elf/nexbox/applets/net/cmdsuite_net_arp.c \
+	user/apps/elf/nexbox/applets/net/cmdsuite_net_dns.c \
+	user/apps/elf/nexbox/applets/net/cmdsuite_net_dhcp.c \
+	user/apps/elf/nexbox/applets/net/cmdsuite_net_tcp.c \
+	user/apps/elf/nexbox/applets/net/cmdsuite_net_http.c \
+	user/apps/elf/nexbox/applets/net/cmdsuite_net_rtl8139.c \
 	user/apps/elf/nexbox/applets/editor/cmdsuite_editor.c \
+	user/apps/elf/nexbox/applets/fs/cmdsuite_storage_fdisk.c \
+	user/apps/elf/nexbox/applets/fs/cmdsuite_storage_block.c \
+	user/apps/elf/nexbox/applets/fs/cmdsuite_storage_cpio.c \
 	user/apps/elf/nexbox/applets/fs/cmdsuite_storage.c \
 	user/apps/elf/nexbox/applets/system/cmdsuite_session.c \
 	user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.c \
@@ -283,8 +320,14 @@ check-deps:
 	@test -f $(ROOT)/docs/technical_debt.md || (echo "missing docs/technical_debt.md"; exit 1)
 	@test -d $(ROOT)/docs/adr || (echo "missing docs/adr/"; exit 1)
 	@test -f $(ROOT)/docs/adr/0001-operating-mode.md || (echo "missing docs/adr/0001-operating-mode.md"; exit 1)
+	@test -f $(ROOT)/abi/syscall_abi.h || (echo "missing abi/syscall_abi.h"; exit 1)
 	@grep -q "^Operating Mode:" $(ROOT)/docs/project_status.md || (echo "project_status.md missing Operating Mode"; exit 1)
 	@grep -q "^Applicable Modes:" $(ROOT)/docs/technical_debt.md || (echo "technical_debt.md missing Applicable Modes fields"; exit 1)
+	@grep -q '#include "abi/syscall_abi.h"' $(ROOT)/kernel/public/sys/syscall.h || (echo "kernel syscall header must include abi/syscall_abi.h"; exit 1)
+	@grep -q '#include "abi/syscall_abi.h"' $(ROOT)/user/public/sysapi.h || (echo "user syscall header must include abi/syscall_abi.h"; exit 1)
+	@! rg -n '^(enum syscall_|struct syscall_(request|dirent|process_info|block_info|partition_info|mount_info|boot_info|memmap_info|pmm_info|kmsg_info|pci_info|ac97_info|hda_info|rtl8139_info|rtl8139_rx_info|rtl8139_tx_info|audio_info|audio_play_info|rtc_info|machine_info|block_read_info|block_write_info|program_info|fat_entry_info|root_entry_info|gfx_info|gfx_command))|NOS_ELF_FILE_BUFFER_SIZE|SYS_MAX' $(ROOT)/kernel/public/sys/syscall.h $(ROOT)/user/public/sysapi.h || (echo "syscall ABI belongs in abi/syscall_abi.h"; exit 1)
+	@! rg -n '#include "kernel/public/sys/syscall.h"' $(ROOT)/user || (echo "user code must include user/public/sysapi.h, not kernel syscall headers"; exit 1)
+	@! rg -n '#include "hal/hal.h"|hal_[A-Za-z0-9_]+[[:space:]]*\(' $(ROOT)/kernel/sys $(ROOT)/kernel/internal/sys || (echo "syscall layer must not call HAL directly"; exit 1)
 	@echo "SOSP dependency/governance checks passed"
 
 oneoff-user: $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/apps/elf/user.ld | $(BUILD)
@@ -317,6 +360,7 @@ $(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCR
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/CATDEMO.ELF ::/HOME/CATDEMO.ELF
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/LSDEMO.ELF ::/HOME/LSDEMO.ELF
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/WDEMO.ELF ::/HOME/WDEMO.ELF
+	$(Q)mcopy -i $@@@1048576 $(BUILD)/GUIDEMO.ELF ::/HOME/GUIDEMO.ELF
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/FORTH.ELF ::/HOME/FORTH.ELF
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/USH.ELF ::/HOME/USH.ELF
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/NEXBOX.ELF ::/HOME/NEXBOX.ELF
@@ -336,6 +380,7 @@ $(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCR
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/CATDEMO.ELF ::/CMD/CAT
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/LSDEMO.ELF ::/CMD/LS
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/WDEMO.ELF ::/CMD/WDEMO
+	$(Q)mcopy -i $@@@1048576 $(BUILD)/GUIDEMO.ELF ::/CMD/GUIDEMO
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/FORTH.ELF ::/CMD/FORTH
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/USH.ELF ::/CMD/USH
 	$(Q)for alias in $(CMD_SUITE_NAMES); do mcopy -o -i $@@@1048576 $(BUILD)/NEXBOX.ELF ::/CMD/$$alias; done
@@ -344,9 +389,9 @@ $(BUILD):
 	$(call log_cmd,MKDIR,$@)
 	$(Q)mkdir -p $(BUILD)
 
-$(NXFS_TOOL): $(ROOT)/tools/nxfs_host.c $(ROOT)/fs/nxfs.c $(ROOT)/fs/nxfs.h $(ROOT)/kernel/public/fs/nxfs_types.h $(ROOT)/lib/string.c | $(BUILD)
+$(NXFS_TOOL): $(ROOT)/tools/nxfs_host.c $(ROOT)/fs/nxfs.c $(ROOT)/fs/nxfs_io.c $(ROOT)/fs/nxfs_internal.h $(ROOT)/fs/nxfs.h $(ROOT)/kernel/public/fs/nxfs_types.h $(ROOT)/lib/string.c | $(BUILD)
 	$(call log_cmd,HOSTCC,$@)
-	$(Q)$(HOSTCC) -O2 -Wall -Wextra -fno-builtin -I$(ROOT) $(ROOT)/tools/nxfs_host.c $(ROOT)/fs/nxfs.c $(ROOT)/lib/string.c -o $@
+	$(Q)$(HOSTCC) -O2 -Wall -Wextra -fno-builtin -I$(ROOT) $(ROOT)/tools/nxfs_host.c $(ROOT)/fs/nxfs.c $(ROOT)/fs/nxfs_io.c $(ROOT)/lib/string.c -o $@
 
 $(NXFS_FS): $(NXFS_TOOL)
 	$(call log_cmd,GEN,$@)
@@ -388,12 +433,14 @@ $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.h
 	$(Q)$(NXFS_TOOL) write $@ $(ROOT)/config/ACTION.CAPS /home/action.caps
 	$(Q)$(NXFS_TOOL) write $@ $(FASM_TEST_SOURCE) /home/test.asm
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/HELLO.ELF /home/hello.elf
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/GUIDEMO.ELF /home/guidemo.elf
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/FORTH.ELF /home/forth.elf
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/USH.ELF /home/ush.elf
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /home/nexbox.elf
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/USH.ELF /cmd/ush
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/nexbox
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/HELLO.ELF /cmd/hello
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/GUIDEMO.ELF /cmd/guidemo
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/FORTH.ELF /cmd/forth
 	$(Q)for alias in $(CMD_SUITE_NAMES); do lower=$$(printf '%s' "$$alias" | tr 'A-Z' 'a-z'); $(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/$$lower; done
 
@@ -432,9 +479,10 @@ SLEEPDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/sleepdemo.o
 CATDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/cat.o
 LSDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/ls.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
 WDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/wdemo.o
+GUIDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/guidemo.o
 FORTH_ELF_OBJS := $(BUILD)/user/apps/elf/forth.o
 USH_ELF_OBJS := $(BUILD)/user/apps/elf/ush.o $(BUILD)/user/apps/elf/ush_editor.o $(BUILD)/user/apps/elf/ush_vars.o $(BUILD)/user/apps/elf/ush_exec.o $(BUILD)/user/apps/elf/ush_parse.o
-NEXBOX_ELF_OBJS := $(BUILD)/user/apps/elf/nexbox/core/cmdsuite.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_dispatch.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_action.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_basic.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text.o $(BUILD)/user/apps/elf/nexbox/applets/audio/cmdsuite_audio.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net.o $(BUILD)/user/apps/elf/nexbox/applets/editor/cmdsuite_editor.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_session.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.o $(BUILD)/user/apps/elf/nexbox/applets/proc/cmdsuite_proc.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug_doctor.o $(BUILD)/user/apps/elf/nexbox/applets/asm/cmdsuite_asm.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
+NEXBOX_ELF_OBJS := $(BUILD)/user/apps/elf/nexbox/core/cmdsuite.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_dispatch.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_action.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_basic.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text_events.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text_table.o $(BUILD)/user/apps/elf/nexbox/applets/audio/cmdsuite_audio.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_arp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_dns.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_dhcp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_tcp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_http.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_rtl8139.o $(BUILD)/user/apps/elf/nexbox/applets/editor/cmdsuite_editor.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_fdisk.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_block.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_cpio.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_session.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.o $(BUILD)/user/apps/elf/nexbox/applets/proc/cmdsuite_proc.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug_doctor.o $(BUILD)/user/apps/elf/nexbox/applets/asm/cmdsuite_asm.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
 
 $(eval $(call define_user_elf,HELLO.ELF,$(HELLO_ELF_OBJS)))
 $(eval $(call define_user_elf,KEYDEMO.ELF,$(KEYDEMO_ELF_OBJS)))
@@ -448,6 +496,7 @@ $(eval $(call define_user_elf,SLEEPDEMO.ELF,$(SLEEPDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,CATDEMO.ELF,$(CATDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,LSDEMO.ELF,$(LSDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,WDEMO.ELF,$(WDEMO_ELF_OBJS)))
+$(eval $(call define_user_elf,GUIDEMO.ELF,$(GUIDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,FORTH.ELF,$(FORTH_ELF_OBJS)))
 $(eval $(call define_user_elf,USH.ELF,$(USH_ELF_OBJS)))
 $(eval $(call define_user_elf,NEXBOX.ELF,$(NEXBOX_ELF_OBJS)))
@@ -698,7 +747,7 @@ tap-down:
 	@$(QEMU_NET_TAP_SUDO) ip link delete $(QEMU_NET_TAP_IFNAME) || true
 	@printf '%s\n' "[tap-down] removed $(QEMU_NET_TAP_IFNAME)"
 
-check: check-kernel check-image
+check: check-deps check-kernel check-image
 	@printf '%s\n' '[check] build and image smoke checks passed'
 
 check-kernel: $(BUILD)/kernel64.elf

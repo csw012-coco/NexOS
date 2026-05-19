@@ -307,6 +307,8 @@ int cmd_audio(int argc, char **argv) {
         write_str(" driver=");
         if (info.driver_kind == NEX_AUDIO_DRIVER_AC97) {
             write_str("ac97");
+        } else if (info.driver_kind == NEX_AUDIO_DRIVER_HDA) {
+            write_str("hda");
         } else {
             write_str("unknown");
         }

@@ -68,6 +68,20 @@ static int starts_with_ignore_case_local(const char *text, const char *prefix) {
     return 1;
 }
 
+static int ush_read_char_nonblock(char *out) {
+    return nex_read(STDIN_FILENO, out, 1u, NEX_READ_NONBLOCK | NEX_READ_CHAR) > 0;
+}
+
+static int ush_read_escape_char(char *out) {
+    for (uint32_t i = 0; i < 4u; i++) {
+        if (ush_read_char_nonblock(out)) {
+            return 1;
+        }
+        yield();
+    }
+    return 0;
+}
+
 static void lowercase_copy_local(char *dst, uint32_t dst_size, const char *src) {
     uint32_t i = 0;
 
@@ -496,8 +510,9 @@ int read_line_chars(struct ush_editor *editor, char *line, uint32_t max_len) {
     editor->history_index = -1;
     editor->scratch_saved = 0;
     for (;;) {
-        if (nex_read(STDIN_FILENO, &ch, 2, NEX_READ_CHAR) == 0) {
-            return 0;
+        if (!ush_read_char_nonblock(&ch)) {
+            yield();
+            continue;
         }
         if (ch == 0x03) {
             editor->line[0] = '\0';
@@ -547,11 +562,11 @@ int read_line_chars(struct ush_editor *editor, char *line, uint32_t max_len) {
             continue;
         }
         if (ch == '\x1b') {
-            if (nex_read(STDIN_FILENO, &esc, 2, NEX_READ_CHAR) == 0) {
+            if (!ush_read_escape_char(&esc)) {
                 continue;
             }
             if (esc == 'O') {
-                if (nex_read(STDIN_FILENO, &bracket, 2, NEX_READ_CHAR) == 0) {
+                if (!ush_read_escape_char(&bracket)) {
                     continue;
                 }
                 switch (bracket) {
@@ -571,11 +586,11 @@ int read_line_chars(struct ush_editor *editor, char *line, uint32_t max_len) {
             if (esc != '[') {
                 continue;
             }
-            if (nex_read(STDIN_FILENO, &bracket, 2, NEX_READ_CHAR) == 0) {
+            if (!ush_read_escape_char(&bracket)) {
                 continue;
             }
             if (bracket >= '0' && bracket <= '9') {
-                if (nex_read(STDIN_FILENO, &tail, 2, NEX_READ_CHAR) == 0) {
+                if (!ush_read_escape_char(&tail)) {
                     continue;
                 }
                 if (tail == '~') {

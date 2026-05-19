@@ -1,6 +1,7 @@
 #include "kernel/internal/proc/process_session_internal.h"
 #include "kernel/public/mem/vmm.h"
 #include "kernel/public/core/tty.h"
+#include "kernel/public/proc/scheduler.h"
 
 static void session_restore_kernel_root(struct address_space *address_space) {
     if (address_space != 0 && address_space->user_cr3 != 0 && address_space->kernel_cr3 != 0) {
@@ -79,12 +80,9 @@ void session_finish(struct process_session *session, struct user_page_mapping *m
     }
 
     g_current_user_raw_entry = 0;
-    if (g_tty_foreground_pid == proc->pid) {
-        g_tty_foreground_pid = 0;
-    }
+    job_clear_process_foreground_pid(proc);
     process_mark_exited(proc->address_space != 0 ? proc : 0, proc->exit_code);
     process_clear_current(session);
-    tty_set_raw_input(g_user_tty, 0);
 }
 
 int session_enter_ring3(struct process_session *session,
@@ -108,13 +106,18 @@ int session_enter_ring3(struct process_session *session,
     proc->state = PROCESS_STATE_RUNNING;
     proc->has_saved_frame = 0;
     proc->wake_tick = 0;
-    job_set_tty_foreground_pid(proc->pid);
+    job_set_process_foreground_pid(proc, proc->pid);
 
     for (;;) {
         if (!session_run_active_slice(session, mappings, entry, stack_top, 0)) {
             return 0;
         }
         if (proc->state == PROCESS_STATE_READY) {
+            proc->state = PROCESS_STATE_WAITING;
+            sched_tick();
+            if (proc->state == PROCESS_STATE_WAITING) {
+                proc->state = PROCESS_STATE_READY;
+            }
             continue;
         }
         if (proc->state == PROCESS_STATE_SLEEPING) {

@@ -10,8 +10,10 @@ static uint32_t g_mouse_tail;
 static uint32_t g_mouse_count;
 static uint32_t g_mouse_dropped;
 static uint32_t g_mouse_seq;
+static uint8_t g_mouse_last_buttons;
 static uint8_t g_packet[3];
 static uint8_t g_packet_index;
+static void (*g_mouse_event_callback)(const struct mouse_event_record *event);
 
 static void mouse_wait_input_empty(void) {
     for (uint32_t i = 0; i < 100000u; i++) {
@@ -45,7 +47,7 @@ void mouse_init(void) {
     hal_io_out8(0x64, 0x20u);
     mouse_wait_output_full();
     {
-        uint8_t status = (uint8_t)(hal_io_in8(0x60) | 0x02u);
+        uint8_t status = (uint8_t)((hal_io_in8(0x60) | 0x02u) & ~0x20u);
 
         mouse_wait_input_empty();
         hal_io_out8(0x64, 0x60u);
@@ -57,10 +59,20 @@ void mouse_init(void) {
     hal_irq_set_mask(12u, 0);
 }
 
-static void mouse_event_push(int32_t dx, int32_t dy, uint8_t buttons, uint32_t tick) {
+void mouse_set_event_callback(void (*callback)(const struct mouse_event_record *event)) {
+    g_mouse_event_callback = callback;
+}
+
+void mouse_push_event(int32_t dx, int32_t dy, uint8_t buttons, uint32_t tick) {
     struct mouse_event_record *slot;
     uint32_t head;
 
+    if (dx == 0 && dy == 0) {
+        if (buttons == g_mouse_last_buttons) {
+            return;
+        }
+    }
+    g_mouse_last_buttons = buttons;
     if (g_mouse_count >= MOUSE_EVENT_QUEUE_SIZE) {
         g_mouse_tail = (g_mouse_tail + 1u) % MOUSE_EVENT_QUEUE_SIZE;
         g_mouse_count--;
@@ -75,6 +87,9 @@ static void mouse_event_push(int32_t dx, int32_t dy, uint8_t buttons, uint32_t t
     slot->buttons = buttons;
     g_mouse_head = (head + 1u) % MOUSE_EVENT_QUEUE_SIZE;
     g_mouse_count++;
+    if (g_mouse_event_callback != 0) {
+        g_mouse_event_callback(slot);
+    }
 }
 
 void mouse_handle_data(uint8_t data, uint32_t tick) {
@@ -91,7 +106,21 @@ void mouse_handle_data(uint8_t data, uint32_t tick) {
         int32_t dy = -(int32_t)(int8_t)g_packet[2];
         uint8_t buttons = (uint8_t)(g_packet[0] & 0x07u);
 
-        mouse_event_push(dx, dy, buttons, tick);
+        mouse_push_event(dx, dy, buttons, tick);
+    }
+}
+
+void mouse_poll_ps2(uint32_t tick) {
+    for (uint32_t i = 0; i < 8u; i++) {
+        uint8_t status = hal_io_in8(0x64);
+
+        if ((status & 0x01u) == 0u) {
+            return;
+        }
+        if ((status & 0x20u) == 0u) {
+            return;
+        }
+        mouse_handle_data(hal_io_in8(0x60), tick);
     }
 }
 

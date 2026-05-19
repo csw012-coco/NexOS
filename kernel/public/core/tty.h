@@ -18,9 +18,21 @@ enum tty_read_mode {
     TTY_READ_CHAR = 1
 };
 
+enum {
+    TTY_VIRTUAL_COUNT = 3
+};
+
 struct tty;
 
 void tty_init(struct tty *tty, uint16_t top_row, uint16_t bottom_row, uint8_t color);
+void tty_virtual_init_all(uint16_t top_row, uint16_t bottom_row, uint8_t color);
+struct tty *tty_virtual(uint32_t index);
+struct tty *tty_active(void);
+uint32_t tty_active_index(void);
+int tty_switch_active(uint32_t index);
+void tty_set_foreground_pid(struct tty *tty, uint32_t pid);
+uint32_t tty_foreground_pid(const struct tty *tty);
+void tty_clear_foreground_pid(struct tty *tty, uint32_t pid);
 void tty_clear(struct tty *tty);
 void tty_putc(struct tty *tty, char ch, uint8_t color);
 uint32_t tty_write(struct tty *tty, const char *data, uint32_t len, uint8_t color);

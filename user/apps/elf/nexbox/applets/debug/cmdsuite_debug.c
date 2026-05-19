@@ -137,6 +137,68 @@ int cmd_ac97(void) {
     return 0;
 }
 
+int cmd_hda(void) {
+    struct syscall_hda_info info;
+
+    if (hda_query(&info) <= 0 || !info.present) {
+        write_err_str("hda: controller not found\n");
+        return 1;
+    }
+    write_str("HD Audio controller\n");
+    write_str("bdf ");
+    write_dec(info.bus);
+    write_str(":");
+    write_dec(info.slot);
+    write_str(".");
+    write_dec(info.function);
+    write_str(" vendor=");
+    write_hex_u32(info.vendor_id);
+    write_str(" device=");
+    write_hex_u32(info.device_id);
+    write_str(" irq=");
+    write_dec(info.irq_line);
+    write_str(" pin=");
+    write_dec(info.irq_pin);
+    write_str("\n");
+    write_str("mmio hi=");
+    write_hex_u32(info.mmio_base_hi);
+    write_str(" lo=");
+    write_hex_u32(info.mmio_base_lo);
+    write_str(" pci_cmd=");
+    write_hex_u32(info.pci_command);
+    write_str(" prog_if=");
+    write_hex_u32(info.prog_if);
+    write_str("\n");
+    write_str("version ");
+    write_dec(info.vmaj);
+    write_str(".");
+    write_dec(info.vmin);
+    write_str(" gcap=");
+    write_hex_u32(info.gcap);
+    write_str(" inpay=");
+    write_hex_u32(info.inpay);
+    write_str(" outpay=");
+    write_hex_u32(info.outpay);
+    write_str("\n");
+    write_str("gctl=");
+    write_hex_u32(info.gctl);
+    write_str(" statests=");
+    write_hex_u32(info.statests);
+    write_str(" wakeen=");
+    write_hex_u32(info.wakeen);
+    write_str(" codec_mask=");
+    write_hex_u32(info.codec_mask);
+    write_str(" init=");
+    write_dec(info.initialized);
+    write_str("\n");
+    write_str("rings corb_size=");
+    write_hex_u32(info.corb_size);
+    write_str(" rirb_size=");
+    write_hex_u32(info.rirb_size);
+    write_str("\n");
+    return 0;
+}
+
 int cmd_meminfo(void) {
     struct syscall_memmap_info meminfo;
     struct syscall_pmm_info pmminfo;

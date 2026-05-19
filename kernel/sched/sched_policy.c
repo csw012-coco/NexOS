@@ -14,6 +14,7 @@
 /* Policy state */
 static enum sched_mode g_sched_mode = SCHED_MODE_INTERACTIVE;
 static uint32_t g_sched_next_slot = 0;
+static uint8_t g_sched_foreground_turn = 1u;
 
 /* ============================================================================
  * Public Policy Interface
@@ -21,6 +22,7 @@ static uint32_t g_sched_next_slot = 0;
 
 void sched_policy_init(void) {
     g_sched_next_slot = 0;
+    g_sched_foreground_turn = 1u;
     g_sched_mode = SCHED_MODE_INTERACTIVE;
 }
 
@@ -68,16 +70,7 @@ uint32_t sched_policy_update_wake_times(uint32_t current_ticks) {
  * Current: Simple round-robin with equal time slices.
  * Returns the slot index of next ready process, or -1 if none.
  */
-int32_t sched_policy_select_next(void) {
-    /* In interactive mode, check foreground first for responsiveness */
-    if (g_sched_mode == SCHED_MODE_INTERACTIVE) {
-        if (g_user_session.process.state == PROCESS_STATE_READY) {
-            int32_t result = -1;  /* Foreground has special slot */
-            g_sched_next_slot = 0;  /* Reset round-robin after foreground */
-            return result;  /* Caller knows -1 = foreground session */
-        }
-    }
-
+static int32_t sched_policy_select_background(void) {
     /* Round-robin through background jobs (job slots 0 to USER_PROCESS_LIMIT-1) */
     for (uint32_t pass = 0; pass < USER_PROCESS_LIMIT; pass++) {
         uint32_t slot = (g_sched_next_slot + pass) % USER_PROCESS_LIMIT;
@@ -93,6 +86,28 @@ int32_t sched_policy_select_next(void) {
         /* Found a ready process */
         g_sched_next_slot = (slot + 1) % USER_PROCESS_LIMIT;
         return (int32_t)slot;
+    }
+    return -2;
+}
+
+int32_t sched_policy_select_next(void) {
+    int foreground_ready = g_user_session.process.state == PROCESS_STATE_READY;
+    int32_t background_slot;
+
+    if (g_sched_mode == SCHED_MODE_INTERACTIVE && foreground_ready && g_sched_foreground_turn != 0u) {
+        g_sched_foreground_turn = 0u;
+        return -1;  /* Caller knows -1 = foreground session */
+    }
+
+    background_slot = sched_policy_select_background();
+    if (background_slot >= 0) {
+        g_sched_foreground_turn = 1u;
+        return background_slot;
+    }
+
+    if (foreground_ready) {
+        g_sched_foreground_turn = 0u;
+        return -1;
     }
 
     /* No ready process found, return -1 */

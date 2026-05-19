@@ -94,8 +94,9 @@ uint64_t pmm_alloc_contiguous(uint32_t page_count) {
             run++;
             if (run == page_count) {
                 uint32_t alloc_start = start_index - 1u;
+                uint32_t alloc_end = alloc_start + page_count - 1u;
 
-                base = free_page_stack[alloc_start];
+                base = free_page_stack[alloc_end];
                 write_index = alloc_start;
                 for (uint32_t read_index = alloc_start + page_count; read_index < free_page_count; read_index++) {
                     free_page_stack[write_index++] = free_page_stack[read_index];

@@ -5,6 +5,7 @@
 #include "kernel/public/sys/syscall.h"
 
 struct vfs;
+struct tty;
 
 int job_run_background(struct vfs *vfs, const char *name83);
 int job_run_background_with_pid(struct vfs *vfs,
@@ -19,6 +20,7 @@ int process_kill_pid(uint32_t pid);
 int job_foreground_pid(uint32_t pid);
 int job_background_pid(uint32_t pid);
 void job_restore_foreground(void);
-int job_tty_foreground_is_shell(void);
-int job_tty_sigint(void);
-int job_tty_sigtstp(const struct syscall_frame *frame);
+int job_tty_foreground_is_shell(struct tty *tty);
+int job_tty_sigint(struct tty *tty);
+int job_tty_sigtstp(struct tty *tty, const struct syscall_frame *frame);
+int job_tty_wake_waiting_processes(struct tty *tty);

@@ -3,7 +3,7 @@
 #include "hal/hal.h"
 #include "kernel/public/core/console.h"
 
-#define NOS_KERNEL_VERSION "0.1.0"
+#define NOS_KERNEL_VERSION "0.1.1"
 
 static void machine_info_copy_text(char *dst, uint32_t dst_size, const char *src) {
     uint32_t i = 0;
@@ -92,4 +92,6 @@ void kernel_fill_machine_info(struct syscall_machine_info *info) {
     machine_info_fill_cpu_brand(info);
     info->text_columns = console_width();
     info->text_rows = console_rows();
+    info->text_cell_width = 8u;
+    info->text_cell_height = hal_display_cell_height();
 }

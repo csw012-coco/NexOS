@@ -19,12 +19,14 @@
 #define NEX_QUERY_AUDIO SYS_QUERY_AUDIO
 #define NEX_QUERY_MACHINE_INFO SYS_QUERY_MACHINE_INFO
 #define NEX_QUERY_RTC SYS_QUERY_RTC
+#define NEX_QUERY_TTY SYS_QUERY_TTY
 
 int sys_query(uint32_t kind, uint64_t arg0, uint64_t arg1, void *buffer);
 int kmsg_query(uint32_t offset, struct syscall_kmsg_info *info);
 int pci_query(struct syscall_pci_info *info);
 int machine_info_query(struct syscall_machine_info *info);
 int rtc_query(struct syscall_rtc_info *info);
+int tty_query(uint32_t fd, struct syscall_tty_info *info);
 void clear(void);
 uint32_t ticks(void);
 uint64_t page_alloc(void);
@@ -32,5 +34,6 @@ int page_free(uint64_t user_page_addr);
 void yield(void);
 void sleep(uint32_t ticks);
 int reboot(void);
+int capability_event(const struct syscall_capability_event *event);
 __attribute__((noreturn)) void exit_with_code(uint64_t code);
 __attribute__((noreturn)) void exit(void);

@@ -62,6 +62,23 @@ void vga_set_cursor(uint16_t row, uint16_t col) {
     hal_io_out8(0x3d5, (uint8_t)((pos >> 8) & 0xffu));
 }
 
+void vga_scroll_rows(uint16_t top_row, uint16_t bottom_row, uint8_t clear_color) {
+    if (top_row >= bottom_row || top_row >= VGA_HEIGHT) {
+        return;
+    }
+    if (bottom_row >= VGA_HEIGHT) {
+        bottom_row = VGA_HEIGHT - 1u;
+    }
+    for (uint16_t row = top_row; row < bottom_row; row++) {
+        for (uint16_t col = 0; col < VGA_WIDTH; col++) {
+            vga[row * VGA_WIDTH + col] = vga[(row + 1u) * VGA_WIDTH + col];
+        }
+    }
+    for (uint16_t col = 0; col < VGA_WIDTH; col++) {
+        vga[bottom_row * VGA_WIDTH + col] = (uint16_t)clear_color << 8 | ' ';
+    }
+}
+
 void vga_write_line(uint16_t row, uint16_t col, uint8_t color, const char *text) {
     while (*text != '\0' && col < VGA_WIDTH) {
         vga_put_at(row, col++, color, *text++);

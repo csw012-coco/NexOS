@@ -9,6 +9,8 @@
 #include "nexos/audio.h"
 #include "nexos/file.h"
 #include "nexos/fs.h"
+#include "nexos/gfx.h"
+#include "nexos/gui.h"
 #include "nexos/net.h"
 #include "nexos/process.h"
 #include "nexos/string.h"

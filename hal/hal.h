@@ -16,6 +16,7 @@ struct hal_interrupt_handlers {
 
 struct bootx_console_info;
 struct bootx_boot_info;
+struct surface;
 
 enum {
     HAL_TEXT_WIDTH = 240,
@@ -31,6 +32,7 @@ enum {
 void hal_paging_init(uint64_t kernel_phys_addr);
 void hal_display_load_font(const struct bootx_boot_info *boot_info);
 void hal_display_init(const struct bootx_console_info *console);
+int hal_display_enable_backbuffer(void);
 void hal_platform_init(const struct hal_interrupt_handlers *handlers);
 uint64_t hal_paging_current_root(void);
 void hal_paging_switch_root(uint64_t cr3);
@@ -64,6 +66,44 @@ void hal_display_enable_cursor(uint8_t start, uint8_t end);
 void hal_display_set_cursor(uint16_t row, uint16_t col);
 uint16_t hal_display_text_columns(void);
 uint16_t hal_display_text_rows(void);
+uint32_t hal_display_cell_height(void);
+void hal_display_bitblt(uint32_t src_x,
+                        uint32_t src_y,
+                        uint32_t width,
+                        uint32_t height,
+                        uint32_t dst_x,
+                        uint32_t dst_y);
+void hal_display_scroll_rows(uint16_t top_row, uint16_t bottom_row, uint8_t clear_color);
+void hal_display_blit_surface(const struct surface *surface,
+                              uint32_t src_x,
+                              uint32_t src_y,
+                              uint32_t width,
+                              uint32_t height,
+                              int32_t dst_x,
+                              int32_t dst_y);
+void hal_display_draw_pixel(int32_t x, int32_t y, uint32_t rgb);
+void hal_display_draw_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb);
+void hal_display_draw_rect(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb);
+void hal_display_fill_rect_rgb(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb);
+void hal_display_draw_triangle(int32_t x0,
+                               int32_t y0,
+                               int32_t x1,
+                               int32_t y1,
+                               int32_t x2,
+                               int32_t y2,
+                               uint32_t rgb);
+void hal_display_fill_triangle(int32_t x0,
+                               int32_t y0,
+                               int32_t x1,
+                               int32_t y1,
+                               int32_t x2,
+                               int32_t y2,
+                               uint32_t rgb);
+void hal_display_draw_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb);
+void hal_display_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb);
+void hal_display_set_mouse_cursor_enabled(int enabled);
+void hal_display_move_mouse_cursor(int32_t dx, int32_t dy);
+int hal_display_mouse_cursor_cell(uint16_t *row_out, uint16_t *col_out);
 uint8_t hal_io_in8(uint16_t port);
 uint16_t hal_io_in16(uint16_t port);
 void hal_io_out8(uint16_t port, uint8_t value);

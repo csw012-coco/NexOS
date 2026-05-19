@@ -51,3 +51,10 @@ void hal_x86_usermode_enter_impl(uint64_t entry, uint64_t user_stack);
 void hal_x86_usermode_resume_impl(const struct syscall_frame *frame);
 uint64_t hal_x86_kernel_stack_top_impl(void);
 void hal_x86_set_kernel_stack_top_impl(uint64_t rsp0);
+uint32_t hal_x86_display_cell_height_impl(void);
+void hal_x86_display_bitblt_impl(uint32_t src_x,
+                                 uint32_t src_y,
+                                 uint32_t width,
+                                 uint32_t height,
+                                 uint32_t dst_x,
+                                 uint32_t dst_y);

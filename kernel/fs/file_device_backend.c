@@ -1,4 +1,5 @@
 #include "kernel/internal/fs/file_device_backend.h"
+#include "drivers/serial/uart.h"
 #include "fs/vfs_internal.h"
 #include "kernel/public/core/tty.h"
 
@@ -61,6 +62,34 @@ static int64_t file_device_close(struct file *file) {
     return file_device_reset_and_ok(file);
 }
 
+static int64_t file_device_uart_read(struct file *file,
+                                     const struct vfs *vfs,
+                                     void *buffer,
+                                     uint32_t size,
+                                     uint32_t flags) {
+    (void)file;
+    (void)vfs;
+    (void)flags;
+    if (buffer == 0 || size == 0u) {
+        return 0;
+    }
+    return (int64_t)uart_read_tty((char *)buffer,
+                                  size,
+                                  (flags & KERNEL_FILE_READ_CHAR) != 0);
+}
+
+static int64_t file_device_uart_write(struct file *file,
+                                      const struct vfs *vfs,
+                                      const void *buffer,
+                                      uint32_t size) {
+    (void)file;
+    (void)vfs;
+    if (buffer == 0 || size == 0u) {
+        return 0;
+    }
+    return (int64_t)uart_write_buffer((const char *)buffer, size);
+}
+
 static const struct file_ops g_file_ops_tty_in = {
     .read = file_device_tty_read,
     .write = 0,
@@ -81,6 +110,26 @@ static const struct file_ops g_file_ops_devfs_tty = {
     .close = file_device_close,
     .readdir = file_device_readdir_unsupported,
 };
+
+static const struct file_ops g_file_ops_devfs_uart = {
+    .read = file_device_uart_read,
+    .write = file_device_uart_write,
+    .close = file_device_close,
+    .readdir = file_device_readdir_unsupported,
+};
+
+static struct tty *file_device_tty_for_node(const struct vfs_node *node, void *console_handle) {
+    if (node == NULL) {
+        return NULL;
+    }
+    if (node->aux_index == VFS_DEV_TTY2) {
+        return tty_virtual(1u);
+    }
+    if (node->aux_index == VFS_DEV_TTY3) {
+        return tty_virtual(2u);
+    }
+    return (struct tty *)console_handle;
+}
 
 static void file_device_bind_vfs_node(struct file *file,
                                       const struct vfs_node *node,
@@ -111,9 +160,11 @@ int file_device_backend_bind(struct file *file, const struct vfs_node *node, voi
     if (file == NULL || node == NULL || node->mount_kind != VFS_MOUNT_DEVFS) {
         return 0;
     }
-    if (node->aux_index == VFS_DEV_TTY) {
+    if (node->aux_index == VFS_DEV_TTY ||
+        node->aux_index == VFS_DEV_TTY2 ||
+        node->aux_index == VFS_DEV_TTY3) {
         file_device_bind_vfs_node(file, node, &g_file_ops_devfs_tty);
-        file->private_data = console_handle;
+        file->private_data = file_device_tty_for_node(node, console_handle);
         return 1;
     }
     if (node->aux_index == VFS_DEV_STDIN) {
@@ -129,6 +180,11 @@ int file_device_backend_bind(struct file *file, const struct vfs_node *node, voi
     if (node->aux_index == VFS_DEV_STDERR) {
         file_device_bind_vfs_node(file, node, &g_file_ops_tty_out);
         file->private_data = console_handle;
+        return 1;
+    }
+    if (node->aux_index == VFS_DEV_TTYS0) {
+        uart_set_console_input_enabled(0);
+        file_device_bind_vfs_node(file, node, &g_file_ops_devfs_uart);
         return 1;
     }
     return 0;

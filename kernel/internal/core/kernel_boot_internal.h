@@ -11,6 +11,7 @@ void kernel_log_memmap(const struct bootx_memmap_entry *memmap, uint32_t memmap_
 void kernel_log_pmm_info(void);
 void kernel_log_pci_info(void);
 void kernel_log_ac97_info(void);
+void kernel_log_hda_info(void);
 void kernel_log_rtl8139_info(void);
 void kernel_log_block_devices(void);
 void kernel_init_storage_devices(const struct bootx_boot_info *boot_info);

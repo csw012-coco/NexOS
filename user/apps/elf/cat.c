@@ -74,9 +74,6 @@ int main(int argc, char **argv) {
             output_closed = 1;
             break;
         }
-        if (bytes < sizeof(buf)) {
-            break;
-        }
     }
 
     close((uint32_t)fd);

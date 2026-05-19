@@ -22,6 +22,13 @@ void console_write_hex64_at(const struct console *console, uint16_t row, uint16_
 void console_put_at(const struct console *console, uint16_t row, uint16_t col, char ch, uint8_t color);
 void console_scroll_page_up(struct console *console);
 void console_scroll_page_down(struct console *console);
+void console_set_visible(struct console *console, int visible);
+int console_is_visible(const struct console *console);
+void console_mouse_select_begin(struct console *console, uint16_t row, uint16_t col);
+void console_mouse_select_update(struct console *console, uint16_t row, uint16_t col);
+void console_mouse_select_end(struct console *console, uint16_t row, uint16_t col);
+void console_mouse_select_clear(struct console *console);
+uint32_t console_get_selection_text(const struct console *console, char *out, uint32_t out_size);
 uint16_t console_width(void);
 uint16_t console_rows(void);
 uint8_t console_ansi_palette_color(uint32_t index, int bright);

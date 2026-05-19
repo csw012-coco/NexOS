@@ -13,6 +13,7 @@ struct tty {
     struct console console;
     uint8_t text_color;
     uint8_t prompt_color;
+    uint32_t foreground_pid;
     char input[TTY_LINE_MAX + 1];
     char ready_line[TTY_LINE_MAX + 1];
     char char_queue[TTY_CHAR_QUEUE_SIZE];

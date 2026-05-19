@@ -17,6 +17,13 @@ void hal_display_init(const struct bootx_console_info *console) {
     framebuffer_display_init(console);
 }
 
+int hal_display_enable_backbuffer(void) {
+    if (!framebuffer_display_active()) {
+        return 0;
+    }
+    return framebuffer_display_enable_backbuffer();
+}
+
 void hal_display_load_font(const struct bootx_boot_info *boot_info) {
     framebuffer_display_load_font_from_boot_modules(boot_info);
 }
@@ -222,6 +229,145 @@ uint16_t hal_display_text_rows(void) {
         return framebuffer_display_rows();
     }
     return VGA_HEIGHT;
+}
+
+uint32_t hal_x86_display_cell_height_impl(void) {
+    return framebuffer_display_cell_height();
+}
+
+void hal_x86_display_bitblt_impl(uint32_t src_x,
+                                 uint32_t src_y,
+                                 uint32_t width,
+                                 uint32_t height,
+                                 uint32_t dst_x,
+                                 uint32_t dst_y) {
+    framebuffer_display_bitblt(
+        src_x,
+        src_y,
+        width,
+        height,
+        dst_x,
+        dst_y
+    );
+}
+
+uint32_t hal_display_cell_height(void) {
+    return hal_x86_display_cell_height_impl();
+}
+
+void hal_display_bitblt(uint32_t src_x,
+                        uint32_t src_y,
+                        uint32_t width,
+                        uint32_t height,
+                        uint32_t dst_x,
+                        uint32_t dst_y) {
+    hal_x86_display_bitblt_impl(
+        src_x,
+        src_y,
+        width,
+        height,
+        dst_x,
+        dst_y
+    );
+}
+
+void hal_display_scroll_rows(uint16_t top_row, uint16_t bottom_row, uint8_t clear_color) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_scroll_rows(top_row, bottom_row, clear_color);
+        return;
+    }
+    vga_scroll_rows(top_row, bottom_row, clear_color);
+}
+
+void hal_display_blit_surface(const struct surface *surface,
+                              uint32_t src_x,
+                              uint32_t src_y,
+                              uint32_t width,
+                              uint32_t height,
+                              int32_t dst_x,
+                              int32_t dst_y) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_blit_surface(surface, src_x, src_y, width, height, dst_x, dst_y);
+    }
+}
+
+void hal_display_draw_pixel(int32_t x, int32_t y, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_draw_pixel(x, y, rgb);
+    }
+}
+
+void hal_display_draw_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_draw_line(x0, y0, x1, y1, rgb);
+    }
+}
+
+void hal_display_draw_rect(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_draw_rect(x, y, width, height, rgb);
+    }
+}
+
+void hal_display_fill_rect_rgb(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_fill_rect_rgb(x, y, width, height, rgb);
+    }
+}
+
+void hal_display_draw_triangle(int32_t x0,
+                               int32_t y0,
+                               int32_t x1,
+                               int32_t y1,
+                               int32_t x2,
+                               int32_t y2,
+                               uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_draw_triangle(x0, y0, x1, y1, x2, y2, rgb);
+    }
+}
+
+void hal_display_fill_triangle(int32_t x0,
+                               int32_t y0,
+                               int32_t x1,
+                               int32_t y1,
+                               int32_t x2,
+                               int32_t y2,
+                               uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_fill_triangle(x0, y0, x1, y1, x2, y2, rgb);
+    }
+}
+
+void hal_display_draw_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_draw_circle(cx, cy, radius, rgb);
+    }
+}
+
+void hal_display_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_fill_circle(cx, cy, radius, rgb);
+    }
+}
+
+void hal_display_set_mouse_cursor_enabled(int enabled) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_set_mouse_cursor_enabled(enabled);
+    }
+}
+
+void hal_display_move_mouse_cursor(int32_t dx, int32_t dy) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_move_mouse_cursor(dx, dy);
+    }
+}
+
+int hal_display_mouse_cursor_cell(uint16_t *row_out, uint16_t *col_out) {
+    if (framebuffer_display_active()) {
+        return framebuffer_display_mouse_cursor_cell(row_out, col_out);
+    }
+    return 0;
 }
 
 uint8_t hal_io_in8(uint16_t port) {

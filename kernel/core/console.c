@@ -37,6 +37,16 @@ static uint8_t console_cell_is_cont(uint32_t cell) {
     return (cell & HAL_DISPLAY_CELL_CONT) != 0u;
 }
 
+static uint32_t console_cell_codepoint(uint32_t cell) {
+    return cell & HAL_DISPLAY_CELL_CODEPOINT_MASK;
+}
+
+static int console_cell_is_blank(uint32_t cell) {
+    uint32_t codepoint = console_cell_codepoint(cell);
+
+    return !console_cell_is_cont(cell) && (codepoint == 0u || codepoint == ' ');
+}
+
 static uint8_t console_codepoint_width(uint32_t codepoint) {
     if ((codepoint >= 0x0300u && codepoint <= 0x036fu) ||
         (codepoint >= 0x1ab0u && codepoint <= 0x1affu) ||
@@ -85,6 +95,122 @@ static uint32_t console_history_cell(const struct console *console, uint32_t lin
     return console->history[console_line_to_slot(line)][col];
 }
 
+static void console_append_byte(char *out, uint32_t out_size, uint32_t *written, char byte) {
+    if (out != 0 && out_size != 0u && *written + 1u < out_size) {
+        out[*written] = byte;
+    }
+    (*written)++;
+}
+
+static void console_append_codepoint_utf8(char *out, uint32_t out_size, uint32_t *written, uint32_t codepoint) {
+    char encoded[4];
+    uint32_t len = 0u;
+
+    if (codepoint > 0x10ffffu || (codepoint >= 0xd800u && codepoint <= 0xdfffu)) {
+        codepoint = 0xfffdu;
+    }
+    if (codepoint <= 0x7fu) {
+        encoded[len++] = (char)codepoint;
+    } else if (codepoint <= 0x7ffu) {
+        encoded[len++] = (char)(0xc0u | (codepoint >> 6));
+        encoded[len++] = (char)(0x80u | (codepoint & 0x3fu));
+    } else if (codepoint <= 0xffffu) {
+        encoded[len++] = (char)(0xe0u | (codepoint >> 12));
+        encoded[len++] = (char)(0x80u | ((codepoint >> 6) & 0x3fu));
+        encoded[len++] = (char)(0x80u | (codepoint & 0x3fu));
+    } else {
+        encoded[len++] = (char)(0xf0u | (codepoint >> 18));
+        encoded[len++] = (char)(0x80u | ((codepoint >> 12) & 0x3fu));
+        encoded[len++] = (char)(0x80u | ((codepoint >> 6) & 0x3fu));
+        encoded[len++] = (char)(0x80u | (codepoint & 0x3fu));
+    }
+    if (out != 0 && out_size != 0u && *written + len < out_size) {
+        for (uint32_t i = 0; i < len; i++) {
+            out[*written + i] = encoded[i];
+        }
+    }
+    *written += len;
+}
+
+static void console_selection_bounds(const struct console *console,
+                                     uint32_t *start_line,
+                                     uint16_t *start_col,
+                                     uint32_t *end_line,
+                                     uint16_t *end_col) {
+    uint32_t a_line = console->selection_anchor_line;
+    uint16_t a_col = console->selection_anchor_col;
+    uint32_t f_line = console->selection_focus_line;
+    uint16_t f_col = console->selection_focus_col;
+
+    if (f_line < a_line || (f_line == a_line && f_col < a_col)) {
+        *start_line = f_line;
+        *start_col = f_col;
+        *end_line = a_line;
+        *end_col = a_col;
+        return;
+    }
+    *start_line = a_line;
+    *start_col = a_col;
+    *end_line = f_line;
+    *end_col = f_col;
+}
+
+static void console_selection_bounds_from_points(uint32_t anchor_line,
+                                                 uint16_t anchor_col,
+                                                 uint32_t focus_line,
+                                                 uint16_t focus_col,
+                                                 uint32_t *start_line,
+                                                 uint16_t *start_col,
+                                                 uint32_t *end_line,
+                                                 uint16_t *end_col) {
+    if (focus_line < anchor_line || (focus_line == anchor_line && focus_col < anchor_col)) {
+        *start_line = focus_line;
+        *start_col = focus_col;
+        *end_line = anchor_line;
+        *end_col = anchor_col;
+        return;
+    }
+    *start_line = anchor_line;
+    *start_col = anchor_col;
+    *end_line = focus_line;
+    *end_col = focus_col;
+}
+
+static int console_cell_selected(const struct console *console, uint32_t line, uint16_t col) {
+    uint32_t start_line;
+    uint32_t end_line;
+    uint16_t start_col;
+    uint16_t end_col;
+
+    if (console == 0 || !console->selection_active) {
+        return 0;
+    }
+    console_selection_bounds(console, &start_line, &start_col, &end_line, &end_col);
+    if (line < start_line || line > end_line) {
+        return 0;
+    }
+    if (line == start_line && col < start_col) {
+        return 0;
+    }
+    if (line == end_line && col > end_col) {
+        return 0;
+    }
+    return 1;
+}
+
+static uint32_t console_selected_display_cell(const struct console *console, uint32_t line, uint16_t col) {
+    uint32_t cell = console_history_cell(console, line, col);
+
+    if (console_cell_selected(console, line, col)) {
+        uint8_t color = (uint8_t)(cell >> HAL_DISPLAY_CELL_COLOR_SHIFT);
+        uint8_t selected = (uint8_t)(((color & 0x0fu) << 4) | ((color >> 4) & 0x0fu));
+
+        cell = (cell & ~(0xffu << HAL_DISPLAY_CELL_COLOR_SHIFT)) |
+               ((uint32_t)selected << HAL_DISPLAY_CELL_COLOR_SHIFT);
+    }
+    return cell;
+}
+
 static void console_clear_history_line(struct console *console, uint32_t line, uint8_t color) {
     uint32_t cell = console_blank_cell_with_color(color);
     uint32_t slot = console_line_to_slot(line);
@@ -117,8 +243,11 @@ static int console_visible_row_for_line(const struct console *console, uint32_t 
 static void console_write_display_cell_if_visible(const struct console *console, uint32_t line, uint16_t col) {
     uint16_t row = 0;
 
+    if (console == 0 || !console->visible) {
+        return;
+    }
     if (console_visible_row_for_line(console, line, &row)) {
-        hal_display_write_cell(row, col, console_history_cell(console, line, col));
+        hal_display_write_cell(row, col, console_selected_display_cell(console, line, col));
     }
 }
 
@@ -168,27 +297,39 @@ static void console_update_cursor_row(struct console *console) {
 }
 
 static void console_render_row(const struct console *console, uint16_t row) {
-    uint32_t blank = console_blank_cell(console);
-    uint32_t history_end = console->history_base_line + console->history_line_count;
-    uint32_t line = console->view_top_line + (uint32_t)(row - console->top_row);
+    uint32_t blank;
+    uint32_t history_end;
+    uint32_t line;
 
+    if (console == 0 || !console->visible) {
+        return;
+    }
+    blank = console_blank_cell(console);
+    history_end = console->history_base_line + console->history_line_count;
+    line = console->view_top_line + (uint32_t)(row - console->top_row);
     for (uint16_t col = 0; col < console_text_width(); col++) {
         uint32_t cell = blank;
 
         if (line >= console->history_base_line && line < history_end) {
-            cell = console_history_cell(console, line, col);
+            cell = console_selected_display_cell(console, line, col);
         }
         hal_display_write_cell(row, col, cell);
     }
 }
 
 static void console_render_view(const struct console *console) {
+    if (console == 0 || !console->visible) {
+        return;
+    }
     for (uint16_t row = console->top_row; row <= console->bottom_row; row++) {
         console_render_row(console, row);
     }
 }
 
 static void console_sync_cursor(const struct console *console) {
+    if (console == 0 || !console->visible) {
+        return;
+    }
     if (!console_is_live_view(console)) {
         hal_display_set_cursor(console->bottom_row, (uint16_t)(console_text_width() - 1u));
         return;
@@ -198,6 +339,88 @@ static void console_sync_cursor(const struct console *console) {
 
 static void console_render_and_sync(const struct console *console) {
     console_render_view(console);
+    console_sync_cursor(console);
+}
+
+static void console_render_selection_range(const struct console *console,
+                                           uint32_t start_line,
+                                           uint16_t start_col,
+                                           uint32_t end_line,
+                                           uint16_t end_col) {
+    uint32_t history_end = console->history_base_line + console->history_line_count;
+    uint16_t text_width = console_text_width();
+
+    if (console == 0 || !console->visible || text_width == 0u || start_line > end_line) {
+        return;
+    }
+    if (start_line < console->history_base_line) {
+        start_line = console->history_base_line;
+        start_col = 0u;
+    }
+    if (end_line >= history_end) {
+        if (history_end == 0u) {
+            return;
+        }
+        end_line = history_end - 1u;
+        end_col = (uint16_t)(text_width - 1u);
+    }
+    for (uint32_t line = start_line; line <= end_line; line++) {
+        uint16_t row;
+        uint16_t col_start = line == start_line ? start_col : 0u;
+        uint16_t col_end = line == end_line ? end_col : (uint16_t)(text_width - 1u);
+
+        if (col_start >= text_width) {
+            col_start = (uint16_t)(text_width - 1u);
+        }
+        if (col_end >= text_width) {
+            col_end = (uint16_t)(text_width - 1u);
+        }
+        if (col_start > col_end || !console_visible_row_for_line(console, line, &row)) {
+            continue;
+        }
+        for (uint16_t col = col_start; col <= col_end; col++) {
+            hal_display_write_cell(row, col, console_selected_display_cell(console, line, col));
+        }
+        if (line == 0xffffffffu) {
+            break;
+        }
+    }
+}
+
+static void console_render_selection_state_change(struct console *console,
+                                                  uint8_t old_active,
+                                                  uint32_t old_anchor_line,
+                                                  uint16_t old_anchor_col,
+                                                  uint32_t old_focus_line,
+                                                  uint16_t old_focus_col) {
+    if (old_active) {
+        uint32_t start_line;
+        uint32_t end_line;
+        uint16_t start_col;
+        uint16_t end_col;
+        uint8_t current_active = console->selection_active;
+
+        console->selection_active = 0u;
+        console_selection_bounds_from_points(old_anchor_line,
+                                             old_anchor_col,
+                                             old_focus_line,
+                                             old_focus_col,
+                                             &start_line,
+                                             &start_col,
+                                             &end_line,
+                                             &end_col);
+        console_render_selection_range(console, start_line, start_col, end_line, end_col);
+        console->selection_active = current_active;
+    }
+    if (console->selection_active) {
+        uint32_t start_line;
+        uint32_t end_line;
+        uint16_t start_col;
+        uint16_t end_col;
+
+        console_selection_bounds(console, &start_line, &start_col, &end_line, &end_col);
+        console_render_selection_range(console, start_line, start_col, end_line, end_col);
+    }
     console_sync_cursor(console);
 }
 
@@ -233,7 +456,12 @@ static void console_append_history_line(struct console *console, uint8_t color) 
 }
 
 static void console_scroll_live_display(struct console *console) {
-    console_render_view(console);
+    if (console == 0 || !console->visible) {
+        return;
+    }
+    hal_display_scroll_rows(console->top_row, console->bottom_row, console->default_color);
+
+    console_render_row(console, console->bottom_row);
 }
 
 static void console_newline(struct console *console) {
@@ -275,10 +503,17 @@ void console_init(struct console *console, uint16_t top_row, uint16_t bottom_row
     console->cursor_row = top_row;
     console->cursor_col = 0;
     console->default_color = color;
+    console->visible = 1u;
     console->history_base_line = 0;
     console->history_line_count = 0;
     console->cursor_line = 0;
     console->view_top_line = 0;
+    console->selection_active = 0u;
+    console->selection_dragging = 0u;
+    console->selection_anchor_line = 0u;
+    console->selection_anchor_col = 0u;
+    console->selection_focus_line = 0u;
+    console->selection_focus_col = 0u;
 
     height = console_height(console);
     for (uint16_t row = 0; row < height; row++) {
@@ -297,6 +532,8 @@ void console_clear(struct console *console) {
     console->history_line_count = 0;
     console->cursor_line = 0;
     console->view_top_line = 0;
+    console->selection_active = 0u;
+    console->selection_dragging = 0u;
     console->cursor_row = console->top_row;
     console->cursor_col = 0;
 
@@ -306,6 +543,21 @@ void console_clear(struct console *console) {
     }
 
     console_render_and_sync(console);
+}
+
+void console_set_visible(struct console *console, int visible) {
+    if (console == 0) {
+        return;
+    }
+    console->visible = visible ? 1u : 0u;
+    if (console->visible) {
+        hal_display_enable_cursor(14, 15);
+        console_render_and_sync(console);
+    }
+}
+
+int console_is_visible(const struct console *console) {
+    return console != 0 && console->visible != 0u;
 }
 
 void console_clear_row(struct console *console, uint16_t row, uint8_t color) {
@@ -536,6 +788,201 @@ void console_scroll_page_down(struct console *console) {
         console->view_top_line += step;
     }
     console_render_and_sync(console);
+}
+
+void console_mouse_select_begin(struct console *console, uint16_t row, uint16_t col) {
+    uint8_t old_active;
+    uint32_t old_anchor_line;
+    uint32_t old_focus_line;
+    uint16_t old_anchor_col;
+    uint16_t old_focus_col;
+    uint16_t text_width;
+
+    if (console == 0 || row < console->top_row || row > console->bottom_row) {
+        return;
+    }
+    text_width = console_text_width();
+    if (text_width == 0u) {
+        return;
+    }
+    if (col >= text_width) {
+        col = (uint16_t)(text_width - 1u);
+    }
+    old_active = console->selection_active;
+    old_anchor_line = console->selection_anchor_line;
+    old_anchor_col = console->selection_anchor_col;
+    old_focus_line = console->selection_focus_line;
+    old_focus_col = console->selection_focus_col;
+
+    console->selection_active = 1u;
+    console->selection_dragging = 1u;
+    console->selection_anchor_line = console_row_to_line(console, row);
+    console->selection_anchor_col = col;
+    console->selection_focus_line = console->selection_anchor_line;
+    console->selection_focus_col = col;
+    console_render_selection_state_change(console,
+                                          old_active,
+                                          old_anchor_line,
+                                          old_anchor_col,
+                                          old_focus_line,
+                                          old_focus_col);
+}
+
+void console_mouse_select_update(struct console *console, uint16_t row, uint16_t col) {
+    uint8_t old_active;
+    uint32_t old_anchor_line;
+    uint32_t old_focus_line;
+    uint16_t old_anchor_col;
+    uint16_t old_focus_col;
+    uint16_t text_width;
+
+    if (console == 0 || !console->selection_dragging || row < console->top_row || row > console->bottom_row) {
+        return;
+    }
+    text_width = console_text_width();
+    if (text_width == 0u) {
+        return;
+    }
+    if (col >= text_width) {
+        col = (uint16_t)(text_width - 1u);
+    }
+    old_active = console->selection_active;
+    old_anchor_line = console->selection_anchor_line;
+    old_anchor_col = console->selection_anchor_col;
+    old_focus_line = console->selection_focus_line;
+    old_focus_col = console->selection_focus_col;
+
+    console->selection_active = 1u;
+    console->selection_focus_line = console_row_to_line(console, row);
+    console->selection_focus_col = col;
+    if (old_focus_line == console->selection_focus_line && old_focus_col == console->selection_focus_col) {
+        return;
+    }
+    console_render_selection_state_change(console,
+                                          old_active,
+                                          old_anchor_line,
+                                          old_anchor_col,
+                                          old_focus_line,
+                                          old_focus_col);
+}
+
+void console_mouse_select_end(struct console *console, uint16_t row, uint16_t col) {
+    if (console == 0 || !console->selection_dragging) {
+        return;
+    }
+    console_mouse_select_update(console, row, col);
+    console->selection_dragging = 0u;
+}
+
+void console_mouse_select_clear(struct console *console) {
+    uint8_t old_active;
+    uint32_t old_anchor_line;
+    uint32_t old_focus_line;
+    uint16_t old_anchor_col;
+    uint16_t old_focus_col;
+
+    if (console == 0 || !console->selection_active) {
+        return;
+    }
+    old_active = console->selection_active;
+    old_anchor_line = console->selection_anchor_line;
+    old_anchor_col = console->selection_anchor_col;
+    old_focus_line = console->selection_focus_line;
+    old_focus_col = console->selection_focus_col;
+
+    console->selection_active = 0u;
+    console->selection_dragging = 0u;
+    console_render_selection_state_change(console,
+                                          old_active,
+                                          old_anchor_line,
+                                          old_anchor_col,
+                                          old_focus_line,
+                                          old_focus_col);
+}
+
+uint32_t console_get_selection_text(const struct console *console, char *out, uint32_t out_size) {
+    uint32_t start_line;
+    uint32_t end_line;
+    uint16_t start_col;
+    uint16_t end_col;
+    uint32_t history_end;
+    uint16_t text_width;
+    uint32_t written = 0u;
+
+    if (out != 0 && out_size != 0u) {
+        out[0] = '\0';
+    }
+    if (console == 0 || !console->selection_active) {
+        return 0u;
+    }
+
+    text_width = console_text_width();
+    if (text_width == 0u) {
+        return 0u;
+    }
+    history_end = console->history_base_line + console->history_line_count;
+    if (history_end == 0u) {
+        return 0u;
+    }
+
+    console_selection_bounds(console, &start_line, &start_col, &end_line, &end_col);
+    if (start_line < console->history_base_line) {
+        start_line = console->history_base_line;
+        start_col = 0u;
+    }
+    if (end_line >= history_end) {
+        end_line = history_end - 1u;
+        end_col = (uint16_t)(text_width - 1u);
+    }
+    if (start_line > end_line) {
+        return 0u;
+    }
+
+    for (uint32_t line = start_line; line <= end_line; line++) {
+        uint16_t col_start = line == start_line ? start_col : 0u;
+        uint16_t col_end = line == end_line ? end_col : (uint16_t)(text_width - 1u);
+
+        if (col_start >= text_width) {
+            col_start = (uint16_t)(text_width - 1u);
+        }
+        if (col_end >= text_width) {
+            col_end = (uint16_t)(text_width - 1u);
+        }
+        while (col_end >= col_start && console_cell_is_blank(console_history_cell(console, line, col_end))) {
+            if (col_end == 0u) {
+                break;
+            }
+            col_end--;
+        }
+        if (col_end >= col_start && !console_cell_is_blank(console_history_cell(console, line, col_end))) {
+            for (uint16_t col = col_start; col <= col_end; col++) {
+                uint32_t cell = console_history_cell(console, line, col);
+                uint32_t codepoint;
+
+                if (console_cell_is_cont(cell)) {
+                    continue;
+                }
+                codepoint = console_cell_codepoint(cell);
+                if (codepoint == 0u) {
+                    codepoint = ' ';
+                }
+                console_append_codepoint_utf8(out, out_size, &written, codepoint);
+            }
+        }
+        if (line != end_line) {
+            console_append_byte(out, out_size, &written, '\n');
+        }
+        if (line == 0xffffffffu) {
+            break;
+        }
+    }
+
+    if (out != 0 && out_size != 0u) {
+        uint32_t nul_pos = written < out_size ? written : out_size - 1u;
+
+        out[nul_pos] = '\0';
+    }
+    return written;
 }
 
 uint16_t console_width(void) {

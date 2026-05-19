@@ -43,6 +43,61 @@ int streq_ignore_case_local(const char *a, const char *b) {
     return strcasecmp(a, b) == 0;
 }
 
+static int cmd_name_has_path_local(const char *name) {
+    uint32_t i = 0;
+
+    if (name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    if (name[0] == '/' || name[0] == '.') {
+        return 1;
+    }
+    while (name[i] != '\0') {
+        if (name[i] == '/') {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+static char cmd_ascii_tolower_local(char ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return (char)(ch - 'A' + 'a');
+    }
+    return ch;
+}
+
+static int cmd_copy_program_name_local(char *dst, uint32_t dst_size, const char *name) {
+    uint32_t dst_pos = 0;
+    uint32_t src_pos = 0;
+
+    if (dst == NULL || dst_size == 0 || name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    if (!cmd_name_has_path_local(name)) {
+        const char prefix[] = "/cmd/";
+
+        while (prefix[dst_pos] != '\0') {
+            if (dst_pos + 1u >= dst_size) {
+                return 0;
+            }
+            dst[dst_pos] = prefix[dst_pos];
+            dst_pos++;
+        }
+        while (name[src_pos] != '\0') {
+            if (dst_pos + 1u >= dst_size) {
+                return 0;
+            }
+            dst[dst_pos++] = cmd_ascii_tolower_local(name[src_pos++]);
+        }
+        dst[dst_pos] = '\0';
+        return 1;
+    }
+    copy_line_local(dst, name, dst_size);
+    return dst[0] != '\0';
+}
+
 int parse_u32_local(const char *text, uint32_t *out) {
     char *end = 0;
     unsigned long value;
@@ -208,7 +263,12 @@ int cmd_build_program_command(int argc,
     name = argv[start];
     (void)resolve_dot_name;
 
-    copy_line_local(out, name, out_size);
+    if (!cmd_copy_program_name_local(out, out_size, name)) {
+        write_err_str(verb);
+        write_err_str(": command line too long\n");
+        out[0] = '\0';
+        return 0;
+    }
     out_len = str_len_local(out);
     for (i = start + 1; i < argc; i++) {
         uint32_t arg_len = str_len_local(argv[i]);

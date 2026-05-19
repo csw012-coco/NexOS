@@ -11,6 +11,7 @@ enum {
     PCI_SUBCLASS_SATA = 0x06,
     PCI_PROGIF_AHCI = 0x01,
     PCI_SUBCLASS_AUDIO = 0x01,
+    PCI_SUBCLASS_HDA = 0x03,
     PCI_SUBCLASS_USB = 0x03,
     PCI_PROGIF_EHCI = 0x20,
     PCI_PROGIF_XHCI = 0x30
@@ -261,6 +262,33 @@ int pci_find_ac97_controller_at(uint32_t index, struct pci_ac97_controller *out)
     out->bar3 = device.bar3;
     out->bar4 = device.bar4;
     out->bar5 = device.bar5;
+    return 1;
+}
+
+int pci_find_hda_controller(struct pci_hda_controller *out) {
+    return pci_find_hda_controller_at(0u, out);
+}
+
+int pci_find_hda_controller_at(uint32_t index, struct pci_hda_controller *out) {
+    struct pci_device_info device;
+
+    if (out == 0) {
+        return 0;
+    }
+    if (!pci_find_device_by_class_at(PCI_CLASS_MULTIMEDIA, PCI_SUBCLASS_HDA, index, &device)) {
+        return 0;
+    }
+
+    out->bus = device.bus;
+    out->slot = device.slot;
+    out->function = device.function;
+    out->prog_if = device.prog_if;
+    out->irq_line = device.irq_line;
+    out->irq_pin = device.irq_pin;
+    out->vendor_id = device.vendor_id;
+    out->device_id = device.device_id;
+    out->mmio_base_lo = device.bar0;
+    out->mmio_base_hi = device.bar1;
     return 1;
 }
 

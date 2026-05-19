@@ -91,6 +91,18 @@ static void config_apply_pair(struct kernel_config *config, char *key, char *val
         if (config_parse_bool(value, &bool_value)) {
             config->ring3_smoke = bool_value;
         }
+        return;
+    }
+    if (streq(key, "mouse.cursor")) {
+        if (config_parse_bool(value, &bool_value)) {
+            config->mouse_cursor = bool_value;
+        }
+        return;
+    }
+    if (streq(key, "serial_shell") || streq(key, "serial.shell")) {
+        if (config_parse_bool(value, &bool_value)) {
+            config->serial_shell = bool_value;
+        }
     }
 }
 
@@ -151,6 +163,8 @@ void kernel_config_defaults(struct kernel_config *config) {
     config->loaded = 0u;
     config->init_path_set = 0u;
     config->ring3_smoke = 1u;
+    config->mouse_cursor = 1u;
+    config->serial_shell = 0u;
     config->init_path[0] = '\0';
 }
 

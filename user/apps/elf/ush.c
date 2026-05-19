@@ -452,11 +452,20 @@ int ush_run_script_file(char *cwd, const char *path, int argc, char **argv) {
     return 0;
 }
 
-static void ush_bind_interactive_stdio(void) {
-    int tty_fd = open("/dev/tty", 0);
+static int ush_is_direct_shell_invocation(const char *path) {
+    const char *base = ush_basename_local(path);
+
+    return streq_local(base, "ush") ||
+           streq_local(base, "USH") ||
+           streq_local(base, "USH.ELF") ||
+           streq_local(base, "ush.elf");
+}
+
+static int ush_bind_interactive_stdio_path(const char *path) {
+    int tty_fd = open(path != NULL ? path : "/dev/tty", 0);
 
     if (tty_fd < 0) {
-        return;
+        return 0;
     }
     if (tty_fd != STDIN_FILENO) {
         (void)dup2(tty_fd, STDIN_FILENO);
@@ -470,6 +479,11 @@ static void ush_bind_interactive_stdio(void) {
     if (tty_fd > STDERR_FILENO) {
         close((uint32_t)tty_fd);
     }
+    return 1;
+}
+
+static void ush_bind_interactive_stdio(void) {
+    (void)ush_bind_interactive_stdio_path("/dev/tty");
 }
 
 int main(int argc, char **argv) {
@@ -483,16 +497,19 @@ int main(int argc, char **argv) {
     ush_refresh_cwd_local(cwd, sizeof(cwd));
     ush_init_vars_local(cwd);
     ush_load_config_local();
-    if (argc > 1 && (streq_local(ush_basename_local(argv[0]), "ush") ||
-                     streq_local(ush_basename_local(argv[0]), "USH.ELF") ||
-                     streq_local(ush_basename_local(argv[0]), "ush.elf"))) {
+    if (argc > 2 && ush_is_direct_shell_invocation(argv[0]) && streq_local(argv[1], "--tty")) {
+        if (!ush_bind_interactive_stdio_path(argv[2])) {
+            ush_write_error("ush: tty open failed\n");
+            exit_with_code(1);
+        }
+    } else if (argc > 1 && ush_is_direct_shell_invocation(argv[0])) {
         return ush_run_script_file(cwd, argv[1], argc - 1, argv + 1);
-    }
-    if (ush_build_invoked_command_line(argc, argv, invoked_line, sizeof(invoked_line))) {
+    } else if (ush_build_invoked_command_line(argc, argv, invoked_line, sizeof(invoked_line))) {
         (void)ush_execute_line(cwd, invoked_line);
         return 0;
+    } else {
+        ush_bind_interactive_stdio();
     }
-    ush_bind_interactive_stdio();
     ush_prompt_sync(cwd);
     for (;;) {
         ush_prompt_sync(cwd);

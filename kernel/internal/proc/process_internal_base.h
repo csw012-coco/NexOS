@@ -134,7 +134,6 @@ extern struct job_runtime g_bg_runtimes[USER_PROCESS_LIMIT];
 extern uint8_t g_nested_kernel_stacks[USER_PROCESS_LIMIT][NOS_KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 extern uint32_t g_scheduler_next_slot;
 extern uint32_t g_nested_kernel_stack_depth;
-extern uint32_t g_tty_foreground_pid;
 
 void process_bind_session(struct process_session *session,
                           struct user_page_mapping *mappings);

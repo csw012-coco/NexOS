@@ -18,3 +18,4 @@ void vga_write_dec(uint16_t row, uint16_t col, uint8_t color, uint32_t value);
 void vga_put_at(uint16_t row, uint16_t col, uint8_t color, char ch);
 void vga_enable_cursor(uint8_t start, uint8_t end);
 void vga_set_cursor(uint16_t row, uint16_t col);
+void vga_scroll_rows(uint16_t top_row, uint16_t bottom_row, uint8_t clear_color);

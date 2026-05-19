@@ -3,6 +3,7 @@
 #include "block/blockdev.h"
 #include "drivers/audio/ac97.h"
 #include "drivers/audio/audio.h"
+#include "drivers/audio/hda.h"
 #include "drivers/bus/pci.h"
 #include "drivers/net/rtl8139.h"
 #include "drivers/rtc/cmos.h"
@@ -112,6 +113,68 @@ void kernel_query_ac97_info(struct syscall_ac97_info *info) {
     info->codec_id = status.codec_id;
     info->global_status = status.global_status;
     info->global_control = status.global_control;
+}
+
+void kernel_query_hda_info(struct syscall_hda_info *info) {
+    struct hda_status status;
+
+    if (info == 0) {
+        return;
+    }
+
+    info->present = 0;
+    info->initialized = 0;
+    info->bus = 0;
+    info->slot = 0;
+    info->function = 0;
+    info->prog_if = 0;
+    info->irq_line = 0;
+    info->irq_pin = 0;
+    info->vendor_id = 0;
+    info->device_id = 0;
+    info->mmio_base_lo = 0;
+    info->mmio_base_hi = 0;
+    info->pci_command = 0;
+    info->gcap = 0;
+    info->vmaj = 0;
+    info->vmin = 0;
+    info->outpay = 0;
+    info->inpay = 0;
+    info->gctl = 0;
+    info->statests = 0;
+    info->wakeen = 0;
+    info->corb_size = 0;
+    info->rirb_size = 0;
+    info->codec_mask = 0;
+
+    if (!hda_query_status(&status)) {
+        return;
+    }
+
+    info->present = status.present;
+    info->initialized = status.initialized;
+    info->bus = status.bus;
+    info->slot = status.slot;
+    info->function = status.function;
+    info->prog_if = status.prog_if;
+    info->irq_line = status.irq_line;
+    info->irq_pin = status.irq_pin;
+    info->vendor_id = status.vendor_id;
+    info->device_id = status.device_id;
+    info->mmio_base_lo = status.mmio_base_lo;
+    info->mmio_base_hi = status.mmio_base_hi;
+    info->pci_command = status.pci_command;
+    info->gcap = status.gcap;
+    info->vmaj = status.vmaj;
+    info->vmin = status.vmin;
+    info->outpay = status.outpay;
+    info->inpay = status.inpay;
+    info->gctl = status.gctl;
+    info->statests = status.statests;
+    info->wakeen = status.wakeen;
+    info->corb_size = status.corb_size;
+    info->rirb_size = status.rirb_size;
+    info->codec_mask = status.codec_mask;
 }
 
 void kernel_query_rtl8139_info(struct syscall_rtl8139_info *info) {

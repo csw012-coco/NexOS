@@ -6,6 +6,7 @@
 
 void kernel_query_pci_info(struct syscall_pci_info *info);
 void kernel_query_ac97_info(struct syscall_ac97_info *info);
+void kernel_query_hda_info(struct syscall_hda_info *info);
 void kernel_query_rtl8139_info(struct syscall_rtl8139_info *info);
 int kernel_rtl8139_send_test_frame(void);
 int kernel_rtl8139_send_frame(const uint8_t *data, uint32_t bytes);

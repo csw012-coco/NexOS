@@ -2,6 +2,7 @@
 #include "kernel/internal/fs/file_internal.h"
 #include "kernel/internal/proc/process_types_internal.h"
 #include "fs/vfs.h"
+#include "fs/vfs_internal.h"
 #include "lib/parse.h"
 #include "lib/string.h"
 
@@ -143,21 +144,94 @@ static int fs_service_valid_path_request(struct vfs *vfs, const char *path) {
     return vfs != 0 && path != 0;
 }
 
+static int fs_service_file_has_tty_handle(const struct file *file) {
+    if (file == 0 || !file_is_active(file) || file->private_data == 0) {
+        return 0;
+    }
+    if (file->kind == KERNEL_FILE_TTY_STDIN ||
+        file->kind == KERNEL_FILE_TTY_STDOUT ||
+        file->kind == KERNEL_FILE_TTY_STDERR) {
+        return 1;
+    }
+    return file->kind == KERNEL_FILE_VFS &&
+           file->vfs_node.mount_kind == VFS_MOUNT_DEVFS &&
+           (file->vfs_node.aux_index == VFS_DEV_TTY ||
+            file->vfs_node.aux_index == VFS_DEV_TTY2 ||
+            file->vfs_node.aux_index == VFS_DEV_TTY3 ||
+            file->vfs_node.aux_index == VFS_DEV_STDIN ||
+            file->vfs_node.aux_index == VFS_DEV_STDOUT ||
+            file->vfs_node.aux_index == VFS_DEV_STDERR);
+}
+
+static void *fs_service_process_tty_handle(struct process *proc) {
+    if (proc == 0) {
+        return 0;
+    }
+    if (fs_service_file_has_tty_handle(&proc->files[SYS_FD_STDIN])) {
+        return proc->files[SYS_FD_STDIN].private_data;
+    }
+    if (fs_service_file_has_tty_handle(&proc->files[SYS_FD_STDOUT])) {
+        return proc->files[SYS_FD_STDOUT].private_data;
+    }
+    if (fs_service_file_has_tty_handle(&proc->files[SYS_FD_STDERR])) {
+        return proc->files[SYS_FD_STDERR].private_data;
+    }
+    return proc->console_handle;
+}
+
+static int fs_service_stdio_aux_to_fd(uint32_t aux_index) {
+    if (aux_index == VFS_DEV_STDIN) {
+        return SYS_FD_STDIN;
+    }
+    if (aux_index == VFS_DEV_STDOUT) {
+        return SYS_FD_STDOUT;
+    }
+    if (aux_index == VFS_DEV_STDERR) {
+        return SYS_FD_STDERR;
+    }
+    return -1;
+}
+
+static uint64_t fs_service_open_stdio_alias(struct process *proc, uint32_t src_fd) {
+    struct file *src;
+    struct file *dst;
+    uint32_t fd;
+
+    if (proc == 0 || src_fd >= PROCESS_FILE_MAX) {
+        return (uint64_t)-1;
+    }
+    src = file_table_active(proc->files, PROCESS_FILE_MAX, src_fd);
+    if (src == 0) {
+        return (uint64_t)-1;
+    }
+    dst = file_table_alloc(proc->files, PROCESS_FILE_MAX, 3u, &fd);
+    if (dst == 0) {
+        return (uint64_t)-1;
+    }
+    if (!file_clone(dst, src)) {
+        file_discard(dst);
+        return (uint64_t)-1;
+    }
+    return fd;
+}
+
 static uint64_t fs_service_open_node(struct process *proc,
                                      const struct vfs_node *node,
                                      const char *path,
                                      struct file **handle_out) {
     uint32_t fd;
+    void *console_handle;
 
     if (proc == 0 || node == 0) {
         return (uint64_t)-1;
     }
+    console_handle = fs_service_process_tty_handle(proc);
     if (!file_table_open_vfs(proc->files,
                              PROCESS_FILE_MAX,
                              3u,
                              node,
                              path,
-                             proc->console_handle,
+                             console_handle,
                              &fd,
                              handle_out)) {
         return (uint64_t)-1;
@@ -250,6 +324,7 @@ uint64_t fs_service_open(struct process *proc, struct vfs *vfs, const char *path
     uint64_t fd;
     uint32_t initial_offset = 0;
     uint32_t vfs_flags;
+    int stdio_fd;
 
     if (proc == 0 || !fs_service_valid_path_request(vfs, path)) {
         return (uint64_t)-1;
@@ -260,6 +335,12 @@ uint64_t fs_service_open(struct process *proc, struct vfs *vfs, const char *path
     }
     if (vfs_prepare_opened_node(vfs, &node, path, vfs_flags, &initial_offset) != 0) {
         return (uint64_t)-1;
+    }
+    if (node.mount_kind == VFS_MOUNT_DEVFS) {
+        stdio_fd = fs_service_stdio_aux_to_fd(node.aux_index);
+        if (stdio_fd >= 0) {
+            return fs_service_open_stdio_alias(proc, (uint32_t)stdio_fd);
+        }
     }
     fd = fs_service_open_node(proc, &node, path, &opened_file);
     if (fd == (uint64_t)-1) {

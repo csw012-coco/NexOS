@@ -1,6 +1,5 @@
 #include "kernel/internal/sys/syscall_internal.h"
 #include "kernel/public/core/tty.h"
-#include "fs/vfs.h"
 
 struct tty *g_syscall_tty;
 volatile uint32_t *g_syscall_ticks;
@@ -149,6 +148,12 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
             return syscall_handle_rtl8139_rx_dump(frame->rbx);
         case SYS_REBOOT:
             return syscall_handle_reboot();
+        case SYS_CAPABILITY_EVENT:
+            return syscall_handle_capability_event(frame->rbx);
+        case SYS_GFX:
+            return syscall_handle_gfx((uint32_t)frame->rbx, frame->rcx);
+        case SYS_GUI_EVENT:
+            return syscall_handle_gui_event((uint32_t)frame->rbx, frame->rcx);
         default:
             return 0;
     }

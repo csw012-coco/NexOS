@@ -71,7 +71,12 @@ enum keyboard_keycode {
     KEYBOARD_KEY_GRAVE,
     KEYBOARD_KEY_COMMA,
     KEYBOARD_KEY_PERIOD,
-    KEYBOARD_KEY_SLASH
+    KEYBOARD_KEY_SLASH,
+    KEYBOARD_KEY_LEFT_ALT,
+    KEYBOARD_KEY_RIGHT_ALT,
+    KEYBOARD_KEY_F1,
+    KEYBOARD_KEY_F2,
+    KEYBOARD_KEY_F3
 };
 
 struct keyboard_event {
@@ -82,6 +87,7 @@ struct keyboard_event {
     uint8_t extended;
     uint8_t shift;
     uint8_t ctrl;
+    uint8_t alt;
     uint8_t caps_lock;
     uint8_t num_lock;
     uint8_t scroll_lock;

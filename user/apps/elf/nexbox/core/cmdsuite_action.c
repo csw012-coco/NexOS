@@ -34,11 +34,18 @@ enum nex_action_capability {
     NEX_ACTION_CAP_AUDIO_PLAY = 1u << 11,
     NEX_ACTION_CAP_DEBUG_READ = 1u << 12,
     NEX_ACTION_CAP_HW_INSPECT = 1u << 13,
-    NEX_ACTION_CAP_SYSTEM_INSPECT = 1u << 14
+    NEX_ACTION_CAP_SYSTEM_INSPECT = 1u << 14,
+    NEX_ACTION_CAP_FS_MOUNT = 1u << 15,
+    NEX_ACTION_CAP_DEVICE_READ = 1u << 16,
+    NEX_ACTION_CAP_EVENT_READ = 1u << 17,
+    NEX_ACTION_CAP_INPUT_READ = 1u << 18,
+    NEX_ACTION_CAP_SYSTEM_POWER = 1u << 19,
+    NEX_ACTION_CAP_SYSTEM_CONFIG = 1u << 20,
+    NEX_ACTION_CAP_DEVICE_WRITE = 1u << 21
 };
 
 enum {
-    NEX_ACTION_CAP_ALL = (1u << 15) - 1u,
+    NEX_ACTION_CAP_ALL = (1u << 22) - 1u,
     NEX_ACTION_ARG_MAX = 15u,
     NEX_ACTION_ARG_NAME_MAX = 32u,
     NEX_ACTION_ARG_TYPE_MAX = 16u,
@@ -62,6 +69,45 @@ struct nex_action_policy {
 
 static const char *g_nex_action_caps_path = "/HOME/ACTION.CAPS";
 
+static void nex_action_copy_audit_text(char *dst, uint32_t dst_size, const char *src) {
+    uint32_t i = 0;
+
+    if (dst == NULL || dst_size == 0u) {
+        return;
+    }
+    while (src != NULL && src[i] != '\0' && i < dst_size - 1u) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+static void nex_action_log_capability_decision(const struct nex_action_entry *action,
+                                               const char *source_name,
+                                               uint32_t allowed,
+                                               uint32_t missing,
+                                               uint32_t decision,
+                                               uint32_t reason) {
+    struct syscall_capability_event event;
+    uint8_t *bytes = (uint8_t *)&event;
+
+    if (action == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < sizeof(event); i++) {
+        bytes[i] = 0u;
+    }
+    nex_action_copy_audit_text(event.source, sizeof(event.source), source_name != NULL ? source_name : action->name);
+    nex_action_copy_audit_text(event.action, sizeof(event.action), action->name);
+    nex_action_copy_audit_text(event.caps, sizeof(event.caps), action->caps);
+    event.required = action->cap_flags;
+    event.allowed = allowed;
+    event.missing = missing;
+    event.decision = decision;
+    event.reason = reason;
+    (void)capability_event(&event);
+}
+
 static const struct nex_action_cap_name g_nex_action_cap_names[] = {
     {"fs.read", NEX_ACTION_CAP_FS_READ},
     {"fs.write", NEX_ACTION_CAP_FS_WRITE},
@@ -78,6 +124,13 @@ static const struct nex_action_cap_name g_nex_action_cap_names[] = {
     {"debug.read", NEX_ACTION_CAP_DEBUG_READ},
     {"hw.inspect", NEX_ACTION_CAP_HW_INSPECT},
     {"system.inspect", NEX_ACTION_CAP_SYSTEM_INSPECT},
+    {"fs.mount", NEX_ACTION_CAP_FS_MOUNT},
+    {"device.read", NEX_ACTION_CAP_DEVICE_READ},
+    {"event.read", NEX_ACTION_CAP_EVENT_READ},
+    {"input.read", NEX_ACTION_CAP_INPUT_READ},
+    {"system.power", NEX_ACTION_CAP_SYSTEM_POWER},
+    {"system.config", NEX_ACTION_CAP_SYSTEM_CONFIG},
+    {"device.write", NEX_ACTION_CAP_DEVICE_WRITE},
 };
 
 static const struct nex_action_entry g_nex_actions[] = {
@@ -88,8 +141,9 @@ static const struct nex_action_entry g_nex_actions[] = {
     {"debug.pci", "debug", "lspci", "none", "table/pci", NEX_ACTION_CAP_HW_INSPECT, "hw.inspect", "inspect PCI devices"},
     {"fd.read", "fd", "cat", "path:path", "fd-stream", NEX_ACTION_CAP_FS_READ | NEX_ACTION_CAP_PROC_READ | NEX_ACTION_CAP_SYSTEM_INSPECT, "fs.read proc.read system.inspect", "read an fd-backed resource"},
     {"proc.read_node", "fd", "cat", "path:path", "procfs-node", NEX_ACTION_CAP_PROC_READ | NEX_ACTION_CAP_SYSTEM_INSPECT, "proc.read system.inspect", "read a procfs node through fd"},
-    {"event.read", "fd", "cat", "path:path flags?:word", "event-stream|json", NEX_ACTION_CAP_SYSTEM_INSPECT, "system.inspect", "read an EventFS stream through fd"},
-    {"device.read", "fd", "cat", "path:path", "device-stream", NEX_ACTION_CAP_HW_INSPECT | NEX_ACTION_CAP_BLOCK_INSPECT, "hw.inspect block.inspect", "read a devfs node through fd"},
+    {"event.read", "fd", "cat", "path:path flags?:word", "event-stream|json", NEX_ACTION_CAP_EVENT_READ, "event.read", "read an EventFS stream through fd"},
+    {"device.read", "fd", "cat", "path:path", "device-stream", NEX_ACTION_CAP_DEVICE_READ, "device.read", "read a devfs node through fd"},
+    {"device.write", "fd", "to", "path:path", "device-stream", NEX_ACTION_CAP_DEVICE_WRITE, "device.write", "write a devfs node through fd"},
     {"file.read", "file", "cat", "path:path", "text", NEX_ACTION_CAP_FS_READ, "fs.read", "read a file"},
     {"fs.list", "storage", "ls", "path?:path", "dirent-list", NEX_ACTION_CAP_FS_READ, "fs.read", "list directory contents"},
     {"fs.stat", "storage", "stat", "path:path flags?:word", "record/file|table/file", NEX_ACTION_CAP_FS_INSPECT, "fs.inspect", "show file metadata"},
@@ -99,20 +153,22 @@ static const struct nex_action_entry g_nex_actions[] = {
     {"fs.tree", "storage", "tree", "flags?:word path?:path", "table/tree|text", NEX_ACTION_CAP_FS_READ | NEX_ACTION_CAP_FS_INSPECT, "fs.read fs.inspect", "show directory tree"},
     {"file.type", "file", "file", "flags?:word path:path", "record/file-type|table/file-type", NEX_ACTION_CAP_FS_READ | NEX_ACTION_CAP_FS_INSPECT, "fs.read fs.inspect", "guess file type"},
     {"fs.mounts", "storage", "mounts", "none", "table/mounts", NEX_ACTION_CAP_FS_INSPECT, "fs.inspect", "list mounted filesystems"},
+    {"fs.mount", "storage", "mount", "source:path target:path kind?:word", "none", NEX_ACTION_CAP_FS_MOUNT | NEX_ACTION_CAP_FS_WRITE | NEX_ACTION_CAP_BLOCK_INSPECT, "fs.mount fs.write block.inspect", "mount a filesystem"},
+    {"fs.umount", "storage", "umount", "target:path", "none", NEX_ACTION_CAP_FS_MOUNT | NEX_ACTION_CAP_FS_WRITE, "fs.mount fs.write", "unmount a filesystem"},
     {"fs.block_devices", "storage", "blk", "none", "table/block-devices", NEX_ACTION_CAP_BLOCK_INSPECT, "block.inspect", "list block devices"},
-    {"device.hotplug", "storage", "hotplug", "op?:word disk?:int part?:int", "table/hotplug", NEX_ACTION_CAP_BLOCK_INSPECT | NEX_ACTION_CAP_FS_INSPECT, "block.inspect fs.inspect", "scan or automount discovered partitions"},
+    {"device.hotplug", "storage", "hotplug", "op?:word disk?:int part?:int", "table/hotplug", NEX_ACTION_CAP_BLOCK_INSPECT | NEX_ACTION_CAP_FS_INSPECT | NEX_ACTION_CAP_FS_MOUNT, "block.inspect fs.inspect fs.mount", "scan or automount discovered partitions"},
     {"net.config", "net", "ifconfig", "none", "record/net-config", NEX_ACTION_CAP_NET_INSPECT, "net.inspect", "show network config"},
     {"net.dhcp", "net", "dhcp", "none", "record/net-config", NEX_ACTION_CAP_NET_CONFIGURE, "net.configure", "request DHCP configuration"},
     {"net.dns", "net", "dns", "host:host type?:word", "dns-answer", NEX_ACTION_CAP_NET_CLIENT, "net.client", "resolve a DNS name"},
     {"net.http_get", "net", "wget", "url:host output?:path", "file|stdout", NEX_ACTION_CAP_NET_CLIENT | NEX_ACTION_CAP_FS_WRITE, "net.client fs.write", "fetch HTTP content"},
     {"net.ping", "net", "ping", "host?:host", "icmp-result", NEX_ACTION_CAP_NET_RAW, "net.raw", "send an ICMP echo request"},
     {"event.file_change", "event", "on", "event:word path:path action:word", "none", NEX_ACTION_CAP_FS_READ, "fs.read", "run a command when a file changes"},
-    {"event.timer", "event", "on", "event:word interval?:word action:word", "event/timer", NEX_ACTION_CAP_SYSTEM_INSPECT, "system.inspect", "run a command on timer ticks"},
-    {"event.input.keyboard", "event", "on", "event:word key:word interval?:word action:word", "event/input/keyboard", NEX_ACTION_CAP_SYSTEM_INSPECT, "system.inspect", "run a command on keyboard events"},
-    {"event.input.mouse", "event", "on", "event:word button?:word interval?:word action:word", "event/input/mouse", NEX_ACTION_CAP_SYSTEM_INSPECT, "system.inspect", "run a command on mouse events"},
-    {"event.net.status", "event", "on", "event:word state?:word interval?:word action:word", "event/net/status", NEX_ACTION_CAP_NET_INSPECT, "net.inspect", "run a command on network status changes"},
-    {"event.block.change", "event", "on", "event:word op?:word interval?:word action:word", "event/block/change", NEX_ACTION_CAP_BLOCK_INSPECT, "block.inspect", "run a command on block device changes"},
-    {"event.jobs", "event", "events", "op?:word id?:word", "table/event-jobs", NEX_ACTION_CAP_PROC_READ | NEX_ACTION_CAP_SYSTEM_INSPECT, "proc.read system.inspect", "manage background event jobs"},
+    {"event.timer", "event", "on", "event:word interval?:word action:word", "event/timer", NEX_ACTION_CAP_EVENT_READ, "event.read", "run a command on timer ticks"},
+    {"event.input.keyboard", "event", "on", "event:word key:word interval?:word action:word", "event/input/keyboard", NEX_ACTION_CAP_EVENT_READ | NEX_ACTION_CAP_INPUT_READ, "event.read input.read", "run a command on keyboard events"},
+    {"event.input.mouse", "event", "on", "event:word button?:word interval?:word action:word", "event/input/mouse", NEX_ACTION_CAP_EVENT_READ | NEX_ACTION_CAP_INPUT_READ, "event.read input.read", "run a command on mouse events"},
+    {"event.net.status", "event", "on", "event:word state?:word interval?:word action:word", "event/net/status", NEX_ACTION_CAP_EVENT_READ | NEX_ACTION_CAP_NET_INSPECT, "event.read net.inspect", "run a command on network status changes"},
+    {"event.block.change", "event", "on", "event:word op?:word interval?:word action:word", "event/block/change", NEX_ACTION_CAP_EVENT_READ | NEX_ACTION_CAP_BLOCK_INSPECT, "event.read block.inspect", "run a command on block device changes"},
+    {"event.jobs", "event", "events", "op?:word id?:word", "table/event-jobs", NEX_ACTION_CAP_EVENT_READ | NEX_ACTION_CAP_PROC_READ, "event.read proc.read", "manage background event jobs"},
     {"event.as_table", "event", "as", "type:word", "table/events", 0, "none", "convert EventFS text events to a typed table"},
     {"proc.jobs", "process", "jobs", "none", "table/jobs", NEX_ACTION_CAP_PROC_READ, "proc.read", "list shell jobs"},
     {"proc.list", "process", "ps", "none", "table/processes", NEX_ACTION_CAP_PROC_READ, "proc.read", "list processes"},
@@ -120,11 +176,12 @@ static const struct nex_action_entry g_nex_actions[] = {
     {"system.cpu", "system", "cpuinfo", "none", "record/cpu", NEX_ACTION_CAP_SYSTEM_INSPECT, "system.inspect", "show CPU information"},
     {"system.clock", "system", "hwclock", "flags?:word", "record/rtc", NEX_ACTION_CAP_SYSTEM_INSPECT, "system.inspect", "read CMOS RTC clock"},
     {"system.doctor", "system", "doctor", "flags?:word", "record/diagnostics|table/diagnostics", NEX_ACTION_CAP_SYSTEM_INSPECT | NEX_ACTION_CAP_FS_INSPECT | NEX_ACTION_CAP_BLOCK_INSPECT | NEX_ACTION_CAP_NET_INSPECT | NEX_ACTION_CAP_AUDIO_INSPECT | NEX_ACTION_CAP_PROC_READ, "system.inspect fs.inspect block.inspect net.inspect audio.inspect proc.read", "summarize system health"},
-    {"system.control", "system", "nexctl", "command?:word args?:text", "system-control", NEX_ACTION_CAP_SYSTEM_INSPECT | NEX_ACTION_CAP_FS_INSPECT | NEX_ACTION_CAP_PROC_READ | NEX_ACTION_CAP_DEBUG_READ, "system.inspect fs.inspect proc.read debug.read", "show the NexOS control dashboard"},
+    {"system.control", "system", "nexctl", "command?:word args?:text", "system-control", NEX_ACTION_CAP_SYSTEM_INSPECT | NEX_ACTION_CAP_SYSTEM_CONFIG | NEX_ACTION_CAP_FS_INSPECT | NEX_ACTION_CAP_PROC_READ | NEX_ACTION_CAP_DEBUG_READ, "system.inspect system.config fs.inspect proc.read debug.read", "show the NexOS control dashboard"},
     {"system.info", "system", "sysinfo", "flags?:word", "record/system-info", NEX_ACTION_CAP_SYSTEM_INSPECT, "system.inspect", "show system information"},
     {"system.mem", "system", "meminfo", "none", "record/memory", NEX_ACTION_CAP_SYSTEM_INSPECT, "system.inspect", "show memory information"},
-    {"session.image", "system", "session", "op:word name?:word", "session-image", NEX_ACTION_CAP_FS_READ | NEX_ACTION_CAP_FS_WRITE | NEX_ACTION_CAP_SYSTEM_INSPECT, "fs.read fs.write system.inspect", "save or inspect a session image"},
-    {"system.service", "system", "service", "op:word name?:word command?:text", "table/services", NEX_ACTION_CAP_FS_READ | NEX_ACTION_CAP_FS_WRITE | NEX_ACTION_CAP_PROC_READ | NEX_ACTION_CAP_PROC_SIGNAL | NEX_ACTION_CAP_SYSTEM_INSPECT, "fs.read fs.write proc.read proc.signal system.inspect", "define and manage boot services"},
+    {"session.image", "system", "session", "op:word name?:word", "session-image", NEX_ACTION_CAP_FS_READ | NEX_ACTION_CAP_FS_WRITE | NEX_ACTION_CAP_SYSTEM_CONFIG, "fs.read fs.write system.config", "save or inspect a session image"},
+    {"system.service", "system", "service", "op:word name?:word command?:text", "table/services", NEX_ACTION_CAP_FS_READ | NEX_ACTION_CAP_FS_WRITE | NEX_ACTION_CAP_PROC_READ | NEX_ACTION_CAP_PROC_SIGNAL | NEX_ACTION_CAP_SYSTEM_CONFIG, "fs.read fs.write proc.read proc.signal system.config", "define, supervise, and manage boot services"},
+    {"system.reboot", "system", "reboot", "none", "none", NEX_ACTION_CAP_SYSTEM_POWER, "system.power", "reboot the machine"},
     {"system.uname", "system", "uname", "flags?:word", "record/system", NEX_ACTION_CAP_SYSTEM_INSPECT, "system.inspect", "show system identity"},
     {"text.grep", "text", "grep", "pattern:text file?:path", "text", NEX_ACTION_CAP_FS_READ, "fs.read", "filter text"},
     {"text.view", "text", "cat", "path?:path", "text", NEX_ACTION_CAP_FS_READ, "fs.read", "print file contents"},
@@ -163,6 +220,7 @@ static const struct nex_mapper_entry g_nex_mapper_entries[] = {
     {"meminfo", "system.mem", "none", "record/memory"},
     {"mplay", "audio.play_wav", "path:path", "none"},
     {"mounts", "fs.mounts", "none", "table/mounts"},
+    {"mount", "fs.mount", "source:path target:path kind?:word", "none"},
     {"nexctl", "system.control", "command?:word args?:text", "system-control"},
     {"on", "event.file_change|event.timer|event.input.keyboard|event.input.mouse|event.net.status|event.block.change", "event:word args...:word", "none"},
     {"events", "event.jobs", "op?:word id?:word", "table/event-jobs"},
@@ -173,6 +231,7 @@ static const struct nex_mapper_entry g_nex_mapper_entries[] = {
     {"select", "table.select", "columns...:word", "typed-stream"},
     {"session", "session.image", "op:word name?:word", "session-image"},
     {"service", "system.service", "op:word name?:word command?:text", "table/services"},
+    {"reboot", "system.reboot", "none", "none"},
     {"stat", "fs.stat", "path:path flags?:word", "record/file|table/file"},
     {"sysinfo", "system.info", "flags?:word", "record/system-info"},
     {"sort-by", "table.sort", "column:word", "typed-stream"},
@@ -180,6 +239,7 @@ static const struct nex_mapper_entry g_nex_mapper_entries[] = {
     {"tone", "audio.tone", "hz:int ms:int device?:int", "none"},
     {"tree", "fs.tree", "flags?:word path?:path", "table/tree|text"},
     {"uname", "system.uname", "flags?:word", "record/system"},
+    {"umount", "fs.umount", "target:path", "none"},
     {"view", "table.view", "format:word", "text/table"},
     {"wget", "net.http_get", "url:host output?:path", "file|stdout"},
 };
@@ -393,6 +453,13 @@ static int nex_action_print_caps(void) {
     write_str("0x00001000 debug.read\n");
     write_str("0x00002000 hw.inspect\n");
     write_str("0x00004000 system.inspect\n");
+    write_str("0x00008000 fs.mount\n");
+    write_str("0x00010000 device.read\n");
+    write_str("0x00020000 event.read\n");
+    write_str("0x00040000 input.read\n");
+    write_str("0x00080000 system.power\n");
+    write_str("0x00100000 system.config\n");
+    write_str("0x00200000 device.write\n");
     return 0;
 }
 
@@ -508,7 +575,7 @@ static int nex_action_policy_add_name(char names[NEX_ACTION_POLICY_RULE_MAX][NEX
     return 1;
 }
 
-static int nex_action_policy_name_matches(char names[NEX_ACTION_POLICY_RULE_MAX][NEX_ACTION_ARG_NAME_MAX],
+static int nex_action_policy_name_matches(const char names[NEX_ACTION_POLICY_RULE_MAX][NEX_ACTION_ARG_NAME_MAX],
                                           uint32_t count,
                                           const char *name) {
     if (name == NULL) {
@@ -520,6 +587,83 @@ static int nex_action_policy_name_matches(char names[NEX_ACTION_POLICY_RULE_MAX]
         }
     }
     return 0;
+}
+
+static void nex_action_policy_remove_name(char names[NEX_ACTION_POLICY_RULE_MAX][NEX_ACTION_ARG_NAME_MAX],
+                                          uint32_t *count_io,
+                                          const char *name) {
+    uint32_t write_index = 0;
+
+    if (names == NULL || count_io == NULL || name == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < *count_io; i++) {
+        if (streq_ignore_case_local(names[i], name)) {
+            continue;
+        }
+        if (write_index != i) {
+            copy_line_local(names[write_index], names[i], NEX_ACTION_ARG_NAME_MAX);
+        }
+        write_index++;
+    }
+    *count_io = write_index;
+}
+
+static const char *nex_action_policy_decision_name(uint32_t decision) {
+    if (decision == SYS_CAP_DECISION_ALLOW) {
+        return "allow";
+    }
+    if (decision == SYS_CAP_DECISION_DENY) {
+        return "deny";
+    }
+    return "unknown";
+}
+
+static const char *nex_action_policy_reason_name(uint32_t reason) {
+    if (reason == SYS_CAP_REASON_ALLOW_ACTION) {
+        return "allow-action";
+    }
+    if (reason == SYS_CAP_REASON_DENY_ACTION) {
+        return "deny-action";
+    }
+    if (reason == SYS_CAP_REASON_MASK) {
+        return "cap-mask";
+    }
+    return "unknown";
+}
+
+static void nex_action_policy_decide(const struct nex_action_policy *policy,
+                                     const struct nex_action_entry *action,
+                                     uint32_t *decision_out,
+                                     uint32_t *reason_out,
+                                     uint32_t *missing_out) {
+    uint32_t decision = SYS_CAP_DECISION_DENY;
+    uint32_t reason = SYS_CAP_REASON_MASK;
+    uint32_t missing = 0u;
+
+    if (policy != NULL && action != NULL) {
+        missing = action->cap_flags & ~policy->allow_mask;
+        if (nex_action_policy_name_matches(policy->deny_actions, policy->deny_action_count, action->name)) {
+            decision = SYS_CAP_DECISION_DENY;
+            reason = SYS_CAP_REASON_DENY_ACTION;
+        } else if (nex_action_policy_name_matches(policy->allow_actions, policy->allow_action_count, action->name)) {
+            decision = SYS_CAP_DECISION_ALLOW;
+            reason = SYS_CAP_REASON_ALLOW_ACTION;
+            missing = 0u;
+        } else if (missing == 0u) {
+            decision = SYS_CAP_DECISION_ALLOW;
+            reason = SYS_CAP_REASON_MASK;
+        }
+    }
+    if (decision_out != NULL) {
+        *decision_out = decision;
+    }
+    if (reason_out != NULL) {
+        *reason_out = reason;
+    }
+    if (missing_out != NULL) {
+        *missing_out = missing;
+    }
 }
 
 static void nex_action_policy_read_word(const char **cursor_io, char *out, uint32_t out_size) {
@@ -720,6 +864,60 @@ static void nex_action_policy_print_full(const struct nex_action_policy *policy)
     write_str("\n");
 }
 
+static int nex_action_policy_print_actions(int table) {
+    struct nex_action_policy policy;
+
+    nex_action_policy_load_full(&policy);
+    if (table) {
+        write_str("# nex/type: table\n");
+        write_str("# nex/columns: name group decision reason missing cap_flags caps summary\n");
+        write_str("name group decision reason missing cap_flags caps summary\n");
+    } else {
+        write_str("NexOS action policy status\n");
+        write_str("mark decision action             reason        missing    caps\n");
+    }
+    for (uint32_t i = 0; i < nex_action_count(); i++) {
+        uint32_t decision;
+        uint32_t reason;
+        uint32_t missing;
+        const char *decision_name;
+        const char *reason_name;
+
+        nex_action_policy_decide(&policy, &g_nex_actions[i], &decision, &reason, &missing);
+        decision_name = nex_action_policy_decision_name(decision);
+        reason_name = nex_action_policy_reason_name(reason);
+        if (table) {
+            write_str(g_nex_actions[i].name);
+            write_str(" ");
+            write_str(g_nex_actions[i].group);
+            write_str(" ");
+            write_str(decision_name);
+            write_str(" ");
+            write_str(reason_name);
+            write_str(" 0x");
+            write_hex_u32(missing);
+            write_str(" 0x");
+            write_hex_u32(g_nex_actions[i].cap_flags);
+            write_str(" ");
+            nex_action_print_table_token(g_nex_actions[i].caps);
+            write_str(" ");
+            nex_action_print_table_token(g_nex_actions[i].summary);
+            write_str("\n");
+        } else {
+            write_str(decision == SYS_CAP_DECISION_ALLOW ? "+    " : "!    ");
+            write_text_padded(decision_name, 9u);
+            write_text_padded(g_nex_actions[i].name, 19u);
+            write_text_padded(reason_name, 14u);
+            write_str("0x");
+            write_hex_u32(missing);
+            write_str(" ");
+            write_str(g_nex_actions[i].caps);
+            write_str("\n");
+        }
+    }
+    return 0;
+}
+
 static int nex_action_policy_change(const char *cap_text, int allow) {
     uint32_t change = 0;
     uint32_t mask;
@@ -754,12 +952,14 @@ static int nex_action_policy_change_action(const char *name, int allow) {
     }
     nex_action_policy_load_full(&policy);
     if (allow) {
+        nex_action_policy_remove_name(policy.deny_actions, &policy.deny_action_count, name);
         if (!nex_action_policy_name_matches(policy.allow_actions, policy.allow_action_count, name) &&
             !nex_action_policy_add_name(policy.allow_actions, &policy.allow_action_count, name)) {
             write_err_str("action: too many allow action rules\n");
             return 1;
         }
     } else {
+        nex_action_policy_remove_name(policy.allow_actions, &policy.allow_action_count, name);
         if (!nex_action_policy_name_matches(policy.deny_actions, policy.deny_action_count, name) &&
             !nex_action_policy_add_name(policy.deny_actions, &policy.deny_action_count, name)) {
             write_err_str("action: too many deny action rules\n");
@@ -773,9 +973,31 @@ static int nex_action_policy_change_action(const char *name, int allow) {
     return 0;
 }
 
+static int nex_action_policy_explain(const struct nex_action_entry *action);
+
+static int nex_action_policy_clear_action(const char *name) {
+    struct nex_action_policy policy;
+
+    if (name == NULL || nex_action_find(name) == NULL) {
+        write_err_str("action: unknown action: ");
+        write_err_str(name != NULL ? name : "");
+        write_err_str("\n");
+        return 1;
+    }
+    nex_action_policy_load_full(&policy);
+    nex_action_policy_remove_name(policy.allow_actions, &policy.allow_action_count, name);
+    nex_action_policy_remove_name(policy.deny_actions, &policy.deny_action_count, name);
+    if (!nex_action_policy_save_full(&policy)) {
+        return 1;
+    }
+    return nex_action_policy_explain(nex_action_find(name));
+}
+
 static int nex_action_policy_explain(const struct nex_action_entry *action) {
     struct nex_action_policy policy;
     uint32_t missing;
+    uint32_t decision;
+    uint32_t reason;
 
     if (action == NULL) {
         return 1;
@@ -788,20 +1010,12 @@ static int nex_action_policy_explain(const struct nex_action_entry *action) {
     write_str("\ncap_flags: 0x");
     write_hex_u32(action->cap_flags);
     write_str("\n");
-    if (nex_action_policy_name_matches(policy.deny_actions, policy.deny_action_count, action->name)) {
-        write_str("decision: deny\nreason: explicit action deny rule\n");
-        return 0;
-    }
-    if (nex_action_policy_name_matches(policy.allow_actions, policy.allow_action_count, action->name)) {
-        write_str("decision: allow\nreason: explicit action allow rule\n");
-        return 0;
-    }
-    missing = action->cap_flags & ~policy.allow_mask;
-    if (missing == 0u) {
-        write_str("decision: allow\nreason: required capabilities are allowed\n");
-        return 0;
-    }
-    write_str("decision: deny\nmissing cap_flags: 0x");
+    nex_action_policy_decide(&policy, action, &decision, &reason, &missing);
+    write_str("decision: ");
+    write_str(nex_action_policy_decision_name(decision));
+    write_str("\nreason: ");
+    write_str(nex_action_policy_reason_name(reason));
+    write_str("\nmissing cap_flags: 0x");
     write_hex_u32(missing);
     write_str("\n");
     return 0;
@@ -816,6 +1030,12 @@ int nex_action_check_allowed(const struct nex_action_entry *action, const char *
     }
     nex_action_policy_load_full(&policy);
     if (nex_action_policy_name_matches(policy.deny_actions, policy.deny_action_count, action->name)) {
+        nex_action_log_capability_decision(action,
+                                           source_name,
+                                           policy.allow_mask,
+                                           action->cap_flags & ~policy.allow_mask,
+                                           SYS_CAP_DECISION_DENY,
+                                           SYS_CAP_REASON_DENY_ACTION);
         write_err_str("action: denied: ");
         if (source_name != NULL && !streq_ignore_case_local(source_name, action->name)) {
             write_err_str(source_name);
@@ -826,12 +1046,30 @@ int nex_action_check_allowed(const struct nex_action_entry *action, const char *
         return 0;
     }
     if (nex_action_policy_name_matches(policy.allow_actions, policy.allow_action_count, action->name)) {
+        nex_action_log_capability_decision(action,
+                                           source_name,
+                                           policy.allow_mask,
+                                           0u,
+                                           SYS_CAP_DECISION_ALLOW,
+                                           SYS_CAP_REASON_ALLOW_ACTION);
         return 1;
     }
     missing = action->cap_flags & ~policy.allow_mask;
     if (missing == 0u) {
+        nex_action_log_capability_decision(action,
+                                           source_name,
+                                           policy.allow_mask,
+                                           0u,
+                                           SYS_CAP_DECISION_ALLOW,
+                                           SYS_CAP_REASON_MASK);
         return 1;
     }
+    nex_action_log_capability_decision(action,
+                                       source_name,
+                                       policy.allow_mask,
+                                       missing,
+                                       SYS_CAP_DECISION_DENY,
+                                       SYS_CAP_REASON_MASK);
     write_err_str("action: denied: ");
     if (source_name != NULL && !streq_ignore_case_local(source_name, action->name)) {
         write_err_str(source_name);
@@ -1229,7 +1467,7 @@ int cmd_wrap_action(int argc, char **argv) {
     const struct nex_action_entry *action;
 
     if (argc < 2 || argv[1] == NULL) {
-        write_err_usage("action", " <list|caps|policy|allowed|allow|deny|reset|info|run> [name] [args]\n");
+        write_err_usage("action", " <list|caps|policy|allowed|allow|deny|clear|reset|info|run> [name] [args]\n");
         return 1;
     }
     if (streq_ignore_case_local(argv[1], "list")) {
@@ -1286,6 +1524,13 @@ int cmd_wrap_action(int argc, char **argv) {
             write_str("\n");
             return 0;
         }
+        if (argc == 3 && streq_ignore_case_local(argv[2], "actions")) {
+            return nex_action_policy_print_actions(0);
+        }
+        if (argc == 4 && streq_ignore_case_local(argv[2], "actions") &&
+            streq_ignore_case_local(argv[3], "--table")) {
+            return nex_action_policy_print_actions(1);
+        }
         if (argc == 3 && streq_ignore_case_local(argv[2], "reset")) {
             nex_action_policy_init(&policy);
             if (!nex_action_policy_save_full(&policy)) {
@@ -1320,22 +1565,39 @@ int cmd_wrap_action(int argc, char **argv) {
             streq_ignore_case_local(argv[3], "action")) {
             return nex_action_policy_change_action(argv[4], 0);
         }
-        write_err_usage("action policy", " [show|path|reset|explain <action>|allow cap <cap>|deny cap <cap>|allow action <name>|deny action <name>]\n");
+        if (argc == 5 && streq_ignore_case_local(argv[2], "clear") &&
+            streq_ignore_case_local(argv[3], "action")) {
+            return nex_action_policy_clear_action(argv[4]);
+        }
+        write_err_usage("action policy", " [show|path|actions [--table]|reset|explain <action>|allow cap <cap>|deny cap <cap>|allow action <name>|deny action <name>|clear action <name>]\n");
         return 1;
     }
     if (streq_ignore_case_local(argv[1], "allow")) {
+        if (argc == 4 && streq_ignore_case_local(argv[2], "action")) {
+            return nex_action_policy_change_action(argv[3], 1);
+        }
         if (argc != 3) {
-            write_err_usage("action allow", " <cap|mask|all>\n");
+            write_err_usage("action allow", " <cap|mask|all> | action <name>\n");
             return 1;
         }
         return nex_action_policy_change(argv[2], 1);
     }
     if (streq_ignore_case_local(argv[1], "deny")) {
+        if (argc == 4 && streq_ignore_case_local(argv[2], "action")) {
+            return nex_action_policy_change_action(argv[3], 0);
+        }
         if (argc != 3) {
-            write_err_usage("action deny", " <cap|mask|all>\n");
+            write_err_usage("action deny", " <cap|mask|all> | action <name>\n");
             return 1;
         }
         return nex_action_policy_change(argv[2], 0);
+    }
+    if (streq_ignore_case_local(argv[1], "clear")) {
+        if (argc == 4 && streq_ignore_case_local(argv[2], "action")) {
+            return nex_action_policy_clear_action(argv[3]);
+        }
+        write_err_usage("action clear", " action <name>\n");
+        return 1;
     }
     if (streq_ignore_case_local(argv[1], "reset")) {
         struct nex_action_policy policy;
@@ -1375,7 +1637,7 @@ int cmd_wrap_action(int argc, char **argv) {
         }
         return nex_action_run(action, argc - 3, argv + 3);
     }
-    write_err_usage("action", " <list|caps|policy|allowed|allow|deny|reset|info|run> [name] [args]\n");
+    write_err_usage("action", " <list|caps|policy|allowed|allow|deny|clear|reset|info|run> [name] [args]\n");
     return 1;
 }
 

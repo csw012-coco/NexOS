@@ -182,6 +182,10 @@ int ac97_query(struct syscall_ac97_info *info) {
     return sys_query(SYS_QUERY_AC97, 0, 0, info);
 }
 
+int hda_query(struct syscall_hda_info *info) {
+    return sys_query(SYS_QUERY_HDA, 0, 0, info);
+}
+
 int rtl8139_query(struct syscall_rtl8139_info *info) {
     return sys_query(SYS_QUERY_RTL8139, 0, 0, info);
 }
@@ -221,6 +225,10 @@ int machine_info_query(struct syscall_machine_info *info) {
 
 int rtc_query(struct syscall_rtc_info *info) {
     return sys_query(SYS_QUERY_RTC, 0, 0, info);
+}
+
+int tty_query(uint32_t fd, struct syscall_tty_info *info) {
+    return sys_query(SYS_QUERY_TTY, fd, 0, info);
 }
 
 int exec(const char *name) {
@@ -283,6 +291,180 @@ void sleep(uint32_t tick_count) {
 
 int reboot(void) {
     return (int)syscall4(SYS_REBOOT, 0, 0, 0, 0);
+}
+
+int capability_event(const struct syscall_capability_event *event) {
+    return (int)syscall4(SYS_CAPABILITY_EVENT, (uint64_t)(uintptr_t)event, 0, 0, 0);
+}
+
+static int gfx_command(uint32_t op, const struct syscall_gfx_command *cmd) {
+    return (int)syscall4(SYS_GFX, op, (uint64_t)(uintptr_t)cmd, 0, 0);
+}
+
+int gfx_info(struct syscall_gfx_info *info) {
+    return (int)syscall4(SYS_GFX, SYS_GFX_INFO, (uint64_t)(uintptr_t)info, 0, 0);
+}
+
+int gfx_clear(uint32_t rgb) {
+    struct syscall_gfx_command cmd = {0};
+
+    cmd.rgb = rgb;
+    return gfx_command(SYS_GFX_CLEAR, &cmd);
+}
+
+int gfx_draw_pixel(int32_t x, int32_t y, uint32_t rgb) {
+    struct syscall_gfx_command cmd = {0};
+
+    cmd.x0 = x;
+    cmd.y0 = y;
+    cmd.rgb = rgb;
+    return gfx_command(SYS_GFX_PIXEL, &cmd);
+}
+
+int gfx_draw_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb) {
+    struct syscall_gfx_command cmd = {0};
+
+    cmd.x0 = x0;
+    cmd.y0 = y0;
+    cmd.x1 = x1;
+    cmd.y1 = y1;
+    cmd.rgb = rgb;
+    return gfx_command(SYS_GFX_LINE, &cmd);
+}
+
+int gfx_draw_rect(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb) {
+    struct syscall_gfx_command cmd = {0};
+
+    cmd.x0 = x;
+    cmd.y0 = y;
+    cmd.width = width;
+    cmd.height = height;
+    cmd.rgb = rgb;
+    return gfx_command(SYS_GFX_RECT, &cmd);
+}
+
+int gfx_fill_rect(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb) {
+    struct syscall_gfx_command cmd = {0};
+
+    cmd.x0 = x;
+    cmd.y0 = y;
+    cmd.width = width;
+    cmd.height = height;
+    cmd.rgb = rgb;
+    return gfx_command(SYS_GFX_FILL_RECT, &cmd);
+}
+
+int gfx_draw_triangle(int32_t x0,
+                      int32_t y0,
+                      int32_t x1,
+                      int32_t y1,
+                      int32_t x2,
+                      int32_t y2,
+                      uint32_t rgb) {
+    struct syscall_gfx_command cmd = {0};
+
+    cmd.x0 = x0;
+    cmd.y0 = y0;
+    cmd.x1 = x1;
+    cmd.y1 = y1;
+    cmd.x2 = x2;
+    cmd.y2 = y2;
+    cmd.rgb = rgb;
+    return gfx_command(SYS_GFX_TRIANGLE, &cmd);
+}
+
+int gfx_fill_triangle(int32_t x0,
+                      int32_t y0,
+                      int32_t x1,
+                      int32_t y1,
+                      int32_t x2,
+                      int32_t y2,
+                      uint32_t rgb) {
+    struct syscall_gfx_command cmd = {0};
+
+    cmd.x0 = x0;
+    cmd.y0 = y0;
+    cmd.x1 = x1;
+    cmd.y1 = y1;
+    cmd.x2 = x2;
+    cmd.y2 = y2;
+    cmd.rgb = rgb;
+    return gfx_command(SYS_GFX_FILL_TRIANGLE, &cmd);
+}
+
+int gfx_draw_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
+    struct syscall_gfx_command cmd = {0};
+
+    cmd.x0 = cx;
+    cmd.y0 = cy;
+    cmd.radius = radius;
+    cmd.rgb = rgb;
+    return gfx_command(SYS_GFX_CIRCLE, &cmd);
+}
+
+int gfx_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
+    struct syscall_gfx_command cmd = {0};
+
+    cmd.x0 = cx;
+    cmd.y0 = cy;
+    cmd.radius = radius;
+    cmd.rgb = rgb;
+    return gfx_command(SYS_GFX_FILL_CIRCLE, &cmd);
+}
+
+int gui_event_cursor_init(struct syscall_gui_event_cursor *cursor) {
+    if (cursor == 0) {
+        return -1;
+    }
+    return (int)syscall4(SYS_GUI_EVENT, SYS_GUI_EVENT_CURSOR_INIT, (uint64_t)(uintptr_t)cursor, 0, 0);
+}
+
+int gui_poll_event_with_cursor(struct syscall_gui_event_cursor *cursor, struct syscall_gui_event *event) {
+    struct syscall_gui_event_poll poll;
+    int rc;
+
+    if (cursor == 0 || event == 0) {
+        return -1;
+    }
+    poll.cursor = *cursor;
+    poll.event.type = SYS_GUI_EVENT_NONE;
+    poll.event.seq = 0u;
+    poll.event.tick = 0u;
+    poll.event.dx = 0;
+    poll.event.dy = 0;
+    poll.event.buttons = 0u;
+    poll.event.keycode = 0u;
+    poll.event.ascii = 0;
+    poll.event.pressed = 0u;
+    poll.event.released = 0u;
+    poll.event.shift = 0u;
+    poll.event.ctrl = 0u;
+    poll.keyboard_dropped = 0u;
+    poll.mouse_dropped = 0u;
+
+    rc = (int)syscall4(SYS_GUI_EVENT, SYS_GUI_EVENT_POLL, (uint64_t)(uintptr_t)&poll, 0, 0);
+    if (rc < 0) {
+        return rc;
+    }
+    *cursor = poll.cursor;
+    *event = poll.event;
+    return rc;
+}
+
+int gui_poll_event(struct syscall_gui_event *event) {
+    static struct syscall_gui_event_cursor cursor;
+    static int initialized;
+
+    if (event == 0) {
+        return -1;
+    }
+    if (!initialized) {
+        if (gui_event_cursor_init(&cursor) != 0) {
+            return -1;
+        }
+        initialized = 1;
+    }
+    return gui_poll_event_with_cursor(&cursor, event);
 }
 
 void exit_with_code(uint64_t code) {

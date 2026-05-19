@@ -5,6 +5,7 @@ static uint8_t g_caps_lock_active;
 static uint8_t g_num_lock_active;
 static uint8_t g_scroll_lock_active;
 static uint8_t g_ctrl_active;
+static uint8_t g_alt_active;
 static uint8_t g_extended_prefix_active;
 
 #define KEYBOARD_EVENT_QUEUE_SIZE 64u
@@ -46,6 +47,10 @@ static enum keyboard_keycode keyboard_lookup_keycode(uint8_t scancode, int exten
         [0x36] = KEYBOARD_KEY_RIGHT_SHIFT,
         [0x39] = KEYBOARD_KEY_SPACE,
         [0x3a] = KEYBOARD_KEY_CAPS_LOCK,
+        [0x38] = KEYBOARD_KEY_LEFT_ALT,
+        [0x3b] = KEYBOARD_KEY_F1,
+        [0x3c] = KEYBOARD_KEY_F2,
+        [0x3d] = KEYBOARD_KEY_F3,
         [0x45] = KEYBOARD_KEY_NUM_LOCK,
         [0x46] = KEYBOARD_KEY_SCROLL_LOCK,
         [0x47] = KEYBOARD_KEY_HOME,
@@ -61,6 +66,7 @@ static enum keyboard_keycode keyboard_lookup_keycode(uint8_t scancode, int exten
     static const enum keyboard_keycode extended_map[128] = {
         [0x1c] = KEYBOARD_KEY_ENTER,
         [0x1d] = KEYBOARD_KEY_RIGHT_CTRL,
+        [0x38] = KEYBOARD_KEY_RIGHT_ALT,
         [0x47] = KEYBOARD_KEY_HOME,
         [0x48] = KEYBOARD_KEY_UP,
         [0x49] = KEYBOARD_KEY_PAGE_UP,
@@ -151,6 +157,7 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
     event.extended = 0;
     event.shift = g_shift_active;
     event.ctrl = g_ctrl_active;
+    event.alt = g_alt_active;
     event.caps_lock = g_caps_lock_active;
     event.num_lock = g_num_lock_active;
     event.scroll_lock = g_scroll_lock_active;
@@ -177,6 +184,10 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
         case KEYBOARD_KEY_RIGHT_CTRL:
             g_ctrl_active = release ? 0u : 1u;
             break;
+        case KEYBOARD_KEY_LEFT_ALT:
+        case KEYBOARD_KEY_RIGHT_ALT:
+            g_alt_active = release ? 0u : 1u;
+            break;
         case KEYBOARD_KEY_CAPS_LOCK:
             if (!release) {
                 g_caps_lock_active ^= 1u;
@@ -200,6 +211,7 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
     event.released = release ? 1u : 0u;
     event.shift = g_shift_active;
     event.ctrl = g_ctrl_active;
+    event.alt = g_alt_active;
     event.caps_lock = g_caps_lock_active;
     event.num_lock = g_num_lock_active;
     event.scroll_lock = g_scroll_lock_active;
@@ -221,6 +233,7 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
     event.extended = 0;
     event.shift = g_shift_active;
     event.ctrl = g_ctrl_active;
+    event.alt = g_alt_active;
     event.caps_lock = g_caps_lock_active;
     event.num_lock = g_num_lock_active;
     event.scroll_lock = g_scroll_lock_active;
@@ -237,6 +250,10 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
         case KEYBOARD_KEY_LEFT_CTRL:
         case KEYBOARD_KEY_RIGHT_CTRL:
             g_ctrl_active = release ? 0u : 1u;
+            break;
+        case KEYBOARD_KEY_LEFT_ALT:
+        case KEYBOARD_KEY_RIGHT_ALT:
+            g_alt_active = release ? 0u : 1u;
             break;
         case KEYBOARD_KEY_CAPS_LOCK:
             if (!release) {
@@ -259,6 +276,7 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
 
     event.shift = g_shift_active;
     event.ctrl = g_ctrl_active;
+    event.alt = g_alt_active;
     event.caps_lock = g_caps_lock_active;
     event.num_lock = g_num_lock_active;
     event.scroll_lock = g_scroll_lock_active;

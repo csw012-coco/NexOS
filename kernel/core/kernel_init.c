@@ -1,16 +1,18 @@
 #include <stdint.h>
 #include "hal/hal.h"
 #include "bootx/bootx.h"
+#include "drivers/serial/uart.h"
 #include "fs/vfs.h"
 #include "kernel/internal/core/kernel_boot_internal.h"
 #include "kernel/internal/core/kernel_config_internal.h"
+#include "kernel/internal/core/device_poll_internal.h"
 #include "kernel/internal/core/kernel_init_internal.h"
-#include "drivers/input/mouse.h"
 #include "kernel/internal/proc/process_internal_base.h"
 #include "kernel/public/core/console.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/core/tty.h"
 #include "kernel/public/proc/process.h"
+#include "kernel/public/proc/job_control.h"
 #include "kernel/public/proc/sched_policy.h"
 #include "kernel/public/mem/vmm.h"
 
@@ -143,7 +145,7 @@ void kernel_init_interrupts(void) {
     hal_cpu_cli();
     hal_platform_init(&handlers);
     hal_timer_init(100);
-    mouse_init();
+    device_poll_init_input();
     hal_cpu_sti();
 }
 
@@ -195,6 +197,7 @@ int kernel_try_run_init(struct vfs *vfs,
             kernel_copy_path_local(init_path, config.init_path, sizeof(init_path));
         }
     }
+    device_poll_set_mouse_cursor_enabled(config.mouse_cursor);
 
     if (config.ring3_smoke) {
         kernel_boot_trace(shell_tty, boot_trace_row, "kernel: ring3 smoke");
@@ -230,6 +233,20 @@ int kernel_try_run_init(struct vfs *vfs,
     tty_set_cursor(shell_tty,
                    *boot_trace_row < console_rows() ? *boot_trace_row : (uint16_t)(console_rows() - 1u),
                    0);
+    kernel_boot_trace(shell_tty, boot_trace_row, "kernel: virtual tty shells");
+    if (!job_run_background_with_pid(vfs, "/cmd/ush --tty /dev/tty2", 0, PROCESS_EXEC_AUTO, 0)) {
+        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty2 shell fail");
+    }
+    if (!job_run_background_with_pid(vfs, "/cmd/ush --tty /dev/tty3", 0, PROCESS_EXEC_AUTO, 0)) {
+        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty3 shell fail");
+    }
+    if (config.serial_shell) {
+        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: serial shell");
+        uart_set_console_input_enabled(0);
+        if (!job_run_background_with_pid(vfs, "/cmd/ush --tty /dev/ttyS0", 0, PROCESS_EXEC_AUTO, 0)) {
+            kernel_boot_trace(shell_tty, boot_trace_row, "kernel: serial shell fail");
+        }
+    }
     started = process_exec(vfs, init_path, 0, PROCESS_EXEC_AUTO);
     if (!started) {
         uint32_t error = process_last_error();

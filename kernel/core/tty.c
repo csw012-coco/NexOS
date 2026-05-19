@@ -1,5 +1,11 @@
 #include "kernel/internal/core/tty_internal.h"
 #include "drivers/input/keyboard.h"
+#include "kernel/internal/core/clipboard_internal.h"
+#include "kernel/public/proc/job_control.h"
+
+static struct tty g_virtual_ttys[TTY_VIRTUAL_COUNT];
+static uint32_t g_active_tty_index;
+static uint8_t g_virtual_ttys_ready;
 
 enum {
     TTY_ANSI_STATE_NONE = 0,
@@ -523,9 +529,60 @@ static void tty_emit_ctrl_c_local(struct tty *tty) {
     tty_write_str(tty, "^C\n", tty->text_color);
 }
 
+static void tty_copy_selection(struct tty *tty) {
+    if (tty == NULL) {
+        return;
+    }
+    (void)kernel_clipboard_copy_console_selection(&tty->console);
+}
+
+static void tty_insert_input_char(struct tty *tty, char ch) {
+    if (ch == 0 || tty->input_len >= TTY_LINE_MAX) {
+        return;
+    }
+
+    for (uint8_t i = tty->input_len; i > tty->input_cursor; i--) {
+        tty->input[i] = tty->input[i - 1u];
+    }
+    tty->input[tty->input_cursor] = ch;
+    tty->input_len++;
+    tty->input_cursor++;
+    tty->input[tty->input_len] = '\0';
+}
+
+static void tty_paste_text(struct tty *tty, const char *text, uint32_t len) {
+    if (tty == NULL || text == NULL || len == 0u) {
+        return;
+    }
+
+    if (tty->raw_input) {
+        for (uint32_t i = 0; i < len && text[i] != '\0'; i++) {
+            if (tty->char_count >= TTY_CHAR_QUEUE_SIZE) {
+                break;
+            }
+            tty_queue_char(tty, text[i]);
+        }
+        return;
+    }
+
+    for (uint32_t i = 0; i < len && text[i] != '\0' && tty->input_len < TTY_LINE_MAX; i++) {
+        char ch = text[i];
+
+        if (ch == '\r') {
+            continue;
+        }
+        if (ch == '\n' || ch == '\t') {
+            ch = ' ';
+        }
+        tty_insert_input_char(tty, ch);
+    }
+    tty_render_prompt(tty);
+}
+
 void tty_init(struct tty *tty, uint16_t top_row, uint16_t bottom_row, uint8_t color) {
     tty->text_color = color;
     tty->prompt_color = color;
+    tty->foreground_pid = 0;
     tty->input_len = 0;
     tty->input_cursor = 0;
     tty->input[0] = '\0';
@@ -543,6 +600,71 @@ void tty_init(struct tty *tty, uint16_t top_row, uint16_t bottom_row, uint8_t co
     tty->ansi_saved_col = 0;
     tty_ansi_reset_output(tty);
     console_init(&tty->console, top_row, bottom_row, color);
+}
+
+void tty_virtual_init_all(uint16_t top_row, uint16_t bottom_row, uint8_t color) {
+    for (uint32_t i = 0; i < TTY_VIRTUAL_COUNT; i++) {
+        tty_init(&g_virtual_ttys[i], top_row, bottom_row, color);
+        console_set_visible(&g_virtual_ttys[i].console, i == 0u);
+    }
+    g_active_tty_index = 0u;
+    g_virtual_ttys_ready = 1u;
+    console_set_visible(&g_virtual_ttys[0].console, 1);
+}
+
+struct tty *tty_virtual(uint32_t index) {
+    if (index >= TTY_VIRTUAL_COUNT) {
+        return NULL;
+    }
+    return &g_virtual_ttys[index];
+}
+
+struct tty *tty_active(void) {
+    return tty_virtual(g_active_tty_index);
+}
+
+uint32_t tty_active_index(void) {
+    return g_active_tty_index;
+}
+
+int tty_switch_active(uint32_t index) {
+    struct tty *old_tty;
+    struct tty *new_tty;
+
+    if (!g_virtual_ttys_ready || index >= TTY_VIRTUAL_COUNT) {
+        return 0;
+    }
+    old_tty = tty_virtual(g_active_tty_index);
+    new_tty = tty_virtual(index);
+    if (old_tty == NULL || new_tty == NULL) {
+        return 0;
+    }
+    if (index != g_active_tty_index) {
+        console_set_visible(&old_tty->console, 0);
+        g_active_tty_index = index;
+    }
+    console_set_visible(&new_tty->console, 1);
+    return 1;
+}
+
+void tty_set_foreground_pid(struct tty *tty, uint32_t pid) {
+    if (tty == NULL) {
+        return;
+    }
+    tty->foreground_pid = pid;
+}
+
+uint32_t tty_foreground_pid(const struct tty *tty) {
+    return tty != NULL ? tty->foreground_pid : 0u;
+}
+
+void tty_clear_foreground_pid(struct tty *tty, uint32_t pid) {
+    if (tty == NULL || pid == 0u) {
+        return;
+    }
+    if (tty->foreground_pid == pid) {
+        tty->foreground_pid = 0u;
+    }
 }
 
 void tty_clear(struct tty *tty) {
@@ -640,110 +762,118 @@ void tty_set_raw_input(struct tty *tty, int enabled) {
 
 void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
     char ch;
+    int had_readable_input;
 
     if (tty == NULL || event == NULL || event->keycode == KEYBOARD_KEY_NONE || event->released) {
         return;
     }
 
+    had_readable_input = tty->line_ready != 0 || tty->char_count > 0;
     if (tty->raw_input) {
         switch (event->keycode) {
             case KEYBOARD_KEY_ESC:
                 tty_queue_char(tty, '\x1b');
-                return;
+                break;
             case KEYBOARD_KEY_TAB:
                 tty_queue_char(tty, '\t');
-                return;
+                break;
             case KEYBOARD_KEY_PAGE_UP:
                 console_scroll_page_up(&tty->console);
-                return;
+                break;
             case KEYBOARD_KEY_PAGE_DOWN:
                 console_scroll_page_down(&tty->console);
-                return;
+                break;
             case KEYBOARD_KEY_UP:
                 tty_queue_escape_bracket(tty, 'A');
-                return;
+                break;
             case KEYBOARD_KEY_DOWN:
                 tty_queue_escape_bracket(tty, 'B');
-                return;
+                break;
             case KEYBOARD_KEY_RIGHT:
                 tty_queue_escape_bracket(tty, 'C');
-                return;
+                break;
             case KEYBOARD_KEY_LEFT:
                 tty_queue_escape_bracket(tty, 'D');
-                return;
+                break;
             case KEYBOARD_KEY_HOME:
                 tty_queue_escape_bracket(tty, 'H');
-                return;
+                break;
             case KEYBOARD_KEY_END:
                 tty_queue_escape_bracket(tty, 'F');
-                return;
+                break;
             case KEYBOARD_KEY_DELETE:
                 tty_queue_escape_bracket_tilde(tty, '3');
-                return;
+                break;
             default:
                 break;
         }
 
         if (event->ctrl) {
+            if (event->shift && event->keycode == KEYBOARD_KEY_C) {
+                tty_copy_selection(tty);
+                goto done;
+            }
+            if (event->keycode == KEYBOARD_KEY_V) {
+                tty_paste_text(tty, kernel_clipboard_text(), kernel_clipboard_size());
+                goto done;
+            }
             if (event->keycode == KEYBOARD_KEY_A) {
                 tty_queue_char(tty, 0x01);
-                return;
+                goto done;
             }
             if (event->keycode == KEYBOARD_KEY_E) {
                 tty_queue_char(tty, 0x05);
-                return;
+                goto done;
             }
             if (event->keycode == KEYBOARD_KEY_L) {
                 tty_queue_char(tty, 0x0c);
-                return;
+                goto done;
             }
             if (event->keycode == KEYBOARD_KEY_C) {
                 tty_queue_char(tty, 0x03);
-                return;
+                goto done;
             }
         }
+
         if (event->keycode == KEYBOARD_KEY_ENTER) {
             tty_queue_char(tty, '\n');
-            return;
+            goto done;
         }
         if (event->keycode == KEYBOARD_KEY_BACKSPACE) {
             tty_queue_char(tty, '\b');
-            return;
+            goto done;
         }
 
         ch = event->ascii;
         if (ch == 0) {
-            return;
+            goto done;
         }
         tty_queue_char(tty, ch);
-        return;
-    }
-
-    switch (event->keycode) {
-        case KEYBOARD_KEY_PAGE_UP:
-            console_scroll_page_up(&tty->console);
-            return;
-        case KEYBOARD_KEY_PAGE_DOWN:
-            console_scroll_page_down(&tty->console);
-            return;
-        default:
-            break;
+        goto done;
     }
 
     if (event->ctrl) {
+        if (event->shift && event->keycode == KEYBOARD_KEY_C) {
+            tty_copy_selection(tty);
+            goto done;
+        }
+        if (event->keycode == KEYBOARD_KEY_V) {
+            tty_paste_text(tty, kernel_clipboard_text(), kernel_clipboard_size());
+            goto done;
+        }
         if (event->keycode == KEYBOARD_KEY_A) {
             tty->input_cursor = 0;
             tty_render_prompt(tty);
-            return;
+            goto done;
         }
         if (event->keycode == KEYBOARD_KEY_E) {
             tty->input_cursor = tty->input_len;
             tty_render_prompt(tty);
-            return;
+            goto done;
         }
         if (event->keycode == KEYBOARD_KEY_C) {
             tty_emit_ctrl_c_local(tty);
-            return;
+            goto done;
         }
     }
 
@@ -757,12 +887,12 @@ void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
         tty->input_cursor = 0;
         tty->input[0] = '\0';
         tty->input_origin_valid = 0u;
-        return;
+        goto done;
     }
 
     if (event->keycode == KEYBOARD_KEY_BACKSPACE) {
         if (tty->input_len == 0 || tty->input_cursor == 0) {
-            return;
+            goto done;
         }
         for (uint8_t i = tty->input_cursor - 1u; i < tty->input_len; i++) {
             tty->input[i] = tty->input[i + 1u];
@@ -771,22 +901,21 @@ void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
         tty->input_len--;
         tty->input[tty->input_len] = '\0';
         tty_render_prompt(tty);
-        return;
+        goto done;
     }
 
     ch = event->ascii;
     if (ch == 0 || tty->input_len >= TTY_LINE_MAX) {
-        return;
+        goto done;
     }
 
-    for (uint8_t i = tty->input_len; i > tty->input_cursor; i--) {
-        tty->input[i] = tty->input[i - 1u];
-    }
-    tty->input[tty->input_cursor] = ch;
-    tty->input_len++;
-    tty->input_cursor++;
-    tty->input[tty->input_len] = '\0';
+    tty_insert_input_char(tty, ch);
     tty_render_prompt(tty);
+
+done:
+    if (!had_readable_input && (tty->line_ready != 0 || tty->char_count > 0)) {
+        job_tty_wake_waiting_processes(tty);
+    }
 }
 
 int tty_has_line(const struct tty *tty) {

@@ -54,3 +54,24 @@ void *memset(void *dst, int value, uint32_t size) {
     }
     return dst;
 }
+
+void *memmove(void *dst, const void *src, uint32_t size) {
+    uint8_t *out = (uint8_t *)dst;
+    const uint8_t *in = (const uint8_t *)src;
+
+    if (out == in || size == 0u) {
+        return dst;
+    }
+
+    if (out < in) {
+        for (uint32_t i = 0; i < size; i++) {
+            out[i] = in[i];
+        }
+    } else {
+        for (uint32_t i = size; i != 0u; i--) {
+            out[i - 1u] = in[i - 1u];
+        }
+    }
+
+    return dst;
+}

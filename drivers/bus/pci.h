@@ -64,6 +64,19 @@ struct pci_ac97_controller {
     uint32_t bar5;
 };
 
+struct pci_hda_controller {
+    uint8_t bus;
+    uint8_t slot;
+    uint8_t function;
+    uint8_t prog_if;
+    uint8_t irq_line;
+    uint8_t irq_pin;
+    uint16_t vendor_id;
+    uint16_t device_id;
+    uint32_t mmio_base_lo;
+    uint32_t mmio_base_hi;
+};
+
 struct pci_ehci_controller {
     uint8_t bus;
     uint8_t slot;
@@ -106,6 +119,8 @@ int pci_find_ahci_controller(struct pci_ahci_controller *out);
 int pci_find_ahci_controller_at(uint32_t index, struct pci_ahci_controller *out);
 int pci_find_ac97_controller(struct pci_ac97_controller *out);
 int pci_find_ac97_controller_at(uint32_t index, struct pci_ac97_controller *out);
+int pci_find_hda_controller(struct pci_hda_controller *out);
+int pci_find_hda_controller_at(uint32_t index, struct pci_hda_controller *out);
 int pci_find_ehci_controller(struct pci_ehci_controller *out);
 int pci_find_ehci_controller_at(uint32_t index, struct pci_ehci_controller *out);
 int pci_find_xhci_controller(struct pci_xhci_controller *out);

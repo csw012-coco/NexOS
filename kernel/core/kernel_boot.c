@@ -2,6 +2,7 @@
 #include "bootx/bootx.h"
 #include "block/blockdev.h"
 #include "drivers/audio/ac97.h"
+#include "drivers/audio/hda.h"
 #include "drivers/bus/pci.h"
 #include "drivers/net/rtl8139.h"
 #include "drivers/storage/ata.h"
@@ -207,6 +208,40 @@ void kernel_log_ac97_info(void) {
            (uint32_t)status.initialized);
 }
 
+void kernel_log_hda_info(void) {
+    struct hda_status status;
+
+    if (!hda_query_status(&status) || !status.present) {
+        kprint("hda: controller not found\n");
+        return;
+    }
+
+    kprint("hda: bdf=%u:%u.%u vendor=%x device=%x irq=%u pin=%u prog_if=%x\n",
+           (uint32_t)status.bus,
+           (uint32_t)status.slot,
+           (uint32_t)status.function,
+           (uint32_t)status.vendor_id,
+           (uint32_t)status.device_id,
+           (uint32_t)status.irq_line,
+           (uint32_t)status.irq_pin,
+           (uint32_t)status.prog_if);
+    kprint("hda: mmio=%x:%x pci_cmd=%x gcap=%x version=%u.%u\n",
+           status.mmio_base_hi,
+           status.mmio_base_lo,
+           status.pci_command,
+           status.gcap,
+           status.vmaj,
+           status.vmin);
+    kprint("hda: inpay=%x outpay=%x gctl=%x statests=%x wakeen=%x codec_mask=%x init=%u\n",
+           status.inpay,
+           status.outpay,
+           status.gctl,
+           status.statests,
+           status.wakeen,
+           status.codec_mask,
+           (uint32_t)status.initialized);
+}
+
 void kernel_log_rtl8139_info(void) {
     struct rtl8139_status status;
 
@@ -272,6 +307,8 @@ void kernel_init_storage_devices(const struct bootx_boot_info *boot_info) {
     kernel_log_pci_info();
     (void)ac97_init();
     kernel_log_ac97_info();
+    (void)hda_init();
+    kernel_log_hda_info();
     (void)rtl8139_init();
     kernel_log_rtl8139_info();
     ramdisk_init_from_boot_modules(boot_info);

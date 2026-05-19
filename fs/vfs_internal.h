@@ -4,6 +4,7 @@
 #include "fs/fat32.h"
 #include "fs/nxfs.h"
 #include "block/blockdev.h"
+#include "kernel/public/sys/syscall.h"
 
 enum {
     VFS_ATTR_DIR = 0x10u,
@@ -15,8 +16,10 @@ enum {
     VFS_PROC_KMSG = 5u,
     VFS_PROC_ACTIONS = 6u,
     VFS_PROC_RTC = 7u,
-    VFS_PROC_PID_DIR = 8u,
-    VFS_PROC_PID_STATUS = 9u,
+    VFS_PROC_CAPS = 8u,
+    VFS_PROC_DEVICES = 9u,
+    VFS_PROC_PID_DIR = 10u,
+    VFS_PROC_PID_STATUS = 11u,
     VFS_EVENT_ROOT = 1u,
     VFS_EVENT_TIMER = 2u,
     VFS_EVENT_INPUT_DIR = 3u,
@@ -34,6 +37,9 @@ enum {
     VFS_EVENT_BLOCK_DIR = 15u,
     VFS_EVENT_BLOCK_CHANGE = 16u,
     VFS_EVENT_BLOCK_CHANGE_JSON = 17u,
+    VFS_EVENT_SECURITY_DIR = 18u,
+    VFS_EVENT_SECURITY_CAPABILITY = 19u,
+    VFS_EVENT_SECURITY_CAPABILITY_JSON = 20u,
     VFS_DEV_MAJOR_TTY = 4u,
     VFS_DEV_MAJOR_MISC = 5u,
     VFS_DEV_MAJOR_BLOCK = 8u,
@@ -47,6 +53,9 @@ enum {
     VFS_DEV_BLOCK_DEVICE = 7u,
     VFS_DEV_BLOCK_PARTITION = 8u,
     VFS_DEV_FRAMEBUFFER = 9u,
+    VFS_DEV_TTYS0 = 10u,
+    VFS_DEV_TTY2 = 11u,
+    VFS_DEV_TTY3 = 12u,
     VFS_DEV_BLOCK_BUFFER_SIZE = 512u,
     VFS_PROC_TEXT_BUFFER_SIZE = 4096u,
     VFS_EVENT_TEXT_BUFFER_SIZE = 2048u
@@ -96,6 +105,12 @@ struct vfs_proc_action_entry {
     const char *output_schema;
     uint32_t cap_flags;
     const char *caps;
+    const char *summary;
+};
+
+struct vfs_proc_cap_entry {
+    const char *name;
+    uint32_t flag;
     const char *summary;
 };
 
@@ -149,6 +164,9 @@ void vfs_format_partition_node_name(char *dst,
                                     uint32_t disk_index,
                                     uint32_t part_index);
 int vfs_contains_char(const char *text, char needle);
+uint32_t vfs_format_procfs_node(struct vfs *vfs, struct vfs_node *node, char *text, uint32_t size);
+int vfs_procfs_pid_exists(uint32_t pid);
+uint32_t vfs_format_eventfs_node(struct vfs_node *node, char *text, uint32_t size);
 int vfs_parse_path_for_vfs(const struct vfs *vfs, const char *path, struct vfs_path *out);
 int vfs_resolve_mount_target_name(const struct vfs *vfs, const char *target, char *name, uint32_t name_size);
 int vfs_find_dynamic_mount(const struct vfs *vfs, const char *name, uint32_t *slot_out);
@@ -159,6 +177,8 @@ const struct vfs_builtin_mount_provider *vfs_builtin_mount_provider_at(uint32_t 
 const struct vfs_builtin_mount_provider *vfs_builtin_mount_provider(uint8_t kind);
 uint32_t vfs_proc_action_count(void);
 const struct vfs_proc_action_entry *vfs_proc_action_at(uint32_t index);
+uint32_t vfs_proc_cap_count(void);
+const struct vfs_proc_cap_entry *vfs_proc_cap_at(uint32_t index);
 const struct vfs_mount_ops *vfs_mount_ops(uint8_t mount_kind);
 int vfs_open_fat32(struct vfs *vfs, const struct vfs_path *parsed, uint32_t flags, struct vfs_node *out);
 int vfs_open_nxfs(struct vfs *vfs, const struct vfs_path *parsed, uint32_t flags, struct vfs_node *out);
@@ -189,6 +209,7 @@ void vfs_event_file_change_emit(const char *op,
                                 uint32_t mount_slot,
                                 uint32_t native_id,
                                 uint32_t bytes);
+void vfs_event_capability_emit(const struct syscall_capability_event *event);
 int64_t vfs_read_dir_fat32(struct vfs *vfs, struct vfs_node *node, uint32_t *index_io, struct vfs_dirent *entry);
 int64_t vfs_read_dir_nxfs(struct vfs *vfs, struct vfs_node *node, uint32_t *index_io, struct vfs_dirent *entry);
 int vfs_prepare_fat32_opened_node(struct vfs *vfs,

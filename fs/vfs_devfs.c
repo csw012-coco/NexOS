@@ -1,4 +1,5 @@
 #include "fs/vfs_internal.h"
+#include "drivers/serial/uart.h"
 #include "drivers/video/framebuffer.h"
 #include "lib/string.h"
 
@@ -92,8 +93,17 @@ int64_t vfs_read_from_devfs(struct vfs *vfs,
         return -1;
     }
     dev = vfs_blockdev_from_node(node, &base_lba, &block_count);
-    if (node->aux_index == VFS_DEV_TTY || node->aux_index == VFS_DEV_STDIN) {
+    if (node->aux_index == VFS_DEV_TTY ||
+        node->aux_index == VFS_DEV_TTY2 ||
+        node->aux_index == VFS_DEV_TTY3 ||
+        node->aux_index == VFS_DEV_STDIN) {
         return -1;
+    }
+    if (node->aux_index == VFS_DEV_TTYS0) {
+        int64_t read = (int64_t)uart_read((char *)buffer, size);
+
+        *offset_io += (uint32_t)read;
+        return read;
     }
     if (node->aux_index == VFS_DEV_NULL) {
         return 0;
@@ -127,9 +137,17 @@ int64_t vfs_write_to_devfs(struct vfs *vfs,
     }
     dev = vfs_blockdev_from_node(node, &base_lba, &block_count);
     if (node->aux_index == VFS_DEV_TTY ||
+        node->aux_index == VFS_DEV_TTY2 ||
+        node->aux_index == VFS_DEV_TTY3 ||
         node->aux_index == VFS_DEV_STDOUT ||
         node->aux_index == VFS_DEV_STDERR) {
         return -1;
+    }
+    if (node->aux_index == VFS_DEV_TTYS0) {
+        uint32_t written = uart_write_buffer((const char *)buffer, size);
+
+        *offset_io += written;
+        return (int64_t)written;
     }
     if (node->aux_index == VFS_DEV_STDIN) {
         return -1;
@@ -158,19 +176,26 @@ int64_t vfs_read_dir_devfs(uint32_t *index_io, struct vfs_dirent *entry) {
     if (*index_io == 0) {
         return vfs_devfs_emit_dir_entry(entry, index_io, "tty", 0, 0);
     } else if (*index_io == 1) {
-        return vfs_devfs_emit_dir_entry(entry, index_io, "null", 0, 0);
+        return vfs_devfs_emit_dir_entry(entry, index_io, "tty2", 0, 0);
     } else if (*index_io == 2) {
-        return vfs_devfs_emit_dir_entry(entry, index_io, "zero", 0, 0);
+        return vfs_devfs_emit_dir_entry(entry, index_io, "tty3", 0, 0);
     } else if (*index_io == 3) {
-        return vfs_devfs_emit_dir_entry(entry, index_io, "stdin", 0, 0);
+        return vfs_devfs_emit_dir_entry(entry, index_io, "null", 0, 0);
     } else if (*index_io == 4) {
-        return vfs_devfs_emit_dir_entry(entry, index_io, "stdout", 0, 0);
+        return vfs_devfs_emit_dir_entry(entry, index_io, "zero", 0, 0);
     } else if (*index_io == 5) {
+        return vfs_devfs_emit_dir_entry(entry, index_io, "stdin", 0, 0);
+    } else if (*index_io == 6) {
+        return vfs_devfs_emit_dir_entry(entry, index_io, "stdout", 0, 0);
+    } else if (*index_io == 7) {
         return vfs_devfs_emit_dir_entry(entry, index_io, "stderr", 0, 0);
-    } else if (*index_io == 6 && framebuffer_display_active()) {
+    } else if (*index_io == 8 && framebuffer_display_active()) {
         return vfs_devfs_emit_dir_entry(entry, index_io, "fb", framebuffer_device_size(), 0);
+    } else if (*index_io == (framebuffer_display_active() ? 9u : 8u) && uart_is_ready()) {
+        return vfs_devfs_emit_dir_entry(entry, index_io, "ttyS0", 0, 0);
     } else {
-        uint32_t ordinal = *index_io - (framebuffer_display_active() ? 7u : 6u);
+        uint32_t base_index = (framebuffer_display_active() ? 9u : 8u) + (uart_is_ready() ? 1u : 0u);
+        uint32_t ordinal = *index_io - base_index;
         uint32_t seen = 0;
 
         for (uint32_t disk_index = 0; disk_index < blockdev_count(); disk_index++) {
@@ -326,9 +351,19 @@ int vfs_devfs_lookup(const char *name, struct vfs_node *out) {
     if (name == 0 || out == 0) {
         return -1;
     }
-    if (streq(name, "tty")) {
+    if (streq(name, "tty") || streq(name, "tty1")) {
         vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_TTY);
         vfs_set_node_device_numbers(out, VFS_DEV_MAJOR_TTY, 0u);
+        return 0;
+    }
+    if (streq(name, "tty2")) {
+        vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_TTY2);
+        vfs_set_node_device_numbers(out, VFS_DEV_MAJOR_TTY, 1u);
+        return 0;
+    }
+    if (streq(name, "tty3")) {
+        vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_TTY3);
+        vfs_set_node_device_numbers(out, VFS_DEV_MAJOR_TTY, 2u);
         return 0;
     }
     if (streq(name, "null")) {
@@ -362,6 +397,14 @@ int vfs_devfs_lookup(const char *name, struct vfs_node *out) {
         }
         vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_FRAMEBUFFER);
         vfs_set_node_device_numbers(out, VFS_DEV_MAJOR_FRAMEBUFFER, 0u);
+        return 0;
+    }
+    if (streq(name, "ttyS0") || streq(name, "com1")) {
+        if (!uart_is_ready()) {
+            return -1;
+        }
+        vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_TTYS0);
+        vfs_set_node_device_numbers(out, VFS_DEV_MAJOR_TTY, 64u);
         return 0;
     }
     if (starts_with(name, "disk")) {

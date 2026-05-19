@@ -103,6 +103,12 @@ static int cmd_wrap_ac97(int argc, char **argv) {
     return cmd_ac97();
 }
 
+static int cmd_wrap_hda(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    return cmd_hda();
+}
+
 static int cmd_wrap_rtl8139(int argc, char **argv) {
     (void)argc;
     (void)argv;
@@ -229,7 +235,9 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"echo", cmd_echo},
     {"clear", cmd_wrap_clear},
     {"pwd", cmd_wrap_pwd},
+    {"tty", cmd_tty},
     {"env", cmd_env},
+    {"font", cmd_font},
     {"which", cmd_wrap_which},
     {"type", cmd_wrap_type},
     {"ls", cmd_ls},
@@ -299,6 +307,7 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"dmesg", cmd_wrap_dmesg},
     {"lspci", cmd_wrap_lspci},
     {"ac97", cmd_wrap_ac97},
+    {"hda", cmd_wrap_hda},
     {"rtl8139", cmd_wrap_rtl8139},
     {"rtl8139tx", cmd_wrap_rtl8139tx},
     {"rtl8139rx", cmd_wrap_rtl8139rx},
@@ -323,6 +332,7 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"minfo", cmd_wrap_minfo},
     {"uname", cmd_uname},
     {"cpuinfo", cmd_wrap_cpuinfo},
+    {"config", cmd_config},
     {"dbg", cmd_dbg},
 };
 

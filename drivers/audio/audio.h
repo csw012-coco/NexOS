@@ -9,7 +9,8 @@ enum {
 
 enum {
     AUDIO_DRIVER_NONE = 0,
-    AUDIO_DRIVER_AC97 = 1
+    AUDIO_DRIVER_AC97 = 1,
+    AUDIO_DRIVER_HDA = 2
 };
 
 struct audio_device_info {

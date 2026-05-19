@@ -12,3 +12,4 @@ int starts_with(const char *text, const char *prefix);
 const char *skip_spaces(const char *text);
 void *memcpy(void *dst, const void *src, uint32_t size);
 void *memset(void *dst, int value, uint32_t size);
+void *memmove(void *dst, const void *src, uint32_t size);

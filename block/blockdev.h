@@ -42,6 +42,7 @@ struct block_device {
 
 void blockdev_init(void);
 int blockdev_register(struct block_device *dev);
+int blockdev_unregister(struct block_device *dev);
 struct block_device *blockdev_get(uint32_t index);
 uint32_t blockdev_count(void);
 int blockdev_get_info(uint32_t index, struct blockdev_info *out);

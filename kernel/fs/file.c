@@ -147,7 +147,10 @@ int file_read_would_block(const struct file *file) {
         if (file->kind == KERNEL_FILE_VFS &&
             file->vfs_node.mount_kind == VFS_MOUNT_DEVFS &&
             (file->vfs_node.aux_index == VFS_DEV_TTY ||
-             file->vfs_node.aux_index == VFS_DEV_STDIN)) {
+             file->vfs_node.aux_index == VFS_DEV_TTY2 ||
+             file->vfs_node.aux_index == VFS_DEV_TTY3 ||
+             file->vfs_node.aux_index == VFS_DEV_STDIN ||
+             file->vfs_node.aux_index == VFS_DEV_TTYS0)) {
             return 1;
         }
     }

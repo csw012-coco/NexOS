@@ -252,20 +252,67 @@ void blockdev_init(void) {
 int blockdev_register(struct block_device *dev) {
     uint32_t disk_index;
 
-    if (dev == 0 || dev->read == 0 || device_count >= BLOCKDEV_MAX) {
+    if (dev == 0 || dev->read == 0) {
         return -1;
     }
 
+    for (uint32_t i = 0; i < device_count; i++) {
+        if (devices[i] == dev) {
+            return 0;
+        }
+    }
     dev->partition_count = 0;
     dev->partition_cache_valid = 0u;
-    disk_index = device_count;
-    devices[device_count++] = dev;
+    disk_index = BLOCKDEV_MAX;
+    for (uint32_t i = 0; i < device_count; i++) {
+        if (devices[i] == 0) {
+            disk_index = i;
+            break;
+        }
+    }
+    if (disk_index == BLOCKDEV_MAX) {
+        if (device_count >= BLOCKDEV_MAX) {
+            return -1;
+        }
+        disk_index = device_count++;
+    }
+    devices[disk_index] = dev;
     (void)blockdev_rescan_partitions(dev);
     block_event_emit_change("add", disk_index, 0xffffffffu, dev->name, dev->block_count);
     for (uint32_t i = 0; i < dev->partition_count; i++) {
         struct blockdev_partition part = dev->partitions[i];
 
         block_event_emit_change("partition", disk_index, part.index, dev->name, part.sector_count);
+    }
+    return 0;
+}
+
+int blockdev_unregister(struct block_device *dev) {
+    uint32_t disk_index = BLOCKDEV_MAX;
+
+    if (dev == 0) {
+        return -1;
+    }
+    for (uint32_t i = 0; i < device_count; i++) {
+        if (devices[i] == dev) {
+            disk_index = i;
+            break;
+        }
+    }
+    if (disk_index == BLOCKDEV_MAX) {
+        return -1;
+    }
+    for (uint32_t i = 0; i < dev->partition_count; i++) {
+        struct blockdev_partition part = dev->partitions[i];
+
+        block_event_emit_change("remove-partition", disk_index, part.index, dev->name, part.sector_count);
+    }
+    block_event_emit_change("remove", disk_index, 0xffffffffu, dev->name, dev->block_count);
+    devices[disk_index] = 0;
+    dev->partition_count = 0;
+    dev->partition_cache_valid = 0u;
+    while (device_count > 0u && devices[device_count - 1u] == 0) {
+        device_count--;
     }
     return 0;
 }

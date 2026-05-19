@@ -32,8 +32,10 @@ int main(int argc, char* argv[]) {
     int result;
     
     if (argc != 4) {
-        printf("Usage: %s <num1> <operator> <num2>\n", argv[0]);
-        return 1;
+        char input[128];
+        printf("Enter calculation (e.g., 3 + 4): ");
+        fgets(input, sizeof(input), stdin);
+        sscanf(input, "%d %c %d", &a, &op, &b);
     }
 
     int error_code = calc(a, b, op, &result);

@@ -79,7 +79,9 @@ Commands:
 - `echo`
 - `clear`
 - `pwd`
+- `tty`
 - `env`
+- `font`
 - `which`
 - `type`
 - `cat`
@@ -101,6 +103,7 @@ Commands:
 - `to`
 - `view`
 - `session`
+- `config`
 - `uname`
 
 Notes:
@@ -108,12 +111,15 @@ Notes:
 - `actions --table` emits the registry as a typed table for pipes, with quoted values when a column contains spaces.
 - `action info <name>` prints an action's group, schemas, capability tags, and backing command.
 - `action caps` prints the numeric capability flag legend used by `action info` and `/proc/actions`.
+- `cat /proc/caps` prints the kernel-side capability registry, and `cat /proc/devices` prints devfs node permissions.
 - `action allowed` prints the current action capability allow mask.
 - `action policy` prints the Action Permission Policy from `/HOME/ACTION.CAPS`.
 - `action policy explain <action>` explains why an action is allowed or denied.
+- `action policy actions` prints every action with its current allow/deny decision.
 - `action policy allow cap <cap|mask|all>` and `action policy deny cap <cap|mask|all>` update capability policy.
 - `action policy allow action <name>` and `action policy deny action <name>` add action-specific policy rules.
-- `action allow <cap|mask|all>`, `action deny <cap|mask|all>`, and `action reset` are short forms for capability policy updates.
+- `action policy clear action <name>` removes an action-specific policy rule.
+- `action allow <cap|mask|all>`, `action deny <cap|mask|all>`, `action allow action <name>`, `action deny action <name>`, `action clear action <name>`, and `action reset` are short forms for policy updates.
 - `action list --table` is the same typed table form as `actions --table`.
 - `action map` or `mapper` lists the Mapper Layer table from friendly command to action id, typed params, output format, and caps.
 - `mapper --table` emits that map as a typed table for pipes.
@@ -126,6 +132,8 @@ Notes:
 - `cat --json /event/...` renders EventFS event lines as a JSON array.
 - `date --iso`, `date +%s`, and `date --raw` expose the CMOS RTC in ISO, Unix-time, and diagnostic forms.
 - `hwclock` prints CMOS RTC mode, validity, raw status registers, and Unix time.
+- `tty` prints the terminal connected to standard input, such as `/dev/tty`, `/dev/tty2`, `/dev/tty3`, or `/dev/ttyS0`.
+- `font` shows the active text grid, cell size, and `/system/font/font.hex` availability; `font sample` prints a glyph sample.
 - `/proc/rtc` exposes the same RTC snapshot for scripts.
 - Friendly NexBox commands also use action capability checks through the Mapper Layer table.
   For example, `cat a.txt` is checked as `file.read` with `fs.read`.
@@ -138,6 +146,10 @@ Notes:
 - `service start|stop|restart <name>` manages the background process and stores runtime pid metadata in `<name>.run`.
 - `service list` shows enabled/running state, pid, and command.
 - `service boot` starts enabled services and is called by the default `INIT.SH` after `switch_root`.
+- `service reconcile` starts enabled services that are not currently running.
+- `service supervise [interval]` runs a foreground supervisor loop; use `service supervise 1s &` to run it as a daemon.
+- `config` manages layered settings. Effective lookup order is runtime, user, then system.
+- `config get <key>`, `config set [--user|--system|--runtime] <key> <value>`, `config unset ...`, `config list`, `config source <key>`, `config schema [key]`, and `config validate` are supported.
 - `as table` marks a headered text stream as a NexOS typed table.
 - `as event` converts EventFS text lines into a typed event table.
 - `pick <column=value>` filters a typed table or headered text table.
@@ -251,6 +263,7 @@ Commands:
 - `wav`
 - `mplay`
 - `ac97`
+- `hda`
 
 Notes:
 - `mplay` is the user-facing WAV playback command.
@@ -268,6 +281,7 @@ Commands:
 - `meminfo`
 - `minfo`
 - `cpuinfo`
+- `config`
 - `dbg`
 
 Notes:
@@ -304,7 +318,7 @@ enumeration order.
 
 The current built-in applet list exposed by `help` is:
 
-`help actions action mapper echo clear pwd env which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo dbg`
+`help actions action mapper echo clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg`
 
 ## Naming Notes
 

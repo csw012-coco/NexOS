@@ -55,8 +55,19 @@ ls /HOME
 ps
 run hello
 runbg yielddemo
+sleep 1 &
 ps
 wait
+config get init
+config set --runtime shell.prompt nex_prompt
+config source shell.prompt
+config unset --runtime shell.prompt
+config validate
+service define demo sleep 1
+service enable demo
+service reconcile
+service list
+service disable demo
 echo hello | grep hello | wc
 run sleepdemo
 run badptr
@@ -70,7 +81,10 @@ Expected results:
 - `ps` prints process information
 - `run hello` launches and returns cleanly
 - `runbg yielddemo` creates a background process
+- `sleep 1 &` creates a background job with a printed PID
 - `wait` reaps a finished process cleanly
+- `config get/set/source/unset/validate` handles layered settings cleanly
+- `service reconcile` starts enabled services that are not running
 - `echo hello | grep hello | wc` succeeds as a multi-stage pipeline
 - `run sleepdemo` returns after a visible delay
 - `run badptr` should fail in a controlled way without corrupting the shell session
@@ -106,6 +120,26 @@ Expected result:
 
 - mount succeeds if the second disk image is available
 - listing `/mnt` does not panic or hang
+
+## Optional HD Audio Check
+
+Boot with:
+
+```sh
+make run-hda
+```
+
+Then run:
+
+```text
+hda
+audio
+```
+
+Expected results:
+
+- `hda` reports the Intel HD Audio controller BDF, MMIO BAR, version, and codec status
+- `audio` lists the HDA device as an initialized `hda` driver entry
 
 ## Fault Regression Checks
 

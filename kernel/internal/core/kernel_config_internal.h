@@ -9,6 +9,8 @@ struct kernel_config {
     uint8_t loaded;
     uint8_t init_path_set;
     uint8_t ring3_smoke;
+    uint8_t mouse_cursor;
+    uint8_t serial_shell;
     char init_path[NOS_PATH_BUFFER_SIZE];
 };
 
