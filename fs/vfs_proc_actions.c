@@ -22,7 +22,9 @@ enum vfs_proc_action_capability {
     VFS_PROC_ACTION_CAP_INPUT_READ = 1u << 18,
     VFS_PROC_ACTION_CAP_SYSTEM_POWER = 1u << 19,
     VFS_PROC_ACTION_CAP_SYSTEM_CONFIG = 1u << 20,
-    VFS_PROC_ACTION_CAP_DEVICE_WRITE = 1u << 21
+    VFS_PROC_ACTION_CAP_DEVICE_WRITE = 1u << 21,
+    VFS_PROC_ACTION_CAP_CLIPBOARD_READ = 1u << 22,
+    VFS_PROC_ACTION_CAP_CLIPBOARD_WRITE = 1u << 23
 };
 
 static const struct vfs_proc_cap_entry g_vfs_proc_caps[] = {
@@ -48,6 +50,8 @@ static const struct vfs_proc_cap_entry g_vfs_proc_caps[] = {
     {"system.power", VFS_PROC_ACTION_CAP_SYSTEM_POWER, "power control such as reboot"},
     {"system.config", VFS_PROC_ACTION_CAP_SYSTEM_CONFIG, "change system configuration"},
     {"device.write", VFS_PROC_ACTION_CAP_DEVICE_WRITE, "write device nodes"},
+    {"clipboard.read", VFS_PROC_ACTION_CAP_CLIPBOARD_READ, "read the shared text clipboard"},
+    {"clipboard.write", VFS_PROC_ACTION_CAP_CLIPBOARD_WRITE, "set or clear the shared text clipboard"},
 };
 
 static const struct vfs_proc_action_entry g_vfs_proc_actions[] = {
@@ -82,6 +86,8 @@ static const struct vfs_proc_action_entry g_vfs_proc_actions[] = {
     {"event.block.change", "event", "on", "event:word op?:word interval?:word action:word", "event/block/change", VFS_PROC_ACTION_CAP_EVENT_READ | VFS_PROC_ACTION_CAP_BLOCK_INSPECT, "event.read block.inspect", "run a command on block device changes"},
     {"event.jobs", "event", "events", "op?:word id?:word", "table/event-jobs", VFS_PROC_ACTION_CAP_EVENT_READ | VFS_PROC_ACTION_CAP_PROC_READ, "event.read proc.read", "manage background event jobs"},
     {"event.as_table", "event", "as", "type:word", "table/events", 0, "none", "convert EventFS text events to a typed table"},
+    {"clipboard.read", "text", "clipboard", "op:word", "text", VFS_PROC_ACTION_CAP_CLIPBOARD_READ, "clipboard.read", "read the shared text clipboard"},
+    {"clipboard.write", "text", "clipboard", "op:word text?:text", "none", VFS_PROC_ACTION_CAP_CLIPBOARD_WRITE, "clipboard.write", "set or clear the shared text clipboard"},
     {"proc.jobs", "process", "jobs", "none", "table/jobs", VFS_PROC_ACTION_CAP_PROC_READ, "proc.read", "list shell jobs"},
     {"proc.list", "process", "ps", "none", "table/processes", VFS_PROC_ACTION_CAP_PROC_READ, "proc.read", "list processes"},
     {"proc.kill", "process", "kill", "pid:int", "none", VFS_PROC_ACTION_CAP_PROC_SIGNAL, "proc.signal", "kill a process"},

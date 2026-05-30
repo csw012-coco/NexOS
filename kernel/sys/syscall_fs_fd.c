@@ -1,6 +1,8 @@
 #include "kernel/internal/sys/syscall_internal.h"
+#include "kernel/internal/fs/file_internal.h"
 #include "kernel/internal/fs/fs_service_fd_internal.h"
 #include "kernel/internal/proc/process_types_internal.h"
+#include "kernel/public/core/tty.h"
 
 static uint64_t syscall_maybe_abort_interrupted_process(uint64_t rc) {
     const struct process *proc = process_current();
@@ -81,6 +83,30 @@ uint64_t syscall_handle_write(const struct syscall_user_buffer *buffer) {
 
 uint64_t syscall_handle_fd_write(uint32_t fd, const struct syscall_user_buffer *buffer) {
     return syscall_handle_write_chunked(fd, buffer);
+}
+
+uint64_t syscall_handle_clear(void) {
+    struct process *proc = process_current_mut();
+    struct tty *tty;
+
+    if (proc == 0) {
+        return 0;
+    }
+    tty = (struct tty *)file_tty_private_handle(file_table_active(proc->files, PROCESS_FILE_MAX, SYS_FD_STDOUT));
+    if (tty == 0) {
+        tty = (struct tty *)file_tty_private_handle(file_table_active(proc->files, PROCESS_FILE_MAX, SYS_FD_STDIN));
+    }
+    if (tty == 0) {
+        tty = (struct tty *)file_tty_private_handle(file_table_active(proc->files, PROCESS_FILE_MAX, SYS_FD_STDERR));
+    }
+    if (tty == 0 && proc->console_handle != 0) {
+        tty = (struct tty *)proc->console_handle;
+    }
+    if (tty == 0) {
+        return 0;
+    }
+    tty_clear(tty);
+    return 1;
 }
 
 uint64_t syscall_handle_fd_read(uint32_t fd, const struct syscall_user_buffer *buffer, uint32_t flags) {

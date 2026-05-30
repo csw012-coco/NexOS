@@ -41,11 +41,13 @@ enum nex_action_capability {
     NEX_ACTION_CAP_INPUT_READ = 1u << 18,
     NEX_ACTION_CAP_SYSTEM_POWER = 1u << 19,
     NEX_ACTION_CAP_SYSTEM_CONFIG = 1u << 20,
-    NEX_ACTION_CAP_DEVICE_WRITE = 1u << 21
+    NEX_ACTION_CAP_DEVICE_WRITE = 1u << 21,
+    NEX_ACTION_CAP_CLIPBOARD_READ = 1u << 22,
+    NEX_ACTION_CAP_CLIPBOARD_WRITE = 1u << 23
 };
 
 enum {
-    NEX_ACTION_CAP_ALL = (1u << 22) - 1u,
+    NEX_ACTION_CAP_ALL = (1u << 24) - 1u,
     NEX_ACTION_ARG_MAX = 15u,
     NEX_ACTION_ARG_NAME_MAX = 32u,
     NEX_ACTION_ARG_TYPE_MAX = 16u,
@@ -131,6 +133,8 @@ static const struct nex_action_cap_name g_nex_action_cap_names[] = {
     {"system.power", NEX_ACTION_CAP_SYSTEM_POWER},
     {"system.config", NEX_ACTION_CAP_SYSTEM_CONFIG},
     {"device.write", NEX_ACTION_CAP_DEVICE_WRITE},
+    {"clipboard.read", NEX_ACTION_CAP_CLIPBOARD_READ},
+    {"clipboard.write", NEX_ACTION_CAP_CLIPBOARD_WRITE},
 };
 
 static const struct nex_action_entry g_nex_actions[] = {
@@ -170,6 +174,8 @@ static const struct nex_action_entry g_nex_actions[] = {
     {"event.block.change", "event", "on", "event:word op?:word interval?:word action:word", "event/block/change", NEX_ACTION_CAP_EVENT_READ | NEX_ACTION_CAP_BLOCK_INSPECT, "event.read block.inspect", "run a command on block device changes"},
     {"event.jobs", "event", "events", "op?:word id?:word", "table/event-jobs", NEX_ACTION_CAP_EVENT_READ | NEX_ACTION_CAP_PROC_READ, "event.read proc.read", "manage background event jobs"},
     {"event.as_table", "event", "as", "type:word", "table/events", 0, "none", "convert EventFS text events to a typed table"},
+    {"clipboard.read", "text", "clipboard", "op:word", "text", NEX_ACTION_CAP_CLIPBOARD_READ, "clipboard.read", "read the shared text clipboard"},
+    {"clipboard.write", "text", "clipboard", "op:word text?:text", "none", NEX_ACTION_CAP_CLIPBOARD_WRITE, "clipboard.write", "set or clear the shared text clipboard"},
     {"proc.jobs", "process", "jobs", "none", "table/jobs", NEX_ACTION_CAP_PROC_READ, "proc.read", "list shell jobs"},
     {"proc.list", "process", "ps", "none", "table/processes", NEX_ACTION_CAP_PROC_READ, "proc.read", "list processes"},
     {"proc.kill", "process", "kill", "pid:int", "none", NEX_ACTION_CAP_PROC_SIGNAL, "proc.signal", "kill a process"},
@@ -198,6 +204,7 @@ static const struct nex_mapper_entry g_nex_mapper_entries[] = {
     {"audio", "audio.list", "none", "table/audio-devices"},
     {"blk", "fs.block_devices", "none", "table/block-devices"},
     {"cat", "fd.read", "path:path", "fd-stream"},
+    {"clipboard", "clipboard.read|clipboard.write", "op:word text?:text", "text|none"},
     {"count-by", "table.count", "column:word", "typed-stream"},
     {"cp", "fs.copy", "src:path dst:path", "none"},
     {"cpuinfo", "system.cpu", "none", "record/cpu"},
@@ -336,6 +343,15 @@ const struct nex_action_entry *nex_action_find_for_invocation(const char *comman
         if (path != NULL) {
             return nex_action_find("file.read");
         }
+    }
+    if (streq_ignore_case_local(command, "clipboard")) {
+        if (argc >= 2 &&
+            (streq_ignore_case_local(argv[1], "set") ||
+             streq_ignore_case_local(argv[1], "write") ||
+             streq_ignore_case_local(argv[1], "clear"))) {
+            return nex_action_find("clipboard.write");
+        }
+        return nex_action_find("clipboard.read");
     }
     return nex_action_find_for_friendly_command(command);
 }

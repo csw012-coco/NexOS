@@ -668,7 +668,6 @@ static int process_run_foreground_command(struct vfs *vfs,
             return 0;
         }
         (void)process_wait_pid(pid, &exited);
-        job_restore_foreground();
         return 1;
     }
     return process_exec(vfs, command_line, envp, mode);

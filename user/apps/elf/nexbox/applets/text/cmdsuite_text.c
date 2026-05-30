@@ -66,7 +66,7 @@ static void pager_run_fd(uint32_t content_fd, uint32_t tty_fd) {
 
 
 int cmd_help(void) {
-    write_str("cmd commands: help actions action mapper echo clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg\n");
+    write_str("cmd commands: help actions action mapper echo clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg\n");
     write_str("shell-only builtins: cd exit [code] exec set export alias functions history source .\n");
     write_str("multicall: nexbox <applet> [args]\n");
     write_str("set lists shell-local vars; env/export list exported environment\n");
@@ -827,6 +827,66 @@ int cmd_watch(int argc, char **argv) {
             yield();
         }
     }
+}
+
+
+int cmd_clipboard(int argc, char **argv) {
+    char text[4097];
+    uint32_t pos;
+
+    if (argc == 1 ||
+        (argc == 2 && (streq_local(argv[1], "get") || streq_local(argv[1], "read")))) {
+        int copied = clipboard_get(text, sizeof(text));
+
+        if (copied < 0) {
+            write_err_str("clipboard: read failed\n");
+            return 1;
+        }
+        if (copied > 0) {
+            write_stdout(text, (uint32_t)copied);
+        }
+        write_str("\n");
+        return 0;
+    }
+    if (argc == 2 && streq_local(argv[1], "size")) {
+        int size = clipboard_size();
+
+        if (size < 0) {
+            write_err_str("clipboard: size failed\n");
+            return 1;
+        }
+        write_dec((uint32_t)size);
+        write_str("\n");
+        return 0;
+    }
+    if (argc == 2 && streq_local(argv[1], "clear")) {
+        if (clipboard_clear() < 0) {
+            write_err_str("clipboard: clear failed\n");
+            return 1;
+        }
+        return 0;
+    }
+    if (argc >= 3 && (streq_local(argv[1], "set") || streq_local(argv[1], "write"))) {
+        pos = 0u;
+        for (int i = 2; i < argc && pos + 1u < sizeof(text); i++) {
+            uint32_t len = str_len_local(argv[i]);
+
+            if (i > 2 && pos + 1u < sizeof(text)) {
+                text[pos++] = ' ';
+            }
+            for (uint32_t j = 0; j < len && pos + 1u < sizeof(text); j++) {
+                text[pos++] = argv[i][j];
+            }
+        }
+        text[pos] = '\0';
+        if (clipboard_set(text, pos) < 0) {
+            write_err_str("clipboard: set failed\n");
+            return 1;
+        }
+        return 0;
+    }
+    write_err_usage("clipboard", " [get|set <text>|clear|size]\n");
+    return 1;
 }
 
 

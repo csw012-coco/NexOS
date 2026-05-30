@@ -70,7 +70,13 @@ int64_t vfs_read_dir_eventfs(struct vfs_node *node, uint32_t *index_io, struct v
             return vfs_eventfs_emit_dir_entry(entry, index_io, "keyboard", 0, 0);
         }
         if (*index_io == 1) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "keyboard.json", 0, 0);
+        }
+        if (*index_io == 2) {
             return vfs_eventfs_emit_dir_entry(entry, index_io, "mouse", 0, 0);
+        }
+        if (*index_io == 3) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "mouse.json", 0, 0);
         }
         return 0;
     }

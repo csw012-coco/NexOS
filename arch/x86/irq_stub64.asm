@@ -27,7 +27,21 @@ extern irq_dispatch
 extern syscall_dispatch
 extern usermode_resume_from_syscall
 extern kernel_panic_dispatch_exception
-extern userprog_prepare_user_return
+extern kernel_prepare_user_frame_return
+
+%macro ENTER_KERNEL_FROM_USER 1
+    test byte [rsp + %1], 0x3
+    jz %%done
+    swapgs
+%%done:
+%endmacro
+
+%macro LEAVE_KERNEL_TO_USER 1
+    test byte [rsp + %1], 0x3
+    jz %%done
+    swapgs
+%%done:
+%endmacro
 
 %macro IRQ_STUB 2
 %1:
@@ -47,6 +61,12 @@ extern userprog_prepare_user_return
     push rcx
     push rbx
     push rax
+    ENTER_KERNEL_FROM_USER 128
+    test byte [rsp + 128], 0x3
+    jz %%skip_user_entry
+    mov rdi, rsp
+    call kernel_prepare_user_frame_return
+%%skip_user_entry:
     mov edi, %2
     mov rsi, rsp
     call irq_dispatch
@@ -55,7 +75,10 @@ extern userprog_prepare_user_return
     je usermode_resume_from_syscall
     test byte [rsp + 128], 0x3
     jz %%skip_user_return
-    call userprog_prepare_user_return
+    mov rdi, rsp
+    call kernel_prepare_user_frame_return
+    test rax, rax
+    jz usermode_resume_from_syscall
 %%skip_user_return:
     pop rax
     pop rbx
@@ -72,6 +95,7 @@ extern userprog_prepare_user_return
     pop r13
     pop r14
     pop r15
+    LEAVE_KERNEL_TO_USER 8
     iretq
 %endmacro
 
@@ -111,6 +135,7 @@ IRQ_STUB irq15_stub, 47
     push rcx
     push rbx
     push rax
+    ENTER_KERNEL_FROM_USER 136
     mov edi, %2
     mov rsi, rsp
     call kernel_panic_dispatch_exception
@@ -142,6 +167,7 @@ IRQ_STUB irq15_stub, 47
     push rcx
     push rbx
     push rax
+    ENTER_KERNEL_FROM_USER 136
     mov edi, %2
     mov rsi, rsp
     call kernel_panic_dispatch_exception
@@ -178,13 +204,24 @@ syscall_stub:
     push rcx
     push rbx
     push rax
+    ENTER_KERNEL_FROM_USER 128
+    test byte [rsp + 128], 0x3
+    jz .skip_user_entry
+    mov rdi, rsp
+    call kernel_prepare_user_frame_return
+    test rax, rax
+    jz usermode_resume_from_syscall
+.skip_user_entry:
     mov rdi, rsp
     call syscall_dispatch
     mov rbx, 0xfffffffffffffff0
     cmp rax, rbx
     je usermode_resume_from_syscall
     mov [rsp], rax
-    call userprog_prepare_user_return
+    mov rdi, rsp
+    call kernel_prepare_user_frame_return
+    test rax, rax
+    jz usermode_resume_from_syscall
     pop rax
     pop rbx
     pop rcx
@@ -200,4 +237,5 @@ syscall_stub:
     pop r13
     pop r14
     pop r15
+    LEAVE_KERNEL_TO_USER 8
     iretq

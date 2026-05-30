@@ -15,4 +15,5 @@ void job_clear_process_foreground_pid(const struct process *proc);
 struct process *process_alloc_slot(struct process_session *session, const struct process *parent_proc);
 void process_clear_current(struct process_session *session);
 void process_discard_files(struct process *proc);
+void process_mark_exit_pending(struct process *proc, int32_t exit_code);
 void process_mark_exited(struct process *proc, int32_t exit_code);

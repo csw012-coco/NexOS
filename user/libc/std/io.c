@@ -80,7 +80,5 @@ uint32_t read_line(uint32_t fd, char *buf, uint32_t size) {
 }
 
 void clear(void) {
-    int fd = open("/dev/tty", 0);
-    write(fd, "\033[2J\033[H", 7); // Clear screen and move cursor to home position
-    close(fd);
+    (void)syscall4(SYS_CLEAR, 0, 0, 0, 0);
 }

@@ -11,4 +11,4 @@ echo "│ NexOS │"
 echo "└───┴───┘ "
 switch_root /dev/disk0p2
 service boot
-exec /cmd/ush
+exec /cmd/ush --tty /dev/tty

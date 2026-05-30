@@ -251,6 +251,7 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"watch", cmd_watch},
     {"on", cmd_on},
     {"events", cmd_events},
+    {"clipboard", cmd_clipboard},
     {"wc", cmd_wc},
     {"head", cmd_head},
     {"tail", cmd_tail},

@@ -6,6 +6,7 @@
 #include "kernel/internal/core/kernel_boot_internal.h"
 #include "kernel/internal/core/kernel_init_internal.h"
 #include "kernel/internal/core/kernel_panic_internal.h"
+#include "kernel/internal/proc/process_internal_base.h"
 #include "kernel/internal/proc/process_types_internal.h"
 #include "kernel/internal/core/tty_internal.h"
 #include "kernel/public/core/console.h"
@@ -37,6 +38,8 @@ enum {
     IRQ_VECTOR_LAST = 47u
 };
 
+static void kernel_boot_trace(const char *text);
+
 static void kernel_halt_forever(void) {
     for (;;) {
         hal_cpu_halt();
@@ -51,8 +54,25 @@ static void kernel_panic_init_exit(void) {
     kernel_halt_forever();
 }
 
+static void kernel_run_console_shell_forever(struct vfs *vfs) {
+    if (vfs == 0) {
+        kernel_panic_init_exit();
+    }
+
+    for (;;) {
+        kernel_boot_trace("kernel: init exited; starting console shell");
+        if (!process_exec(vfs, "/cmd/ush --tty /dev/tty", 0, PROCESS_EXEC_AUTO)) {
+            kernel_boot_trace("kernel: console shell exec failed");
+            break;
+        }
+        kernel_boot_trace("kernel: console shell exited");
+    }
+    kernel_panic_init_exit();
+}
+
 static uint64_t kernel_handle_user_exception(uint32_t vector, const struct exception_frame *frame) {
     struct process_session *session;
+    struct user_page_mapping *mappings;
     const struct process *proc;
     uint64_t fault_addr = 0;
     int32_t exit_code = -11;
@@ -65,6 +85,19 @@ static uint64_t kernel_handle_user_exception(uint32_t vector, const struct excep
     }
 
     session = process_current_session();
+    mappings = process_current_mappings();
+    if (current_cpu_user_state()->nested_kernel_stack_depth != 0) {
+        uint32_t index = current_cpu_user_state()->nested_kernel_stack_depth - 1u;
+
+        if (current_cpu_user_state()->active_sessions[index] != 0) {
+            session = current_cpu_user_state()->active_sessions[index];
+            mappings = current_cpu_user_state()->active_mappings[index];
+            process_bind_session(session, mappings);
+            if (session->address_space.user_cr3 != 0) {
+                (void)vmm_switch_root_or_fail(session->address_space.user_cr3);
+            }
+        }
+    }
     proc = process_current();
     if (session == 0 || proc == 0 || proc->image_kind == PROCESS_IMAGE_NONE) {
         return IRQ_DISPATCH_CONTINUE;
@@ -206,10 +239,6 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
         if (usb_signal && frame != 0 && (frame->cs & 0x3u) == 0x3u) {
             return IRQ_DISPATCH_RESUME_KERNEL;
         }
-        if (frame != 0 && (frame->cs & 0x3u) == 0x3u) {
-            sched_preempt_current(process_current_session(), frame);
-            return IRQ_DISPATCH_RESUME_KERNEL;
-        }
         return IRQ_DISPATCH_CONTINUE;
     }
 
@@ -257,6 +286,10 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
     device_poll_handle_network_irq(irq_line);
     hal_irq_ack(irq_line);
     return IRQ_DISPATCH_CONTINUE;
+}
+
+uint64_t kernel_prepare_user_frame_return(const struct syscall_frame *frame) {
+    return sched_prepare_user_frame_return(frame);
 }
 
 uint64_t kernel_panic_dispatch_exception(uint32_t vector, const struct exception_frame *frame) {
@@ -325,7 +358,7 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     kernel_boot_trace("kernel: start init");
     init_started = kernel_try_run_init(vfs, &shell_tty, &g_kernel_boot_trace_row, boot_info);
     if (init_started) {
-        kernel_panic_init_exit();
+        kernel_run_console_shell_forever(vfs);
     }
     kernel_boot_trace("kernel: init missing");
 

@@ -60,6 +60,7 @@ int cmd_sleep(int argc, char **argv);
 int cmd_watch(int argc, char **argv);
 int cmd_on(int argc, char **argv);
 int cmd_events(int argc, char **argv);
+int cmd_clipboard(int argc, char **argv);
 int cmd_wc(int argc, char **argv);
 int cmd_head(int argc, char **argv);
 int cmd_tail(int argc, char **argv);

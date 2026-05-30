@@ -1,7 +1,9 @@
 #include "kernel/internal/fs/file_device_backend.h"
 #include "drivers/serial/uart.h"
 #include "fs/vfs_internal.h"
+#include "kernel/internal/proc/process_types_internal.h"
 #include "kernel/public/core/tty.h"
+#include "kernel/public/proc/job_control.h"
 
 static void file_device_init_with_ops(struct file *file, uint8_t kind, const struct file_ops *ops) {
     if (file == 0) {
@@ -26,6 +28,21 @@ static int64_t file_device_readdir_unsupported(struct file *file,
     return -1;
 }
 
+static int file_device_tty_foreground_allowed(const struct tty *tty) {
+    const struct process *proc;
+    uint32_t foreground_pid;
+
+    if (tty == NULL) {
+        return 0;
+    }
+    proc = process_current();
+    if (proc == NULL) {
+        return 1;
+    }
+    foreground_pid = tty_foreground_pid(tty);
+    return foreground_pid != 0u && proc->pid == foreground_pid;
+}
+
 static int64_t file_device_tty_read(struct file *file,
                                     const struct vfs *vfs,
                                     void *buffer,
@@ -37,6 +54,9 @@ static int64_t file_device_tty_read(struct file *file,
     (void)file;
     (void)vfs;
     if (tty == NULL || buffer == NULL || size == 0) {
+        return 0;
+    }
+    if (!file_device_tty_foreground_allowed(tty)) {
         return 0;
     }
     mode = (flags & KERNEL_FILE_READ_CHAR) != 0 ? TTY_READ_CHAR : TTY_READ_LINE;
@@ -54,6 +74,9 @@ static int64_t file_device_tty_write(struct file *file,
     (void)vfs;
     if (tty == NULL || buffer == NULL || size == 0) {
         return 0;
+    }
+    if (!file_device_tty_foreground_allowed(tty)) {
+        return (int64_t)size;
     }
     return (int64_t)tty_write(tty, (const char *)buffer, size, 0x0f);
 }
@@ -73,6 +96,9 @@ static int64_t file_device_uart_read(struct file *file,
     if (buffer == 0 || size == 0u) {
         return 0;
     }
+    if (!job_serial_current_process_foreground_allowed()) {
+        return 0;
+    }
     return (int64_t)uart_read_tty((char *)buffer,
                                   size,
                                   (flags & KERNEL_FILE_READ_CHAR) != 0);
@@ -86,6 +112,9 @@ static int64_t file_device_uart_write(struct file *file,
     (void)vfs;
     if (buffer == 0 || size == 0u) {
         return 0;
+    }
+    if (!job_serial_current_process_foreground_allowed()) {
+        return (int64_t)size;
     }
     return (int64_t)uart_write_buffer((const char *)buffer, size);
 }

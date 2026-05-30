@@ -50,6 +50,8 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
             return syscall_handle_dup2((uint32_t)frame->rbx, (uint32_t)frame->rcx);
         case SYS_PIPE:
             return syscall_handle_pipe(frame->rbx);
+        case SYS_CLEAR:
+            return syscall_handle_clear();
         case SYS_TICKS:
             if (g_syscall_ticks == 0) {
                 return 0;
@@ -62,13 +64,6 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
             sched_sleep_current(process_current_session(), frame, (uint32_t)frame->rbx);
             return SYSCALL_EXIT_TO_KERNEL;
         case SYS_EXEC:
-            if (process_current() != 0) {
-                struct process_session *caller_session = process_current_session();
-                uint64_t rc = syscall_handle_exec(frame->rbx, frame->rcx);
-
-                sched_resume_current_syscall(caller_session, frame, rc);
-                return SYSCALL_EXIT_TO_KERNEL;
-            }
             return syscall_handle_exec(frame->rbx, frame->rcx);
         case SYS_EXEC_REPLACE:
             if (process_current() == 0) {
@@ -113,14 +108,6 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
         case SYS_UMOUNT:
             return syscall_handle_umount(frame->rbx);
         case SYS_SPAWN:
-            if (process_current() != 0 && ((uint32_t)frame->rdx & SYS_SPAWN_BACKGROUND) == 0) {
-                struct process_session *caller_session = process_current_session();
-                uint64_t rc =
-                    syscall_handle_spawn(frame->rbx, (uint32_t)frame->rcx, (uint32_t)frame->rdx, frame->rsi);
-
-                sched_resume_current_syscall(caller_session, frame, rc);
-                return SYSCALL_EXIT_TO_KERNEL;
-            }
             return syscall_handle_spawn(frame->rbx, (uint32_t)frame->rcx, (uint32_t)frame->rdx, frame->rsi);
         case SYS_QUERY:
             return syscall_handle_query((uint32_t)frame->rbx, frame->rcx, frame->rdx, frame->rsi);
@@ -154,6 +141,8 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
             return syscall_handle_gfx((uint32_t)frame->rbx, frame->rcx);
         case SYS_GUI_EVENT:
             return syscall_handle_gui_event((uint32_t)frame->rbx, frame->rcx);
+        case SYS_CLIPBOARD:
+            return syscall_handle_clipboard((uint32_t)frame->rbx, frame->rcx);
         default:
             return 0;
     }

@@ -1,51 +1,45 @@
 #include "kernel/internal/sched/scheduler_internal.h"
-#include "kernel/public/mem/vmm.h"
 #include "kernel/public/proc/sched_policy.h"
 
 void job_bind_foreground_session(void) {
-    process_bind_session(&g_user_session, g_user_page_mappings);
-    if (g_user_session.process.image_kind != PROCESS_IMAGE_NONE &&
-        g_user_session.address_space.user_cr3 != 0) {
-        (void)vmm_switch_root_or_fail(g_user_session.address_space.user_cr3);
-    }
-}
-
-void job_restore_foreground(void) {
-    job_bind_foreground_session();
-    if (g_user_session.process.image_kind != PROCESS_IMAGE_NONE) {
-        g_current_user_raw_entry = g_user_session.process.entry;
-        job_set_process_foreground_pid(&g_user_session.process, g_user_session.process.pid);
-    } else {
-        job_clear_process_foreground_pid(&g_user_session.process);
-    }
+    (void)session_bind_user_context(&g_user_session, g_user_page_mappings);
 }
 
 void sched_prepare_user_return(void) {
     struct process_session *session;
-    const struct process *proc;
+    struct cpu_user_state *cpu_state;
 
-    if (g_nested_kernel_stack_depth == 0) {
+    cpu_state = current_cpu_user_state();
+    if (cpu_state->nested_kernel_stack_depth == 0) {
         return;
     }
-    session = g_active_sessions[g_nested_kernel_stack_depth - 1];
+    session = cpu_state->active_sessions[cpu_state->nested_kernel_stack_depth - 1];
     if (session == 0) {
         return;
     }
-    process_bind_session(session, g_active_mappings[g_nested_kernel_stack_depth - 1]);
-    proc = &session->process;
-    if (proc->image_kind == PROCESS_IMAGE_NONE || proc->address_space == 0) {
-        return;
-    }
-    if (proc->address_space->user_cr3 != 0) {
-        if (!vmm_switch_root_or_fail(proc->address_space->user_cr3)) {
-            return;
-        }
-    }
-    g_current_user_raw_entry = proc->entry;
+    session_prepare_user_return_context(session, cpu_state->active_mappings[cpu_state->nested_kernel_stack_depth - 1]);
 }
 
-void userprog_prepare_user_return(void) {
+uint64_t sched_prepare_user_frame_return(const struct syscall_frame *frame) {
+    struct cpu_user_state *cpu_state;
+
+    if (frame != 0 && (frame->cs & 0x3u) == 0x3u) {
+        cpu_state = current_cpu_user_state();
+        if (cpu_state->nested_kernel_stack_depth != 0) {
+            uint32_t index = cpu_state->nested_kernel_stack_depth - 1u;
+
+            if (session_prepare_user_frame_return(cpu_state->active_sessions[index],
+                                                  cpu_state->active_mappings[index],
+                                                  frame)) {
+                return 1;
+            }
+            session_abort_user_frame_return(cpu_state->active_sessions[index],
+                                            cpu_state->active_mappings[index]);
+        }
+        return 0;
+    }
     sched_prepare_user_return();
+    return 1;
 }
 
 void sched_on_timer_tick(uint32_t current_ticks) {
@@ -69,7 +63,7 @@ void sched_tick(void) {
             if (!session_run_active_slice(&g_user_session, g_user_page_mappings,
                                          g_user_session.process.entry,
                                          g_user_session.process.stack_top, 0)) {
-                g_user_session.process.state = PROCESS_STATE_EXITED;
+                process_mark_exit_pending(&g_user_session.process, g_user_session.process.exit_code);
             }
             /* POLICY: Notify completion */
             sched_policy_on_process_finished((uint32_t)-1);
@@ -89,7 +83,7 @@ void sched_tick(void) {
     process_bind_session(&runtime->session, runtime->mappings);
     if (!session_run_active_slice(&runtime->session, runtime->mappings,
                                  runtime->entry, runtime->stack_top, 0)) {
-        runtime->session.process.state = PROCESS_STATE_EXITED;
+        process_mark_exit_pending(&runtime->session.process, runtime->session.process.exit_code);
     }
     if (runtime->session.process.state == PROCESS_STATE_EXITED) {
         session_finish(&runtime->session, runtime->mappings);

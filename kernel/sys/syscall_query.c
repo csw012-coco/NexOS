@@ -176,17 +176,14 @@ static int syscall_tty_info_from_handle(struct syscall_tty_info *info, const voi
 }
 
 static int syscall_tty_info_from_file(struct syscall_tty_info *info, const struct file *file) {
+    void *tty_handle;
+
     if (file == 0 || !file_is_active(file)) {
         return 0;
     }
-    if (file->private_data != 0 &&
-        (file->kind == KERNEL_FILE_TTY_STDIN ||
-         file->kind == KERNEL_FILE_TTY_STDOUT ||
-         file->kind == KERNEL_FILE_TTY_STDERR ||
-         file->kind == KERNEL_FILE_VFS)) {
-        if (syscall_tty_info_from_handle(info, file->private_data)) {
-            return 1;
-        }
+    tty_handle = file_tty_private_handle(file);
+    if (tty_handle != 0 && syscall_tty_info_from_handle(info, tty_handle)) {
+        return 1;
     }
     if (file->kind == KERNEL_FILE_VFS &&
         file->vfs_node.mount_kind == VFS_MOUNT_DEVFS &&

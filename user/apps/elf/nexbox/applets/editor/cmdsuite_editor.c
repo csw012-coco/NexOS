@@ -461,19 +461,19 @@ static int vi_read_key_local(void) {
     char seq1 = 0;
     char seq2 = 0;
 
-    if (nex_read(STDIN_FILENO, &ch, 2u, NEX_READ_BLOCKING | NEX_READ_CHAR) <= 0) {
+    if (nex_read(STDIN_FILENO, &ch, 1u, NEX_READ_BLOCKING | NEX_READ_CHAR) <= 0) {
         return 0;
     }
     if (ch != (char)VI_KEY_ESC) {
         return (uint8_t)ch;
     }
-    if (nex_read(STDIN_FILENO, &seq1, 2u, NEX_READ_NONBLOCK | NEX_READ_CHAR) <= 0) {
+    if (nex_read(STDIN_FILENO, &seq1, 1u, NEX_READ_NONBLOCK | NEX_READ_CHAR) <= 0) {
         return VI_KEY_ESC;
     }
     if (seq1 != '[') {
         return VI_KEY_ESC;
     }
-    if (nex_read(STDIN_FILENO, &seq2, 2u, NEX_READ_NONBLOCK | NEX_READ_CHAR) <= 0) {
+    if (nex_read(STDIN_FILENO, &seq2, 1u, NEX_READ_NONBLOCK | NEX_READ_CHAR) <= 0) {
         return VI_KEY_ESC;
     }
     switch (seq2) {
@@ -865,6 +865,7 @@ int cmd_vi(int argc, char **argv) {
         buffer->count = 1u;
         buffer->lines[0][0] = '\0';
     }
+    clear();
 
     for (;;) {
         int key;

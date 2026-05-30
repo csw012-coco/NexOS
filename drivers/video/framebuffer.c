@@ -101,17 +101,7 @@ static const uint32_t g_framebuffer_palette[16][3] = {
     {0xffu, 0xffu, 0xffu}
 };
 
-static const uint16_t g_framebuffer_mouse_cursor_outline[FRAMEBUFFER_MOUSE_CURSOR_HEIGHT] = {
-    0x8000u, 0xc000u, 0xe000u, 0xf000u, 0xf800u, 0xfc00u,
-    0xfe00u, 0xff00u, 0xff80u, 0xffc0u, 0xffe0u, 0xf800u,
-    0xdc00u, 0x8c00u, 0x0600u, 0x0600u, 0x0300u, 0x0300u
-};
-
-static const uint16_t g_framebuffer_mouse_cursor_fill[FRAMEBUFFER_MOUSE_CURSOR_HEIGHT] = {
-    0x0000u, 0x4000u, 0x6000u, 0x7000u, 0x7800u, 0x7c00u,
-    0x7e00u, 0x7f00u, 0x7f80u, 0x7c00u, 0x6c00u, 0x4800u,
-    0x4400u, 0x0400u, 0x0200u, 0x0200u, 0x0100u, 0x0000u
-};
+#include "drivers/video/framebuffer_mouse_cursor.h"
 
 static uint32_t framebuffer_pack_cell(uint32_t codepoint, uint8_t color, uint32_t flags) {
     return ((uint32_t)color << HAL_DISPLAY_CELL_COLOR_SHIFT) |

@@ -12,8 +12,7 @@ struct user_page_mapping g_user_page_mappings[USER_DYNAMIC_PAGE_LIMIT];
 struct process_session g_user_session;
 struct process_session *g_bound_session = &g_user_session;
 struct user_page_mapping *g_bound_mappings = g_user_page_mappings;
-struct process_session *g_active_sessions[USER_PROCESS_LIMIT];
-struct user_page_mapping *g_active_mappings[USER_PROCESS_LIMIT];
+struct cpu_user_state g_cpu_user_state[USER_CPU_COUNT];
 struct process g_process_slots[USER_PROCESS_LIMIT];
 uint8_t g_process_slot_used[USER_PROCESS_LIMIT];
 uint32_t g_next_pid = 1;
@@ -28,9 +27,7 @@ uint32_t g_process_exec_read_bytes;
 uint32_t g_process_exec_read_result;
 struct process g_last_exited_process;
 struct job_runtime g_bg_runtimes[USER_PROCESS_LIMIT];
-uint8_t g_nested_kernel_stacks[USER_PROCESS_LIMIT][NOS_KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 uint32_t g_scheduler_next_slot;
-uint32_t g_nested_kernel_stack_depth;
 
 static int process_session_has_image(const struct process_session *session) {
     return session != NULL && session->process.image_kind != PROCESS_IMAGE_NONE;
@@ -90,6 +87,24 @@ static void process_reset_exit_record(struct process *proc) {
     process_set_default_state(proc, 0, PROCESS_STATE_FREE);
 }
 
+static void process_refresh_console_from_stdio(struct process *proc) {
+    void *tty_handle;
+
+    if (proc == NULL) {
+        return;
+    }
+    tty_handle = file_tty_private_handle(&proc->files[SYS_FD_STDIN]);
+    if (tty_handle == NULL) {
+        tty_handle = file_tty_private_handle(&proc->files[SYS_FD_STDOUT]);
+    }
+    if (tty_handle == NULL) {
+        tty_handle = file_tty_private_handle(&proc->files[SYS_FD_STDERR]);
+    }
+    if (tty_handle != NULL) {
+        proc->console_handle = tty_handle;
+    }
+}
+
 static void process_prepare_slot(struct process *proc,
                                  uint32_t slot,
                                  struct address_space *address_space,
@@ -101,6 +116,7 @@ static void process_prepare_slot(struct process *proc,
         for (uint32_t i = 0; i <= SYS_FD_STDERR; i++) {
             (void)file_clone(&proc->files[i], &parent_proc->files[i]);
         }
+        process_refresh_console_from_stdio(proc);
         process_set_cwd(proc, process_cwd(parent_proc));
     } else {
         process_init_stdio(proc);
@@ -202,6 +218,7 @@ void job_inherit_stdio(struct process *proc) {
     for (uint32_t i = 0; i <= SYS_FD_STDERR; i++) {
         (void)file_clone(&proc->files[i], &g_bound_session->process.files[i]);
     }
+    process_refresh_console_from_stdio(proc);
 }
 
 uint32_t sched_current_ticks(void) {
@@ -346,15 +363,23 @@ void process_discard_files(struct process *proc) {
     }
 }
 
+void process_mark_exit_pending(struct process *proc, int32_t exit_code) {
+    if (proc == NULL || proc->image_kind == PROCESS_IMAGE_NONE) {
+        return;
+    }
+    proc->exit_code = exit_code;
+    proc->state = PROCESS_STATE_EXITED;
+    proc->has_saved_frame = 0;
+    proc->wake_tick = 0;
+}
+
 void process_mark_exited(struct process *proc, int32_t exit_code) {
     struct process *slot_proc;
 
     if (proc == NULL) {
         return;
     }
-    proc->state = PROCESS_STATE_EXITED;
-    proc->exit_code = exit_code;
-    proc->wake_tick = 0;
+    process_mark_exit_pending(proc, exit_code);
     process_discard_files(proc);
     if (proc->slot >= USER_PROCESS_LIMIT) {
         return;
@@ -407,9 +432,7 @@ void process_exit_current(struct process_session *session, int32_t exit_code) {
             kprint("proc: exit pid=%u code=%d\n", session->process.pid, exit_code);
         }
     }
-    session->process.exit_code = exit_code;
-    session->process.state = PROCESS_STATE_EXITED;
-    session->process.has_saved_frame = 0;
+    process_mark_exit_pending(&session->process, exit_code);
 }
 
 void sched_yield_current(struct process_session *session, const struct syscall_frame *frame) {

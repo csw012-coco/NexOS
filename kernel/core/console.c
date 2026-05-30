@@ -3,6 +3,7 @@
 
 static const char digits[] = "0123456789ABCDEF";
 static const uint8_t g_console_ansi_palette[8] = {0, 4, 2, 6, 1, 5, 3, 7};
+static const struct console *g_console_visible_display;
 
 static uint16_t console_height(const struct console *console) {
     return (uint16_t)(console->bottom_row - console->top_row + 1u);
@@ -243,7 +244,7 @@ static int console_visible_row_for_line(const struct console *console, uint32_t 
 static void console_write_display_cell_if_visible(const struct console *console, uint32_t line, uint16_t col) {
     uint16_t row = 0;
 
-    if (console == 0 || !console->visible) {
+    if (console == 0 || !console->visible || g_console_visible_display != console) {
         return;
     }
     if (console_visible_row_for_line(console, line, &row)) {
@@ -301,7 +302,7 @@ static void console_render_row(const struct console *console, uint16_t row) {
     uint32_t history_end;
     uint32_t line;
 
-    if (console == 0 || !console->visible) {
+    if (console == 0 || !console->visible || g_console_visible_display != console) {
         return;
     }
     blank = console_blank_cell(console);
@@ -318,7 +319,7 @@ static void console_render_row(const struct console *console, uint16_t row) {
 }
 
 static void console_render_view(const struct console *console) {
-    if (console == 0 || !console->visible) {
+    if (console == 0 || !console->visible || g_console_visible_display != console) {
         return;
     }
     for (uint16_t row = console->top_row; row <= console->bottom_row; row++) {
@@ -327,7 +328,7 @@ static void console_render_view(const struct console *console) {
 }
 
 static void console_sync_cursor(const struct console *console) {
-    if (console == 0 || !console->visible) {
+    if (console == 0 || !console->visible || g_console_visible_display != console) {
         return;
     }
     if (!console_is_live_view(console)) {
@@ -350,7 +351,8 @@ static void console_render_selection_range(const struct console *console,
     uint32_t history_end = console->history_base_line + console->history_line_count;
     uint16_t text_width = console_text_width();
 
-    if (console == 0 || !console->visible || text_width == 0u || start_line > end_line) {
+    if (console == 0 || !console->visible || g_console_visible_display != console ||
+        text_width == 0u || start_line > end_line) {
         return;
     }
     if (start_line < console->history_base_line) {
@@ -456,7 +458,7 @@ static void console_append_history_line(struct console *console, uint8_t color) 
 }
 
 static void console_scroll_live_display(struct console *console) {
-    if (console == 0 || !console->visible) {
+    if (console == 0 || !console->visible || g_console_visible_display != console) {
         return;
     }
     hal_display_scroll_rows(console->top_row, console->bottom_row, console->default_color);
@@ -551,13 +553,16 @@ void console_set_visible(struct console *console, int visible) {
     }
     console->visible = visible ? 1u : 0u;
     if (console->visible) {
+        g_console_visible_display = console;
         hal_display_enable_cursor(14, 15);
         console_render_and_sync(console);
+    } else if (g_console_visible_display == console) {
+        g_console_visible_display = 0;
     }
 }
 
 int console_is_visible(const struct console *console) {
-    return console != 0 && console->visible != 0u;
+    return console != 0 && console->visible != 0u && g_console_visible_display == console;
 }
 
 void console_clear_row(struct console *console, uint16_t row, uint8_t color) {

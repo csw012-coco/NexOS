@@ -56,40 +56,29 @@ static int job_tty_has_ready_input(const struct tty *tty) {
 }
 
 static int job_file_terminal(const struct file *file, struct job_terminal_ref *terminal_out) {
+    void *tty_handle;
+
     if (file == 0 || terminal_out == 0 || !file_is_active(file)) {
         return 0;
     }
-    if ((file->kind == KERNEL_FILE_TTY_STDIN ||
-         file->kind == KERNEL_FILE_TTY_STDOUT ||
-         file->kind == KERNEL_FILE_TTY_STDERR) &&
-        file->private_data != 0) {
-        terminal_out->kind = JOB_TERMINAL_TTY;
-        terminal_out->tty = (struct tty *)file->private_data;
+    if (file->kind == KERNEL_FILE_VFS && file->vfs_node.mount_kind == VFS_MOUNT_DEVFS &&
+        file->vfs_node.aux_index == VFS_DEV_TTYS0) {
+        terminal_out->kind = JOB_TERMINAL_SERIAL;
+        terminal_out->tty = 0;
         return 1;
     }
-    if (file->kind == KERNEL_FILE_VFS && file->vfs_node.mount_kind == VFS_MOUNT_DEVFS) {
-        if (file->vfs_node.aux_index == VFS_DEV_TTYS0) {
-            terminal_out->kind = JOB_TERMINAL_SERIAL;
-            terminal_out->tty = 0;
-            return 1;
-        }
-        if ((file->vfs_node.aux_index == VFS_DEV_TTY ||
-             file->vfs_node.aux_index == VFS_DEV_TTY2 ||
-             file->vfs_node.aux_index == VFS_DEV_TTY3 ||
-             file->vfs_node.aux_index == VFS_DEV_STDIN ||
-             file->vfs_node.aux_index == VFS_DEV_STDOUT ||
-             file->vfs_node.aux_index == VFS_DEV_STDERR) &&
-            file->private_data != 0) {
-            terminal_out->kind = JOB_TERMINAL_TTY;
-            terminal_out->tty = (struct tty *)file->private_data;
-            return 1;
-        }
+    tty_handle = file_tty_private_handle(file);
+    if (tty_handle != 0) {
+        terminal_out->kind = JOB_TERMINAL_TTY;
+        terminal_out->tty = (struct tty *)tty_handle;
+        return 1;
     }
     return 0;
 }
 
 static int job_process_waiting_on_tty(const struct process *proc, const struct tty *tty) {
     struct job_terminal_ref terminal;
+    uint32_t foreground_pid;
 
     if (proc == 0 || tty == 0 || proc->state != PROCESS_STATE_WAITING) {
         return 0;
@@ -97,7 +86,11 @@ static int job_process_waiting_on_tty(const struct process *proc, const struct t
     if (!job_file_terminal(&proc->files[SYS_FD_STDIN], &terminal)) {
         return 0;
     }
-    return terminal.kind == JOB_TERMINAL_TTY && terminal.tty == tty;
+    if (terminal.kind != JOB_TERMINAL_TTY || terminal.tty != tty) {
+        return 0;
+    }
+    foreground_pid = tty_foreground_pid(tty);
+    return foreground_pid != 0u && foreground_pid == proc->pid;
 }
 
 static struct job_terminal_ref job_process_terminal(const struct process *proc) {
@@ -144,6 +137,21 @@ static void job_terminal_clear_foreground_pid(struct job_terminal_ref terminal, 
         tty_clear_foreground_pid(terminal.tty, pid);
     } else if (terminal.kind == JOB_TERMINAL_SERIAL && g_serial_foreground_pid == pid) {
         g_serial_foreground_pid = 0u;
+    }
+}
+
+void job_ensure_process_terminal_owner(const struct process *proc) {
+    struct job_terminal_ref terminal;
+
+    if (proc == 0 || proc->pid == 0u) {
+        return;
+    }
+    terminal = job_process_terminal(proc);
+    if (terminal.kind == JOB_TERMINAL_NONE) {
+        return;
+    }
+    if (job_terminal_foreground_pid(terminal) == 0u) {
+        job_terminal_set_foreground_pid(terminal, proc->pid);
     }
 }
 
@@ -211,7 +219,7 @@ static void job_yield_to_other_ready_work(struct process_session *caller_session
     job_restore_bound_session(caller_session, caller_mappings);
 }
 
-static int job_start_runtime_session(struct job_runtime *runtime, struct process *proc) {
+static int job_start_runtime_session(struct job_runtime *runtime, struct process *proc, uint64_t kernel_cr3) {
     runtime->used = 1;
     process_bind_session(&runtime->session, runtime->mappings);
     runtime->session.process = *proc;
@@ -220,7 +228,14 @@ static int job_start_runtime_session(struct job_runtime *runtime, struct process
     runtime->session.process.state = PROCESS_STATE_READY;
     runtime->session.process.exit_code = 0;
     runtime->session.process.wake_tick = 0;
-    runtime->session.address_space.kernel_cr3 = vmm_current_root();
+    runtime->session.address_space.kernel_cr3 = kernel_cr3 != 0 ? kernel_cr3 : vmm_current_root();
+    if (!vmm_root_is_current(runtime->session.address_space.kernel_cr3) &&
+        !vmm_switch_root_or_fail(runtime->session.address_space.kernel_cr3)) {
+        g_process_slot_used[proc->slot] = 0;
+        job_reset_runtime(runtime);
+        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
+        return 0;
+    }
     runtime->session.address_space.user_cr3 = vmm_create_user_root();
     if (runtime->session.address_space.user_cr3 == 0) {
         g_process_slot_used[proc->slot] = 0;
@@ -303,6 +318,7 @@ int job_run_background_with_pid(struct vfs *vfs,
         return 0;
     }
 
+    job_ensure_process_terminal_owner(parent_proc);
     proc = process_alloc_slot(0, parent_proc);
     if (proc == 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ENTER;
@@ -313,10 +329,13 @@ int job_run_background_with_pid(struct vfs *vfs,
     }
     runtime = &g_bg_runtimes[proc->slot];
     job_reset_runtime(runtime);
-    if (!job_start_runtime_session(runtime, proc)) {
+    if (!job_start_runtime_session(runtime,
+                                   proc,
+                                   caller_session != 0 ? caller_session->address_space.kernel_cr3 : 0)) {
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
+    job_ensure_process_terminal_owner(&runtime->session.process);
     if (!vmm_switch_root_or_fail(runtime->session.address_space.user_cr3)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         job_cleanup_runtime(runtime);
@@ -409,6 +428,7 @@ int job_foreground_pid(uint32_t pid) {
     }
     runtime_terminal = job_process_terminal(&runtime->session.process);
     terminal = job_process_terminal(caller_proc != 0 ? caller_proc : &runtime->session.process);
+    job_ensure_process_terminal_owner(caller_proc);
     if (terminal.kind == JOB_TERMINAL_NONE) {
         terminal = runtime_terminal;
     }
@@ -430,7 +450,7 @@ int job_foreground_pid(uint32_t pid) {
             runtime->session.process.state == PROCESS_STATE_STOPPED) {
             process_bind_session(&runtime->session, runtime->mappings);
             if (!session_run_active_slice(&runtime->session, runtime->mappings, runtime->entry, runtime->stack_top, 0)) {
-                runtime->session.process.state = PROCESS_STATE_EXITED;
+                process_mark_exit_pending(&runtime->session.process, runtime->session.process.exit_code);
             }
             if (runtime->session.process.state == PROCESS_STATE_STOPPED) {
                 job_restore_bound_session(caller_session, caller_mappings);
@@ -474,6 +494,15 @@ int job_background_pid(uint32_t pid) {
     return 1;
 }
 
+int job_serial_current_process_foreground_allowed(void) {
+    const struct process *proc = process_current();
+
+    if (proc == 0) {
+        return 1;
+    }
+    return g_serial_foreground_pid != 0u && g_serial_foreground_pid == proc->pid;
+}
+
 int job_tty_sigint(struct tty *tty) {
     struct job_terminal_ref terminal;
     struct process *proc;
@@ -489,10 +518,7 @@ int job_tty_sigint(struct tty *tty) {
         return 0;
     }
 
-    proc->exit_code = 130;
-    proc->state = PROCESS_STATE_EXITED;
-    proc->has_saved_frame = 0;
-    proc->wake_tick = 0;
+    process_mark_exit_pending(proc, 130);
     return 1;
 }
 

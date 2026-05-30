@@ -9,6 +9,111 @@ static void session_restore_kernel_root(struct address_space *address_space) {
     }
 }
 
+static int session_user_frame_mapped(const struct process *proc,
+                                     const struct address_space *address_space,
+                                     uint64_t entry,
+                                     uint64_t stack_top) {
+    uint64_t rip;
+    uint64_t rsp;
+    uint64_t phys;
+    uint64_t flags;
+
+    if (proc == 0 || address_space == 0 || address_space->user_cr3 == 0) {
+        return 0;
+    }
+    if (proc->has_saved_frame) {
+        rip = proc->saved_frame.rip;
+        rsp = proc->saved_frame.rsp;
+    } else {
+        rip = entry;
+        rsp = stack_top >= 8u ? stack_top - 8u : 0;
+    }
+    if (rip == 0 || rsp == 0) {
+        return 0;
+    }
+    if (!vmm_query_mapping_in_context(address_space->user_cr3, rip, &phys, &flags)) {
+        return 0;
+    }
+    if (!vmm_query_mapping_in_context(address_space->user_cr3, rsp, &phys, &flags)) {
+        return 0;
+    }
+    return 1;
+}
+
+int session_bind_user_context(struct process_session *session,
+                              struct user_page_mapping *mappings) {
+    const struct process *proc;
+
+    if (session == 0 || mappings == 0) {
+        return 0;
+    }
+    process_bind_session(session, mappings);
+    proc = &session->process;
+    if (proc->image_kind == PROCESS_IMAGE_NONE ||
+        proc->address_space == 0 ||
+        proc->address_space->user_cr3 == 0) {
+        return 1;
+    }
+    return vmm_switch_root_or_fail(proc->address_space->user_cr3);
+}
+
+void session_prepare_user_return_context(struct process_session *session,
+                                         struct user_page_mapping *mappings) {
+    const struct process *proc;
+
+    if (!session_bind_user_context(session, mappings)) {
+        return;
+    }
+    proc = &session->process;
+    if (proc->image_kind == PROCESS_IMAGE_NONE || proc->address_space == 0) {
+        return;
+    }
+    g_current_user_raw_entry = proc->entry;
+}
+
+int session_prepare_user_frame_return(struct process_session *session,
+                                      struct user_page_mapping *mappings,
+                                      const struct syscall_frame *frame) {
+    const struct process *proc;
+    uint64_t phys;
+    uint64_t flags;
+
+    if (session == 0 || mappings == 0 || frame == 0 || (frame->cs & 0x3u) != 0x3u) {
+        return 0;
+    }
+    proc = &session->process;
+    if (proc->image_kind == PROCESS_IMAGE_NONE ||
+        proc->address_space == 0 ||
+        proc->address_space->user_cr3 == 0) {
+        return 0;
+    }
+    if (!vmm_query_mapping_in_context(proc->address_space->user_cr3, frame->rip, &phys, &flags)) {
+        return 0;
+    }
+    if (frame->rsp != 0 &&
+        !vmm_query_mapping_in_context(proc->address_space->user_cr3, frame->rsp, &phys, &flags)) {
+        return 0;
+    }
+    if (!session_bind_user_context(session, mappings)) {
+        return 0;
+    }
+    g_current_user_raw_entry = proc->entry;
+    return 1;
+}
+
+void session_abort_user_frame_return(struct process_session *session,
+                                     struct user_page_mapping *mappings) {
+    struct process *proc;
+
+    if (session == 0 || mappings == 0) {
+        return;
+    }
+    process_bind_session(session, mappings);
+    proc = &session->process;
+    process_mark_exit_pending(proc, -11);
+    g_current_user_raw_entry = 0;
+}
+
 static int session_prepare_active_slice(struct process_session *session,
                                         struct user_page_mapping *mappings,
                                         struct process *proc,
@@ -22,6 +127,10 @@ static int session_prepare_active_slice(struct process_session *session,
     if (session == 0 || mappings == 0 || proc == 0 || saved_kernel_rsp0_out == 0 || entry == 0 || stack_top == 0) {
         return 0;
     }
+    if (!session_user_frame_mapped(proc, address_space, entry, stack_top)) {
+        session_abort_user_frame_return(session, mappings);
+        return 0;
+    }
 
     g_current_user_raw_entry = entry;
     proc->entry = entry;
@@ -31,25 +140,25 @@ static int session_prepare_active_slice(struct process_session *session,
         return 0;
     }
     *saved_kernel_rsp0_out = hal_kernel_stack_top();
-    if (g_nested_kernel_stack_depth >= USER_PROCESS_LIMIT) {
+    if (current_cpu_user_state()->nested_kernel_stack_depth >= USER_PROCESS_LIMIT) {
         session_restore_kernel_root(address_space);
         return 0;
     }
-    active_index = g_nested_kernel_stack_depth;
-    g_active_sessions[active_index] = session;
-    g_active_mappings[active_index] = mappings;
+    active_index = current_cpu_user_state()->nested_kernel_stack_depth;
+    current_cpu_user_state()->active_sessions[active_index] = session;
+    current_cpu_user_state()->active_mappings[active_index] = mappings;
     nested_kernel_rsp =
-        (uint64_t)(uintptr_t)&g_nested_kernel_stacks[g_nested_kernel_stack_depth][sizeof(g_nested_kernel_stacks[0])];
-    g_nested_kernel_stack_depth++;
+        (uint64_t)(uintptr_t)&current_cpu_user_state()->nested_kernel_stacks[current_cpu_user_state()->nested_kernel_stack_depth][sizeof(current_cpu_user_state()->nested_kernel_stacks[0])];
+    current_cpu_user_state()->nested_kernel_stack_depth++;
     hal_set_kernel_stack_top(nested_kernel_rsp);
     return 1;
 }
 
 static void session_complete_active_slice(struct address_space *address_space, uint64_t saved_kernel_rsp0) {
-    if (g_nested_kernel_stack_depth != 0) {
-        g_nested_kernel_stack_depth--;
-        g_active_sessions[g_nested_kernel_stack_depth] = 0;
-        g_active_mappings[g_nested_kernel_stack_depth] = 0;
+    if (current_cpu_user_state()->nested_kernel_stack_depth != 0) {
+        current_cpu_user_state()->nested_kernel_stack_depth--;
+        current_cpu_user_state()->active_sessions[current_cpu_user_state()->nested_kernel_stack_depth] = 0;
+        current_cpu_user_state()->active_mappings[current_cpu_user_state()->nested_kernel_stack_depth] = 0;
     }
     hal_set_kernel_stack_top(saved_kernel_rsp0);
     session_restore_kernel_root(address_space);
@@ -163,11 +272,15 @@ int session_run_active_slice(struct process_session *session,
     }
     session_complete_active_slice(address_space, saved_kernel_rsp0);
 
+    if (proc->state == PROCESS_STATE_RUNNING) {
+        proc->state = PROCESS_STATE_READY;
+        return 1;
+    }
     if (session_should_continue(proc)) {
         return 1;
     }
     if (proc->state != PROCESS_STATE_EXITED) {
-        proc->state = PROCESS_STATE_EXITED;
+        process_mark_exit_pending(proc, proc->exit_code);
     }
     if (finish_on_exit) {
         session_finish(session, mappings);

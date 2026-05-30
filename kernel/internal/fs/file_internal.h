@@ -73,6 +73,7 @@ int file_clone(struct file *dst, const struct file *src);
 void file_discard(struct file *file);
 void file_set_offset(struct file *file, uint32_t offset);
 int file_is_active(const struct file *file);
+void *file_tty_private_handle(const struct file *file);
 int file_read_would_block(const struct file *file);
 int file_write_would_block(const struct file *file);
 int64_t file_close(struct file *file);

@@ -1,12 +1,29 @@
 #include "kernel/internal/fs/fs_service_fd_internal.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/internal/fs/file_internal.h"
+#include "kernel/internal/proc/process_internal_base.h"
 #include "kernel/internal/proc/process_types_internal.h"
+#include "kernel/public/mem/vmm.h"
+#include "kernel/public/proc/job_control.h"
+#include "kernel/public/proc/scheduler.h"
 #include "hal/hal.h"
 #include "fs/vfs.h"
 
 static struct file *fs_service_active_file(struct process *proc, uint32_t fd) {
     return proc != 0 ? file_table_active(proc->files, PROCESS_FILE_MAX, fd) : 0;
+}
+
+static void fs_service_refresh_stdio_console(struct process *proc, uint32_t fd, const struct file *file) {
+    void *tty_handle;
+
+    if (proc == 0 || fd > SYS_FD_STDERR) {
+        return;
+    }
+    tty_handle = file_tty_private_handle(file);
+    if (tty_handle != 0) {
+        proc->console_handle = tty_handle;
+    }
+    job_ensure_process_terminal_owner(proc);
 }
 
 static void fs_service_fill_syscall_dirent(struct syscall_dirent *dst, const struct vfs_dirent *src) {
@@ -60,6 +77,43 @@ static int fs_service_read_interrupted_local(const struct process *proc) {
     return proc->state == PROCESS_STATE_EXITED || proc->state == PROCESS_STATE_STOPPED;
 }
 
+static void fs_service_restore_process_session_local(struct process_session *session,
+                                                     struct user_page_mapping *mappings) {
+    struct process *proc;
+
+    if (session == 0 || mappings == 0) {
+        return;
+    }
+    process_bind_session(session, mappings);
+    proc = &session->process;
+    if (proc->address_space != 0 && proc->address_space->user_cr3 != 0) {
+        (void)vmm_switch_root_or_fail(proc->address_space->user_cr3);
+    }
+}
+
+static int fs_service_wait_for_read_local(struct process *proc) {
+    struct process_session *session;
+    struct user_page_mapping *mappings;
+    enum process_state previous_state;
+
+    if (proc == 0 || fs_service_read_interrupted_local(proc)) {
+        return 0;
+    }
+    session = process_current_session();
+    mappings = process_current_mappings();
+    previous_state = proc->state;
+    proc->state = PROCESS_STATE_WAITING;
+    sched_tick();
+    fs_service_restore_process_session_local(session, mappings);
+    if (fs_service_read_interrupted_local(proc)) {
+        return 0;
+    }
+    if (proc->state == PROCESS_STATE_WAITING || proc->state == PROCESS_STATE_READY) {
+        proc->state = previous_state == PROCESS_STATE_RUNNING ? PROCESS_STATE_RUNNING : previous_state;
+    }
+    return 1;
+}
+
 uint64_t fs_service_read(struct process *proc,
                          struct vfs *vfs,
                          uint32_t fd,
@@ -110,7 +164,9 @@ uint64_t fs_service_read(struct process *proc,
             if (fs_service_read_interrupted_local(proc)) {
                 return 0;
             }
-            hal_cpu_halt();
+            if (!fs_service_wait_for_read_local(proc)) {
+                return 0;
+            }
         }
     }
     for (;;) {
@@ -126,7 +182,9 @@ uint64_t fs_service_read(struct process *proc,
             if (fs_service_read_interrupted_local(proc)) {
                 return 0;
             }
-            hal_cpu_halt();
+            if (!fs_service_wait_for_read_local(proc)) {
+                return 0;
+            }
             continue;
         }
         fs_service_set_copied(copied_out, (uint32_t)bytes);
@@ -203,6 +261,7 @@ uint64_t fs_service_dup2(struct process *proc, uint32_t src_fd, uint32_t dst_fd)
     if (!file_clone(dst, src)) {
         return (uint64_t)-1;
     }
+    fs_service_refresh_stdio_console(proc, dst_fd, dst);
     return dst_fd;
 }
 

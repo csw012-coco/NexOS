@@ -47,7 +47,7 @@ ssize_t read(int fd, void *data, size_t max_len) {
 }
 
 uint32_t read_char_nonblock(char *ch) {
-    return (uint32_t)nex_read(STDIN_FILENO, ch, 2u, SYS_READ_NONBLOCK | SYS_READ_CHAR);
+    return (uint32_t)nex_read(STDIN_FILENO, ch, 1u, SYS_READ_NONBLOCK | SYS_READ_CHAR);
 }
 
 int open(const char *name, int flags) {
@@ -295,6 +295,42 @@ int reboot(void) {
 
 int capability_event(const struct syscall_capability_event *event) {
     return (int)syscall4(SYS_CAPABILITY_EVENT, (uint64_t)(uintptr_t)event, 0, 0, 0);
+}
+
+int clipboard_get(char *buffer, uint32_t size) {
+    struct syscall_clipboard_transfer transfer;
+    int rc;
+
+    transfer.data_addr = (uint64_t)(uintptr_t)buffer;
+    transfer.bytes = size;
+    transfer.size = 0u;
+    rc = (int)syscall4(SYS_CLIPBOARD, SYS_CLIPBOARD_GET, (uint64_t)(uintptr_t)&transfer, 0, 0);
+    if (rc >= 0 && buffer != 0 && size > 0u && (uint32_t)rc < size) {
+        buffer[(uint32_t)rc] = '\0';
+    }
+    return rc;
+}
+
+int clipboard_set(const char *text, uint32_t len) {
+    struct syscall_clipboard_transfer transfer;
+
+    transfer.data_addr = (uint64_t)(uintptr_t)text;
+    transfer.bytes = len;
+    transfer.size = 0u;
+    return (int)syscall4(SYS_CLIPBOARD, SYS_CLIPBOARD_SET, (uint64_t)(uintptr_t)&transfer, 0, 0);
+}
+
+int clipboard_clear(void) {
+    return (int)syscall4(SYS_CLIPBOARD, SYS_CLIPBOARD_CLEAR, 0, 0, 0);
+}
+
+int clipboard_size(void) {
+    struct syscall_clipboard_transfer transfer;
+
+    transfer.data_addr = 0u;
+    transfer.bytes = 0u;
+    transfer.size = 0u;
+    return (int)syscall4(SYS_CLIPBOARD, SYS_CLIPBOARD_SIZE, (uint64_t)(uintptr_t)&transfer, 0, 0);
 }
 
 static int gfx_command(uint32_t op, const struct syscall_gfx_command *cmd) {

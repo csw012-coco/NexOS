@@ -130,6 +130,7 @@ Notes:
 - Named action arguments are reordered into schema order, so `audio.tone ms=500 hz=440` runs like `tone 440 500`.
 - Typed schema fields validate basic values before execution, such as `int`, `path`, `host`, `word`, and `text`.
 - `cat --json /event/...` renders EventFS event lines as a JSON array.
+- `clipboard [get|set <text>|clear|size]` reads and writes the shared text clipboard.
 - `date --iso`, `date +%s`, and `date --raw` expose the CMOS RTC in ISO, Unix-time, and diagnostic forms.
 - `hwclock` prints CMOS RTC mode, validity, raw status registers, and Unix time.
 - `tty` prints the terminal connected to standard input, such as `/dev/tty`, `/dev/tty2`, `/dev/tty3`, or `/dev/ttyS0`.
@@ -318,7 +319,7 @@ enumeration order.
 
 The current built-in applet list exposed by `help` is:
 
-`help actions action mapper echo clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg`
+`help actions action mapper echo clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg`
 
 ## Naming Notes
 

@@ -69,7 +69,8 @@ enum syscall_number {
     SYS_CAPABILITY_EVENT = 66,
     SYS_GFX = 67,
     SYS_GUI_EVENT = 68,
-    SYS_MAX = 69
+    SYS_CLIPBOARD = 69,
+    SYS_MAX = 70
 };
 
 enum syscall_read_flags {
@@ -252,6 +253,19 @@ struct syscall_gfx_command {
     uint32_t height;
     uint32_t radius;
     uint32_t rgb;
+};
+
+enum syscall_clipboard_op {
+    SYS_CLIPBOARD_GET = 0,
+    SYS_CLIPBOARD_SET = 1,
+    SYS_CLIPBOARD_CLEAR = 2,
+    SYS_CLIPBOARD_SIZE = 3
+};
+
+struct syscall_clipboard_transfer {
+    uint64_t data_addr;
+    uint32_t bytes;
+    uint32_t size;
 };
 
 enum syscall_gui_event_op {

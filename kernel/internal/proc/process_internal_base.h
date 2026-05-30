@@ -115,8 +115,24 @@ extern struct user_page_mapping g_user_page_mappings[USER_DYNAMIC_PAGE_LIMIT];
 extern struct process_session g_user_session;
 extern struct process_session *g_bound_session;
 extern struct user_page_mapping *g_bound_mappings;
-extern struct process_session *g_active_sessions[USER_PROCESS_LIMIT];
-extern struct user_page_mapping *g_active_mappings[USER_PROCESS_LIMIT];
+
+enum {
+    USER_CPU_COUNT = 1
+};
+
+struct cpu_user_state {
+    uint8_t nested_kernel_stacks[USER_PROCESS_LIMIT][NOS_KERNEL_STACK_SIZE] __attribute__((aligned(16)));
+    uint32_t nested_kernel_stack_depth;
+    struct process_session *active_sessions[USER_PROCESS_LIMIT];
+    struct user_page_mapping *active_mappings[USER_PROCESS_LIMIT];
+};
+
+extern struct cpu_user_state g_cpu_user_state[USER_CPU_COUNT];
+
+static inline struct cpu_user_state *current_cpu_user_state(void) {
+    return &g_cpu_user_state[0];
+}
+
 extern struct process g_process_slots[USER_PROCESS_LIMIT];
 extern uint8_t g_process_slot_used[USER_PROCESS_LIMIT];
 extern uint32_t g_next_pid;
@@ -131,9 +147,7 @@ extern uint32_t g_process_exec_read_bytes;
 extern uint32_t g_process_exec_read_result;
 extern struct process g_last_exited_process;
 extern struct job_runtime g_bg_runtimes[USER_PROCESS_LIMIT];
-extern uint8_t g_nested_kernel_stacks[USER_PROCESS_LIMIT][NOS_KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 extern uint32_t g_scheduler_next_slot;
-extern uint32_t g_nested_kernel_stack_depth;
 
 void process_bind_session(struct process_session *session,
                           struct user_page_mapping *mappings);

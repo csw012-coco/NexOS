@@ -112,6 +112,29 @@ int file_is_active(const struct file *file) {
     return file != 0 && file->kind != KERNEL_FILE_NONE && file->ops != 0;
 }
 
+void *file_tty_private_handle(const struct file *file) {
+    if (file == 0 || !file_is_active(file) || file->private_data == 0) {
+        return 0;
+    }
+    if (file->kind == KERNEL_FILE_TTY_STDIN ||
+        file->kind == KERNEL_FILE_TTY_STDOUT ||
+        file->kind == KERNEL_FILE_TTY_STDERR) {
+        return file->private_data;
+    }
+    if (file->kind != KERNEL_FILE_VFS || file->vfs_node.mount_kind != VFS_MOUNT_DEVFS) {
+        return 0;
+    }
+    if (file->vfs_node.aux_index == VFS_DEV_TTY ||
+        file->vfs_node.aux_index == VFS_DEV_TTY2 ||
+        file->vfs_node.aux_index == VFS_DEV_TTY3 ||
+        file->vfs_node.aux_index == VFS_DEV_STDIN ||
+        file->vfs_node.aux_index == VFS_DEV_STDOUT ||
+        file->vfs_node.aux_index == VFS_DEV_STDERR) {
+        return file->private_data;
+    }
+    return 0;
+}
+
 int file_init_pipe_pair(struct file *read_file, struct file *write_file) {
     return file_pipe_backend_init_pair(read_file, write_file);
 }

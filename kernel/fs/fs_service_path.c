@@ -144,37 +144,23 @@ static int fs_service_valid_path_request(struct vfs *vfs, const char *path) {
     return vfs != 0 && path != 0;
 }
 
-static int fs_service_file_has_tty_handle(const struct file *file) {
-    if (file == 0 || !file_is_active(file) || file->private_data == 0) {
-        return 0;
-    }
-    if (file->kind == KERNEL_FILE_TTY_STDIN ||
-        file->kind == KERNEL_FILE_TTY_STDOUT ||
-        file->kind == KERNEL_FILE_TTY_STDERR) {
-        return 1;
-    }
-    return file->kind == KERNEL_FILE_VFS &&
-           file->vfs_node.mount_kind == VFS_MOUNT_DEVFS &&
-           (file->vfs_node.aux_index == VFS_DEV_TTY ||
-            file->vfs_node.aux_index == VFS_DEV_TTY2 ||
-            file->vfs_node.aux_index == VFS_DEV_TTY3 ||
-            file->vfs_node.aux_index == VFS_DEV_STDIN ||
-            file->vfs_node.aux_index == VFS_DEV_STDOUT ||
-            file->vfs_node.aux_index == VFS_DEV_STDERR);
-}
-
 static void *fs_service_process_tty_handle(struct process *proc) {
+    void *tty_handle;
+
     if (proc == 0) {
         return 0;
     }
-    if (fs_service_file_has_tty_handle(&proc->files[SYS_FD_STDIN])) {
-        return proc->files[SYS_FD_STDIN].private_data;
+    tty_handle = file_tty_private_handle(&proc->files[SYS_FD_STDIN]);
+    if (tty_handle != 0) {
+        return tty_handle;
     }
-    if (fs_service_file_has_tty_handle(&proc->files[SYS_FD_STDOUT])) {
-        return proc->files[SYS_FD_STDOUT].private_data;
+    tty_handle = file_tty_private_handle(&proc->files[SYS_FD_STDOUT]);
+    if (tty_handle != 0) {
+        return tty_handle;
     }
-    if (fs_service_file_has_tty_handle(&proc->files[SYS_FD_STDERR])) {
-        return proc->files[SYS_FD_STDERR].private_data;
+    tty_handle = file_tty_private_handle(&proc->files[SYS_FD_STDERR]);
+    if (tty_handle != 0) {
+        return tty_handle;
     }
     return proc->console_handle;
 }
