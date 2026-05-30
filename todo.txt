@@ -1,3 +1,11 @@
-nothing
-no todo
-vim에서 :wq이랑 blk랑 doctor, mkdir, 리다이렉션등등을 하면 중간에 좀 멈췄다가 다시 정상으로 돌아옴
+Driver manager
+- [x] Add fixed-size kernel driver registry for built-in drivers.
+- [x] Route first built-in storage, USB, audio, and net driver init through driver_init_all().
+- [x] Move built-in driver descriptors into each driver module.
+- [x] Discover .DRV files from ramdisk root /DRIVERS without loading them.
+- [x] Add /proc/drivers for builtin and discovered driver visibility.
+- [x] Add dummy /DRIVERS/AC97.DRV to ramdisk for discovery smoke testing.
+- [x] Probe discovered .DRV files for ELF64 relocatable x86_64 headers.
+- [x] Add ELF relocatable .DRV loader on top of the same driver registration API.
+- [x] Add kernel symbol resolver for .DRV modules.
+- [x] Add .DRV PCI and port I/O ABI helpers.

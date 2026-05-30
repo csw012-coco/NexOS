@@ -117,57 +117,69 @@ int bios_interrupt(uint8_t int_no, struct rm_regs *out, const struct rm_regs *in
     return (out->eflags & 1u) ? -1 : 0;
 }
 
+static int bios_int13_read_once(uint8_t drive, uint32_t lba, uint16_t sectors,
+                               uint8_t *dest) {
+    struct rm_regs r;
+    uintptr_t xfer_ptr = (uintptr_t)dest;
+    int needs_bounce = 0;
+    int used_bounce = 0;
+
+    if (xfer_ptr >= 0x100000u) {
+        needs_bounce = 1;
+    } else if (((xfer_ptr & 0xFFFFu) + (uintptr_t)sectors * 512u) > 0x10000u) {
+        needs_bounce = 1;
+    }
+    if (needs_bounce || xfer_ptr >= 0x10000u) {
+        xfer_ptr = (uintptr_t)bios_xfer_buf;
+        used_bounce = 1;
+    }
+
+    memset(bios_dap, 0, sizeof(*bios_dap));
+    bios_dap->size = 0x10;
+    bios_dap->count = sectors;
+    bios_dap->offset = (uint16_t)xfer_ptr;
+    bios_dap->segment = 0;
+    bios_dap->lba = lba;
+
+    memset(&r, 0, sizeof(r));
+    r.eax = 0x4200u;
+    r.edx = drive;
+    r.esi = BIOS_RM_DAP_ADDR;
+    r.ds = 0;
+    r.eflags = 0x00000202u;
+
+    if (bios_interrupt(0x13, &r, &r) != 0) {
+        return -1;
+    }
+
+    if (used_bounce) {
+        memcpy(dest, (const void *)xfer_ptr, (size_t)sectors * 512u);
+    }
+    return 0;
+}
+
 int bios_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void *buffer) {
     uint8_t *dest = (uint8_t *)buffer;
 
     while (count != 0) {
-        struct rm_regs r;
         uint16_t chunk = count;
-        uintptr_t xfer_ptr = (uintptr_t)dest;
-        int needs_bounce = 0;
-        int used_bounce = 0;
 
         if (chunk > BIOS_XFER_SECTORS) {
             chunk = BIOS_XFER_SECTORS;
         }
-        if (xfer_ptr >= 0x100000u) {
-            needs_bounce = 1;
-        } else if (((xfer_ptr & 0xFFFFu) + (uintptr_t)chunk * 512u) > 0x10000u) {
-            needs_bounce = 1;
-        }
-        if (needs_bounce || xfer_ptr >= 0x10000u) {
-            xfer_ptr = (uintptr_t)bios_xfer_buf;
-            used_bounce = 1;
-        }
 
-        memset(bios_dap, 0, sizeof(*bios_dap));
-        bios_dap->size = 0x10;
-        bios_dap->count = chunk;
-        bios_dap->offset = (uint16_t)xfer_ptr;
-        bios_dap->segment = 0;
-        bios_dap->lba = lba;
-
-        memset(&r, 0, sizeof(r));
-        r.eax = 0x4200u;
-        r.edx = drive;
-        r.esi = BIOS_RM_DAP_ADDR;
-        r.ds = 0;
-        r.eflags = 0x00000202u;
-
-        if (bios_interrupt(0x13, &r, &r) != 0 || ((r.eax >> 8) & 0xFFu) == 0x42u) {
-            debug_puts("bios: int13 fallback to ata\n");
-            if (ata_pio_read_sectors(lba, (uint8_t)chunk, dest) != 0) {
-                return -1;
+        if (bios_int13_read_once(drive, lba, chunk, dest) != 0) {
+            if (chunk != 1u && bios_int13_read_once(drive, lba, 1, dest) == 0) {
+                chunk = 1;
+            } else {
+                chunk = 1;
+                debug_puts("bios: int13 fallback to ata\n");
+                if (ata_pio_read_sectors(lba, (uint8_t)chunk, dest) != 0) {
+                    return -1;
+                }
             }
-            dest += (size_t)chunk * 512u;
-            lba += chunk;
-            count = (uint8_t)(count - chunk);
-            continue;
         }
 
-        if (used_bounce) {
-            memcpy(dest, (const void *)xfer_ptr, (size_t)chunk * 512u);
-        }
         dest += (size_t)chunk * 512u;
         lba += chunk;
         count = (uint8_t)(count - chunk);

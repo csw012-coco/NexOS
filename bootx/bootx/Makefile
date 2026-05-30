@@ -40,19 +40,19 @@ $(BUILD)/stage3_long_mode.o: $(ROOT)/stage3/long_mode.asm | $(BUILD)
 $(BUILD)/realmode_stage2.o: $(ROOT)/common/realmode.asm | $(BUILD)
 	$(NASM) -f elf32 $< -o $@
 
-$(BUILD)/common_%.o: $(ROOT)/common/%.c | $(BUILD)
+$(BUILD)/common_%.o: $(ROOT)/common/%.c $(ROOT)/include/bootx.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/common_stage3_%.o: $(ROOT)/common/%.c | $(BUILD)
+$(BUILD)/common_stage3_%.o: $(ROOT)/common/%.c $(ROOT)/include/bootx.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/stage2_main.o: $(ROOT)/stage2/main.c | $(BUILD)
+$(BUILD)/stage2_main.o: $(ROOT)/stage2/main.c $(ROOT)/include/bootx.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/stage3_main.o: $(ROOT)/stage3/main.c | $(BUILD)
+$(BUILD)/stage3_main.o: $(ROOT)/stage3/main.c $(ROOT)/include/bootx.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/stage3_services.o: $(ROOT)/stage3/services.c | $(BUILD)
+$(BUILD)/stage3_services.o: $(ROOT)/stage3/services.c $(ROOT)/include/bootx.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/uefi_main.obj: $(ROOT)/uefi/main.c $(ROOT)/include/bootx.h | $(BUILD)

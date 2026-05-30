@@ -25,6 +25,13 @@ static struct hda_status g_hda_status;
 static volatile uint8_t *g_hda_mmio;
 static uint8_t g_hda_audio_registered;
 
+const struct kernel_driver hda_kernel_driver = {
+    .name = "HDA",
+    .kind = KERNEL_DRIVER_KIND_AUDIO,
+    .init = hda_init,
+    .exit = NULL,
+};
+
 static uint64_t hda_mmio_base_from_bar(uint32_t bar_lo, uint32_t bar_hi) {
     uint64_t base;
 

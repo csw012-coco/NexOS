@@ -68,6 +68,13 @@ static uint64_t g_rtl8139_rx_phys;
 static uint8_t *g_rtl8139_rx_buffer;
 static uint32_t g_rtl8139_rx_offset;
 
+const struct kernel_driver rtl8139_kernel_driver = {
+    .name = "RTL8139",
+    .kind = KERNEL_DRIVER_KIND_NET,
+    .init = rtl8139_init,
+    .exit = NULL,
+};
+
 static void rtl8139_fill_test_frame(uint8_t *frame, uint32_t size) {
     static const char payload[] = "NexOS RTL8139 test frame";
     uint32_t i;

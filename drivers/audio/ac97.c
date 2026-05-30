@@ -52,6 +52,13 @@ static uint8_t *g_ac97_buffers[AC97_BDL_ENTRIES];
 static uint32_t g_ac97_buffer_count;
 static uint8_t g_ac97_audio_registered;
 
+const struct kernel_driver ac97_kernel_driver = {
+    .name = "AC97",
+    .kind = KERNEL_DRIVER_KIND_AUDIO,
+    .init = ac97_init,
+    .exit = NULL,
+};
+
 static uint16_t ac97_io_base_from_bar(uint32_t bar) {
     if ((bar & 0x1u) == 0) {
         return 0;

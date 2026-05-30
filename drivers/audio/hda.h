@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "kernel/public/driver/driver.h"
 
 struct hda_status {
     uint8_t present;
@@ -31,3 +32,5 @@ struct hda_status {
 
 int hda_init(void);
 int hda_query_status(struct hda_status *out);
+
+extern const struct kernel_driver hda_kernel_driver;

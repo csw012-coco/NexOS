@@ -77,8 +77,11 @@ int64_t vfs_read_dir_procfs(struct vfs_node *node, uint32_t *index_io, struct vf
     if (*index_io == 7) {
         return vfs_procfs_emit_dir_entry(entry, index_io, "devices", 0, 0);
     }
+    if (*index_io == 8) {
+        return vfs_procfs_emit_dir_entry(entry, index_io, "drivers", 0, 0);
+    }
     {
-        uint32_t ordinal = *index_io - 8u;
+        uint32_t ordinal = *index_io - 9u;
         uint32_t seen = 0;
 
         for (uint32_t i = 0; i < process_capacity(); i++) {
@@ -138,6 +141,10 @@ int vfs_procfs_lookup(const char *name, struct vfs_node *out) {
     }
     if (streq(name, "devices")) {
         vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_DEVICES, 0);
+        return 0;
+    }
+    if (streq(name, "drivers")) {
+        vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_DRIVERS, 0);
         return 0;
     }
     slash = name;

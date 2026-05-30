@@ -3,6 +3,7 @@
 #include "block/blockdev.h"
 #include "drivers/video/framebuffer.h"
 #include "drivers/rtc/cmos.h"
+#include "kernel/public/driver/driver.h"
 #include "kernel/public/mem/pmm.h"
 #include "kernel/public/proc/process.h"
 #include "kernel/public/proc/scheduler.h"
@@ -321,6 +322,111 @@ static uint32_t vfs_format_proc_devices(char *text, uint32_t size) {
     return pos;
 }
 
+static const char *vfs_proc_driver_kind_name(enum kernel_driver_kind kind) {
+    switch (kind) {
+        case KERNEL_DRIVER_KIND_STORAGE:
+            return "storage";
+        case KERNEL_DRIVER_KIND_USB:
+            return "usb";
+        case KERNEL_DRIVER_KIND_AUDIO:
+            return "audio";
+        case KERNEL_DRIVER_KIND_NET:
+            return "net";
+        default:
+            return "unknown";
+    }
+}
+
+static const char *vfs_proc_driver_state_name(enum kernel_driver_state state) {
+    switch (state) {
+        case KERNEL_DRIVER_STATE_REGISTERED:
+            return "registered";
+        case KERNEL_DRIVER_STATE_ACTIVE:
+            return "active";
+        case KERNEL_DRIVER_STATE_INACTIVE:
+            return "inactive";
+        case KERNEL_DRIVER_STATE_FAILED:
+            return "failed";
+        default:
+            return "empty";
+    }
+}
+
+static const char *vfs_proc_driver_file_state_name(enum kernel_driver_file_state state) {
+    switch (state) {
+        case KERNEL_DRIVER_FILE_ELF_INVALID:
+            return "elf-invalid";
+        case KERNEL_DRIVER_FILE_ELF_RELOC:
+            return "elf-reloc";
+        case KERNEL_DRIVER_FILE_LOADED:
+            return "loaded";
+        case KERNEL_DRIVER_FILE_LOAD_FAILED:
+            return "load-failed";
+        default:
+            return "discovered";
+    }
+}
+
+static uint32_t vfs_format_proc_drivers(char *text, uint32_t size) {
+    uint32_t pos = 0;
+
+    pos = vfs_append_padded_text(text, pos, size, "name", 14u);
+    pos = vfs_append_padded_text(text, pos, size, "kind", 10u);
+    pos = vfs_append_padded_text(text, pos, size, "state", 12u);
+    pos = vfs_append_padded_text(text, pos, size, "result", 8u);
+    pos = vfs_append_padded_text(text, pos, size, "source", 10u);
+    pos = vfs_append_text(text, pos, size, "path\n");
+
+    for (uint32_t i = 0; i < driver_count(); i++) {
+        const struct kernel_driver_record *record = driver_get(i);
+
+        if (record == 0 || record->driver == 0) {
+            continue;
+        }
+        pos = vfs_append_padded_text(text, pos, size, record->driver->name, 14u);
+        pos = vfs_append_padded_text(text,
+                                     pos,
+                                     size,
+                                     vfs_proc_driver_kind_name(record->driver->kind),
+                                     10u);
+        pos = vfs_append_padded_text(text,
+                                     pos,
+                                     size,
+                                     vfs_proc_driver_state_name(record->state),
+                                     12u);
+        pos = vfs_append_i32_text(text, pos, size, record->init_result);
+        pos = vfs_append_padded_text(text, pos, size, "", 8u);
+        pos = vfs_append_padded_text(text,
+                                     pos,
+                                     size,
+                                     record->source != 0 ? record->source : "builtin",
+                                     10u);
+        pos = vfs_append_text(text, pos, size, record->path != 0 ? record->path : "-");
+        pos = vfs_append_text(text, pos, size, "\n");
+    }
+
+    for (uint32_t i = 0; i < driver_file_count(); i++) {
+        const struct kernel_driver_file *file = driver_get_file(i);
+
+        if (file == 0) {
+            continue;
+        }
+        pos = vfs_append_padded_text(text, pos, size, file->name, 14u);
+        pos = vfs_append_padded_text(text, pos, size, "file", 10u);
+        pos = vfs_append_padded_text(text,
+                                     pos,
+                                     size,
+                                     vfs_proc_driver_file_state_name(file->state),
+                                     12u);
+        pos = vfs_append_u32_text(text, pos, size, file->size);
+        pos = vfs_append_padded_text(text, pos, size, "", 8u);
+        pos = vfs_append_padded_text(text, pos, size, "ramdisk", 10u);
+        pos = vfs_append_text(text, pos, size, file->path);
+        pos = vfs_append_text(text, pos, size, "\n");
+    }
+    return pos;
+}
+
 static uint32_t vfs_format_proc_pid_status(uint32_t pid, char *text, uint32_t size) {
     struct process_snapshot proc;
     uint32_t pos = 0;
@@ -370,6 +476,9 @@ uint32_t vfs_format_procfs_node(struct vfs *vfs, struct vfs_node *node, char *te
     }
     if (node->aux_index == VFS_PROC_DEVICES) {
         return vfs_format_proc_devices(text, size);
+    }
+    if (node->aux_index == VFS_PROC_DRIVERS) {
+        return vfs_format_proc_drivers(text, size);
     }
     if (node->aux_index == VFS_PROC_PID_STATUS) {
         return vfs_format_proc_pid_status(node->aux_data, text, size);

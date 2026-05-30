@@ -46,6 +46,18 @@ static struct ata_device ata_devices[] = {
     }
 };
 
+static int ata_driver_init_local(void) {
+    ata_init();
+    return 1;
+}
+
+const struct kernel_driver ata_kernel_driver = {
+    .name = "ATA",
+    .kind = KERNEL_DRIVER_KIND_STORAGE,
+    .init = ata_driver_init_local,
+    .exit = NULL,
+};
+
 static void ata_delay_400ns(struct ata_device *dev) {
     (void)hal_io_in8(dev->ctrl_base);
     (void)hal_io_in8(dev->ctrl_base);

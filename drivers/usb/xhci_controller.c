@@ -1,5 +1,17 @@
 #include "drivers/usb/xhci_internal.h"
 
+static int xhci_driver_init_local(void) {
+    xhci_init();
+    return 1;
+}
+
+const struct kernel_driver xhci_kernel_driver = {
+    .name = "XHCI",
+    .kind = KERNEL_DRIVER_KIND_USB,
+    .init = xhci_driver_init_local,
+    .exit = NULL,
+};
+
 static int xhci_init_controller(uint8_t controller_index, const struct pci_xhci_controller *xhci) {
     uint64_t mmio;
     uint32_t hcs1;

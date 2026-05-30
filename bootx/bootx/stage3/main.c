@@ -37,6 +37,15 @@ static void fail(const char *message) {
     halt_forever();
 }
 
+static void trace(const char *message) {
+    debug_puts("stage3: ");
+    debug_puts(message);
+    debug_puts("\n");
+    console_puts("stage3: ");
+    console_puts(message);
+    console_putc('\n');
+}
+
 static void copy_string(char *dest, const char *src, size_t limit) {
     size_t i = 0;
     for (; i + 1 < limit && src[i] != '\0'; i++) {
@@ -621,12 +630,15 @@ static uint32_t load_modules(const struct menu_entry *entry) {
     for (uint32_t i = 0; i < entry->module_count; i++) {
         struct fat16_file file;
         char module_name[12];
+        trace("module open");
         if (fat16_open_path(&fat, entry->modules[i], &file) != 0) {
             fail("module not found");
         }
+        trace("module read");
         if (fat16_read_file(&fat, &file, (void *)next_addr, file.size) != 0) {
             fail("module read failed");
         }
+        trace("module read ok");
 
         path_leaf_to_name_83(module_name, entry->modules[i]);
         memcpy(proto_modules[proto->module_count].name, module_name, sizeof(proto_modules[proto->module_count].name));
@@ -643,6 +655,7 @@ static uint32_t load_modules(const struct menu_entry *entry) {
 static void prepare_proto(const struct bootx_stage3_params *params, const struct menu_entry *entry,
                          const struct bootx_console_info *selected_console) {
     const struct bootx_boot_info *base_info = &params->boot_info;
+    trace("prepare proto");
     memset(proto, 0, sizeof(*proto));
     memset(proto_memmap, 0, sizeof(struct bootx_memmap_entry) * BOOTX_MAX_MEMMAP);
     memset(proto_modules, 0, sizeof(struct bootx_module) * BOOTX_MAX_MODULES);
@@ -657,9 +670,13 @@ static void prepare_proto(const struct bootx_stage3_params *params, const struct
     proto->cmdline = (uint32_t)(uintptr_t)proto_cmdline;
     copy_string(proto_cmdline, entry->cmdline, BOOTX_CMDLINE_MAX);
 
+    trace("build memmap");
     build_memory_map(params);
+    trace("build console");
     build_console_info(selected_console);
+    trace("load modules");
     g_boot_payload_end = load_modules(entry);
+    trace("proto ready");
 }
 
 static void load_elf32_and_jump(const struct bootx_stage3_params *params, const struct menu_entry *entry, uint8_t *kernel) {
@@ -741,12 +758,14 @@ static void load_elf64_and_jump(const struct bootx_stage3_params *params, const 
     if (memcmp(ehdr->e_ident, "\x7F""ELF", 4) != 0 || ehdr->e_ident[4] != ELF_CLASS_64 || ehdr->e_machine != ELF_MACHINE_X86_64) {
         fail("invalid ELF64 kernel");
     }
+    trace("elf64 ok");
 
     memset(&selected_console, 0, sizeof(selected_console));
     memset(&video, 0, sizeof(video));
     int wants_fb = entry_wants_framebuffer(entry);
 
     if (wants_fb) {
+        trace("framebuffer init");
         if (parse_video_request(entry, &video) != 0) {
             fail("bad video= option");
         }
@@ -763,12 +782,15 @@ static void load_elf64_and_jump(const struct bootx_stage3_params *params, const 
     }
 
     prepare_proto(params, entry, &selected_console);
+    trace("proto prepared");
     next_phys = g_boot_payload_end > BOOTX_HIGHER_HALF_LOAD_ADDR
                     ? g_boot_payload_end
                     : BOOTX_HIGHER_HALF_LOAD_ADDR;
 
     struct elf64_phdr *phdr = (struct elf64_phdr *)(kernel + (uint32_t)ehdr->e_phoff);
+    trace("build page tables");
     build_identity_page_tables_4g();
+    trace("load segments");
 
     for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
         uint64_t load_addr64;
@@ -832,6 +854,7 @@ static void load_elf64_and_jump(const struct bootx_stage3_params *params, const 
     proto->kernel_phys_addr = lowest_addr;
     proto->kernel_phys_size = highest_addr - lowest_addr;
     proto->kernel_entry = ehdr->e_entry;
+    trace("segments ready");
     debug_puts("stage3: kernel phys range low=");
     debug_put_hex(lowest_addr);
     debug_puts(" high=");
@@ -845,7 +868,7 @@ static void load_elf64_and_jump(const struct bootx_stage3_params *params, const 
         console_set_color(0x07);
         console_puts("entering long mode...\n");
     }
-    debug_puts("stage3: enter long mode\n");
+    trace("enter long mode");
 
     bootx_enter_long_mode(BOOTX_PML4_ADDR, (uint32_t)ehdr->e_entry, (uint32_t)(ehdr->e_entry >> 32), BOOT_INFO_ADDR);
     fail("long mode returned");
@@ -855,25 +878,30 @@ static void load_kernel_and_jump(const struct bootx_stage3_params *params, const
     struct fat16_file kernel_file;
     uint8_t *kernel = (uint8_t *)KERNEL_LOAD_ADDR;
 
+    trace("kernel open");
     if (fat16_open_path(&fat, entry->kernel, &kernel_file) != 0) {
         fail("kernel not found");
     }
     if (kernel_file.size > KERNEL_SCRATCH_MAX) {
         fail("kernel too large");
     }
+    trace("kernel read");
     if (fat16_read_file(&fat, &kernel_file, kernel, KERNEL_SCRATCH_MAX) != 0) {
         fail("kernel read failed");
     }
+    trace("kernel read ok");
 
     if (memcmp(kernel, "\x7F""ELF", 4) != 0) {
         fail("kernel is not ELF");
     }
 
     if (kernel[4] == ELF_CLASS_32) {
+        trace("kernel elf32");
         load_elf32_and_jump(params, entry, kernel);
         return;
     }
     if (kernel[4] == ELF_CLASS_64) {
+        trace("kernel elf64");
         load_elf64_and_jump(params, entry, kernel);
         return;
     }
@@ -897,14 +925,16 @@ void stage3_main(const struct bootx_boot_info *raw_params) {
     console_set_color(0x07);
     console_clear();
     console_puts("boot/x stage3\n");
-    debug_puts("stage3: entered\n");
+    trace("entered");
 
     if (fat16_mount(&fat, boot_info->boot_drive, boot_info->partition_lba) != 0) {
         fail("mount failed");
     }
+    trace("fat mounted");
 
     load_config_or_default();
+    trace("config ready");
     uint32_t selected = choose_entry();
-    debug_puts("stage3: boot kernel\n");
+    trace("boot kernel");
     load_kernel_and_jump(params, &menu_entries[selected]);
 }

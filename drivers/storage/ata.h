@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "block/blockdev.h"
+#include "kernel/public/driver/driver.h"
 
 struct ata_device {
     uint16_t io_base;
@@ -15,3 +16,5 @@ struct ata_device {
 
 void ata_init(void);
 struct ata_device *ata_get_primary_master(void);
+
+extern const struct kernel_driver ata_kernel_driver;

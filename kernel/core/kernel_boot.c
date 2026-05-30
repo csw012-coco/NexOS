@@ -14,6 +14,7 @@
 #include "fs/vfs_internal.h"
 #include "kernel/internal/core/kernel_boot_internal.h"
 #include "kernel/public/core/kprint.h"
+#include "kernel/public/driver/driver.h"
 #include "kernel/public/mem/pmm.h"
 #include "kernel/public/mem/vmm.h"
 #include "lib/string.h"
@@ -23,6 +24,17 @@ extern char __kernel_text_start[];
 extern char __kernel_data_start[];
 
 static struct vfs g_kernel_vfs;
+
+static const struct kernel_driver *g_kernel_builtin_drivers[] = {
+    &ata_kernel_driver,
+    &ahci_kernel_driver,
+    &xhci_kernel_driver,
+    &ehci_kernel_driver,
+    &ac97_kernel_driver,
+    &hda_kernel_driver,
+    &rtl8139_kernel_driver,
+};
+
 enum {
     KERNEL_PAGE_FLAG_PRESENT = 1ull << 0,
     KERNEL_PAGE_FLAG_RW = 1ull << 1,
@@ -298,18 +310,22 @@ void kernel_log_block_devices(void) {
     }
 }
 
+static void kernel_register_builtin_drivers_local(void) {
+    uint32_t i;
+
+    driver_manager_init();
+    for (i = 0; i < sizeof(g_kernel_builtin_drivers) / sizeof(g_kernel_builtin_drivers[0]); i++) {
+        (void)driver_register(g_kernel_builtin_drivers[i]);
+    }
+}
+
 void kernel_init_storage_devices(const struct bootx_boot_info *boot_info) {
     blockdev_init();
-    ata_init();
-    ahci_init();
-    xhci_init();
-    ehci_init();
+    kernel_register_builtin_drivers_local();
+    (void)driver_init_all();
     kernel_log_pci_info();
-    (void)ac97_init();
     kernel_log_ac97_info();
-    (void)hda_init();
     kernel_log_hda_info();
-    (void)rtl8139_init();
     kernel_log_rtl8139_info();
     ramdisk_init_from_boot_modules(boot_info);
     kernel_log_block_devices();

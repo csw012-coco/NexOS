@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "kernel/public/driver/driver.h"
 
 struct ac97_status {
     uint8_t present;
@@ -28,3 +29,5 @@ struct ac97_status {
 
 int ac97_init(void);
 int ac97_query_status(struct ac97_status *out);
+
+extern const struct kernel_driver ac97_kernel_driver;

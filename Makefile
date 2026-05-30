@@ -28,11 +28,14 @@ HOSTCC := cc
 Q ?= @
 
 CFLAGS64 := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -Wall -Wextra -O2 -I$(ROOT)
+DRV_CFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Wextra -O2 -I$(ROOT)
 USERCFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -Wall -Wextra -O2 -I$(ROOT)
 LDFLAGS64 := -nostdlib -static -m elf_x86_64
 USER_ELF_BINS := $(BUILD)/HELLO.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/GUIDEMO.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
 INIT_SCRIPT := $(ROOT)/user/init/INIT.SH
 OS_CONFIG := $(ROOT)/config/NOS.CFG
+DUMMY_AC97_DRIVER_SRC := $(ROOT)/drivers/dummy/ac97_drv.c
+DUMMY_AC97_DRIVER := $(BUILD)/AC97.DRV
 FASM_TEST_SOURCE := $(ROOT)/user/examples/fasm/test.asm
 CMD_SUITE_NAMES := NEXBOX HELP ACTIONS ACTION MAPPER ECHO CLEAR PWD TTY ENV FONT WHICH TYPE LS CAT LESS HEXDUMP GREP DATE HWCLOCK SLEEP WATCH ON EVENTS CLIPBOARD WC HEAD TAIL FIND AS PICK SELECT SORT-BY COUNT-BY TO VIEW ED VI VIM TOUCH MV CP MKDIR RMDIR RM ASM STAT DU TREE FILE BLK PARTS FDISK DF MOUNTS PROGS FATLS FATFIND FATREAD CPIO MOUNT UMOUNT HOTPLUG RUN RUNELF RUNBG PS SESSION SERVICE JOBS WAIT ALARM TIMEOUT KILL FG BG SWITCH_ROOT REBOOT DMESG LSPCI AC97 HDA RTL8139 RTL8139TX RTL8139RX ARP ROUTE NETSTAT PING DNS DHCP IFCONFIG HTTP WGET NC AUDIO TONE WAV MPLAY DOCTOR NEXCTL SYSINFO MEMINFO MINFO UNAME CPUINFO CONFIG DBG
 QEMU_AUDIODEV ?= pa,id=snd0
@@ -110,6 +113,7 @@ KERNEL_C_SRCS := \
 	kernel/proc/process_reap.c \
 	kernel/proc/process_session.c \
 	kernel/mem/address_space_core.c \
+	kernel/driver/driver.c \
 	kernel/proc/process_elf.c \
 	arch/x86/gdt64.c \
 	arch/x86/paging.c \
@@ -339,7 +343,11 @@ oneoff-user: $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/apps/elf/
 	$(call log_cmd,LD,$(BUILD)/$(OUT))
 	$(Q)$(LD) $(LDFLAGS64) -T $(ROOT)/user/apps/elf/user.ld -o $(BUILD)/$(OUT) $(USER_CRT0) $(USER_CRT_START) $(BUILD)/oneoff_user.o $(USER_NLIBC)
 
-$(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCRIPT) $(OS_CONFIG) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
+$(DUMMY_AC97_DRIVER): $(DUMMY_AC97_DRIVER_SRC) $(ROOT)/kernel/public/driver/driver_module.h $(ROOT)/kernel/public/driver/driver.h $(ROOT)/Makefile | $(BUILD)
+	$(call log_cmd,DRV,$@)
+	$(Q)$(CC) $(DRV_CFLAGS) -c $< -o $@
+
+$(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCRIPT) $(OS_CONFIG) $(DUMMY_AC97_DRIVER) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s $(RAMDISK_SIZE) $@
@@ -348,6 +356,7 @@ $(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCR
 	$(Q)mkfs.fat -F 32 --offset 2048 $@
 	$(Q)mmd -i $@@@1048576 ::/HOME
 	$(Q)mmd -i $@@@1048576 ::/CMD
+	$(Q)mmd -i $@@@1048576 ::/DRIVERS
 	$(Q)mcopy -i $@@@1048576 $(ROOT)/bootx.cfg ::/HOME/BOOTX.TXT
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/HELLO.ELF ::/HOME/HELLO.ELF
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/KEYDEMO.ELF ::/HOME/KEYDEMO.ELF
@@ -369,6 +378,7 @@ $(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCR
 	$(Q)mcopy -i $@@@1048576 $(FASM_TEST_SOURCE) ::/HOME/TEST.ASM
 	$(Q)mcopy -i $@@@1048576 $(INIT_SCRIPT) ::/INIT.SH
 	$(Q)mcopy -i $@@@1048576 $(OS_CONFIG) ::/NOS.CFG
+	$(Q)mcopy -i $@@@1048576 $(DUMMY_AC97_DRIVER) ::/DRIVERS/AC97.DRV
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/HELLO.ELF ::/CMD/HELLO
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/KEYDEMO.ELF ::/CMD/KEYDEMO
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/YIELDDEMO.ELF ::/CMD/YIELDDEMO
@@ -794,6 +804,7 @@ check-image: $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE) $(NXFS_IMAGE) $(ROOT_FS_IMAGE)
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'SERVICE'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'NEXCTL'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'SYSINFO'
+	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/DRIVERS | grep -Eq 'AC97 +DRV'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'INIT +SH'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'NOS +CFG'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'USH +ELF' && { printf '%s\n' '[check] error: unexpected root /USH.ELF copy in ramdisk'; exit 1; } || true

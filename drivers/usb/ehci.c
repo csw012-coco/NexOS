@@ -1,5 +1,17 @@
 #include "drivers/usb/ehci_internal.h"
 
+static int ehci_driver_init_local(void) {
+    ehci_init();
+    return 1;
+}
+
+const struct kernel_driver ehci_kernel_driver = {
+    .name = "EHCI",
+    .kind = KERNEL_DRIVER_KIND_USB,
+    .init = ehci_driver_init_local,
+    .exit = NULL,
+};
+
 struct ehci_regs g_ehci;
 struct ehci_msc_device g_ehci_msc[EHCI_MAX_MSC];
 uint32_t g_ehci_msc_count;

@@ -37,6 +37,18 @@ enum {
     ATA_CMD_FLUSH_CACHE_EXT = 0xeau
 };
 
+static int ahci_driver_init_local(void) {
+    ahci_init();
+    return 1;
+}
+
+const struct kernel_driver ahci_kernel_driver = {
+    .name = "AHCI",
+    .kind = KERNEL_DRIVER_KIND_STORAGE,
+    .init = ahci_driver_init_local,
+    .exit = NULL,
+};
+
 struct ahci_hba_port {
     volatile uint32_t clb;
     volatile uint32_t clbu;

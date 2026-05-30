@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "kernel/public/driver/driver.h"
 
 struct rtl8139_status {
     uint8_t present;
@@ -44,3 +45,5 @@ int rtl8139_send_frame(const uint8_t *data, uint32_t bytes);
 int rtl8139_send_test_frame(void);
 int rtl8139_receive_packet(struct rtl8139_rx_packet *out);
 int rtl8139_handle_irq(uint8_t irq_line);
+
+extern const struct kernel_driver rtl8139_kernel_driver;

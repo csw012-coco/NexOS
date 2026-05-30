@@ -10,6 +10,7 @@
 #include "kernel/internal/proc/process_types_internal.h"
 #include "kernel/internal/core/tty_internal.h"
 #include "kernel/public/core/console.h"
+#include "kernel/public/driver/driver.h"
 #include "kernel/public/mem/pmm.h"
 #include "kernel/public/mem/address_space.h"
 #include "kernel/public/proc/job_control.h"
@@ -349,6 +350,10 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
         kernel_boot_trace("kernel: core services failed");
         kernel_halt_forever();
     }
+    kernel_boot_trace("kernel: discover drivers");
+    (void)driver_discover_root(vfs, "/DRIVERS");
+    (void)driver_load_all(vfs);
+    (void)driver_init_all();
     syscall_init(&shell_tty, &timer_ticks, vfs, boot_info, memmap, boot_info->memmap_count);
     timer_ticks = 0;
 
