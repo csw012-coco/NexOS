@@ -15,6 +15,7 @@
 static enum sched_mode g_sched_mode = SCHED_MODE_INTERACTIVE;
 static uint32_t g_sched_next_slot = 0;
 static uint8_t g_sched_foreground_turn = 1u;
+static uint32_t g_sched_excluded_pid;
 
 /* ============================================================================
  * Public Policy Interface
@@ -24,6 +25,34 @@ void sched_policy_init(void) {
     g_sched_next_slot = 0;
     g_sched_foreground_turn = 1u;
     g_sched_mode = SCHED_MODE_INTERACTIVE;
+    g_sched_excluded_pid = 0;
+}
+
+static int sched_policy_pid_active_on_kernel_stack(uint32_t pid) {
+    struct cpu_user_state *cpu_state;
+
+    if (pid == 0u) {
+        return 0;
+    }
+    cpu_state = current_cpu_user_state();
+    for (uint32_t i = 0; i < cpu_state->nested_kernel_stack_depth; i++) {
+        const struct process_session *session = cpu_state->active_sessions[i];
+
+        if (session != 0 && session->process.pid == pid) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int sched_policy_pid_allowed(const struct process *proc) {
+    if (proc == 0) {
+        return 0;
+    }
+    if (g_sched_excluded_pid != 0u && proc->pid == g_sched_excluded_pid) {
+        return 0;
+    }
+    return !sched_policy_pid_active_on_kernel_stack(proc->pid);
 }
 
 /**
@@ -68,7 +97,7 @@ uint32_t sched_policy_update_wake_times(uint32_t current_ticks) {
  * modify only this function and the data structures above.
  * 
  * Current: Simple round-robin with equal time slices.
- * Returns the slot index of next ready process, or -1 if none.
+ * Returns -1 for foreground, a background slot, or -2 if none is eligible.
  */
 static int32_t sched_policy_select_background(void) {
     /* Round-robin through background jobs (job slots 0 to USER_PROCESS_LIMIT-1) */
@@ -79,7 +108,8 @@ static int32_t sched_policy_select_background(void) {
         if (runtime == 0) {
             continue;
         }
-        if (runtime->session.process.state != PROCESS_STATE_READY) {
+        if (runtime->session.process.state != PROCESS_STATE_READY ||
+            !sched_policy_pid_allowed(&runtime->session.process)) {
             continue;
         }
 
@@ -91,7 +121,8 @@ static int32_t sched_policy_select_background(void) {
 }
 
 int32_t sched_policy_select_next(void) {
-    int foreground_ready = g_user_session.process.state == PROCESS_STATE_READY;
+    int foreground_ready = g_user_session.process.state == PROCESS_STATE_READY &&
+                           sched_policy_pid_allowed(&g_user_session.process);
     int32_t background_slot;
 
     if (g_sched_mode == SCHED_MODE_INTERACTIVE && foreground_ready && g_sched_foreground_turn != 0u) {
@@ -110,8 +141,7 @@ int32_t sched_policy_select_next(void) {
         return -1;
     }
 
-    /* No ready process found, return -1 */
-    return -1;
+    return -2;
 }
 
 /**
@@ -121,6 +151,10 @@ int32_t sched_policy_select_next(void) {
  */
 void sched_policy_on_process_finished(uint32_t slot) {
     (void)slot;  /* Currently no accounting, but extensible */
+}
+
+void sched_policy_set_excluded_pid(uint32_t pid) {
+    g_sched_excluded_pid = pid;
 }
 
 /**

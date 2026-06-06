@@ -63,6 +63,7 @@ int vfs_mount_fs_at_lba(struct vfs *vfs,
                         const char *target);
 int vfs_umount(struct vfs *vfs, const char *target);
 int vfs_switch_root_to_source(struct vfs *vfs, uint32_t disk_index, uint32_t part_index);
+int vfs_switch_root_to_first_kind(struct vfs *vfs, uint8_t kind);
 int vfs_prepare_opened_node(struct vfs *vfs,
                             struct vfs_node *node,
                             const char *path,

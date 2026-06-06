@@ -2,7 +2,9 @@
 
 enum {
     WAV_PAGE_BYTES = 4096u,
-    WAV_MAX_OUTPUT_FRAMES = 32u * 1024u
+    WAV_DEVICE_SAMPLE_RATE = 48000u,
+    WAV_MAX_OUTPUT_FRAMES = 32u * 1024u,
+    WAV_MAX_CHUNK_BYTES = 128u * 1024u
 };
 
 struct wav_format_info {
@@ -173,10 +175,13 @@ static void wav_free_pages(uint8_t *base, uint32_t page_count) {
 static int cmd_play_wav_like(int argc, char **argv, const char *verb) {
     struct wav_format_info fmt;
     struct syscall_audio_play_info play;
+    struct syscall_audio_stream_info stream_play;
+    struct syscall_audio_info device_info;
     uint8_t *buffer = 0;
     uint32_t device_index = 0;
     uint32_t page_count;
     uint32_t src_frame_bytes;
+    uint32_t chunk_frames;
     uint32_t chunk_bytes;
     uint32_t remaining;
     int fd;
@@ -217,10 +222,53 @@ static int cmd_play_wav_like(int argc, char **argv, const char *verb) {
         return 1;
     }
 
+    if (audio_query(device_index, &device_info) > 0 &&
+        (device_info.caps & NEX_AUDIO_CAP_STREAM) != 0u) {
+        stream_play.fd = (uint32_t)fd;
+        stream_play.sample_rate = fmt.sample_rate;
+        stream_play.channels = fmt.channels;
+        stream_play.bits_per_sample = fmt.bits_per_sample;
+        stream_play.data_bytes = fmt.data_bytes;
+        stream_play.flags = 0u;
+        stream_play.reserved = 0u;
+        if (audio_play_fd(device_index, &stream_play) <= 0) {
+            close((uint32_t)fd);
+            write_err_str(verb);
+            write_err_str(": playback failed\n");
+            return 1;
+        }
+        close((uint32_t)fd);
+        return 0;
+    }
+
     src_frame_bytes = fmt.channels * (fmt.bits_per_sample / 8u);
-    chunk_bytes = WAV_MAX_OUTPUT_FRAMES * src_frame_bytes;
-    page_count = (chunk_bytes + WAV_PAGE_BYTES - 1u) / WAV_PAGE_BYTES;
-    buffer = wav_alloc_pages(page_count);
+    chunk_frames = (uint32_t)(((uint64_t)WAV_MAX_OUTPUT_FRAMES *
+                               (uint64_t)fmt.sample_rate) /
+                              (uint64_t)WAV_DEVICE_SAMPLE_RATE);
+    if (chunk_frames == 0u) {
+        chunk_frames = 1u;
+    }
+    if (chunk_frames > WAV_MAX_OUTPUT_FRAMES) {
+        chunk_frames = WAV_MAX_OUTPUT_FRAMES;
+    }
+    if (chunk_frames * src_frame_bytes > WAV_MAX_CHUNK_BYTES) {
+        chunk_frames = WAV_MAX_CHUNK_BYTES / src_frame_bytes;
+        if (chunk_frames == 0u) {
+            chunk_frames = 1u;
+        }
+    }
+    for (;;) {
+        chunk_bytes = chunk_frames * src_frame_bytes;
+        page_count = (chunk_bytes + WAV_PAGE_BYTES - 1u) / WAV_PAGE_BYTES;
+        buffer = wav_alloc_pages(page_count);
+        if (buffer != 0 || chunk_frames <= 1u) {
+            break;
+        }
+        chunk_frames /= 2u;
+        if (chunk_frames == 0u) {
+            chunk_frames = 1u;
+        }
+    }
     if (buffer == 0) {
         close((uint32_t)fd);
         write_err_str(verb);
@@ -231,23 +279,24 @@ static int cmd_play_wav_like(int argc, char **argv, const char *verb) {
     remaining = fmt.data_bytes;
     while (remaining != 0u) {
         uint32_t want = remaining > chunk_bytes ? chunk_bytes : remaining;
-        uint32_t got = (uint32_t)read(fd, (char *)buffer, want);
         uint32_t play_bytes;
 
-        if (got == 0u) {
+        if (!wav_read_exact(fd, buffer, want)) {
             wav_free_pages(buffer, page_count);
             close((uint32_t)fd);
             write_err_str(verb);
             write_err_str(": unexpected end of file\n");
             return 1;
         }
-        play_bytes = got - (got % src_frame_bytes);
+        play_bytes = want - (want % src_frame_bytes);
         if (play_bytes != 0u) {
             play.sample_rate = fmt.sample_rate;
             play.channels = fmt.channels;
             play.bits_per_sample = fmt.bits_per_sample;
             play.bytes = play_bytes;
             play.data_addr = (uint64_t)(uintptr_t)buffer;
+            play.flags = want < remaining ? NEX_AUDIO_PLAY_F_ASYNC : 0u;
+            play.reserved = 0u;
             if (audio_play(device_index, &play) <= 0) {
                 wav_free_pages(buffer, page_count);
                 close((uint32_t)fd);
@@ -256,10 +305,10 @@ static int cmd_play_wav_like(int argc, char **argv, const char *verb) {
                 return 1;
             }
         }
-        if (got >= remaining) {
+        if (want >= remaining) {
             remaining = 0u;
         } else {
-            remaining -= got;
+            remaining -= want;
         }
     }
 
@@ -304,6 +353,9 @@ int cmd_audio(int argc, char **argv) {
         if ((info.caps & NEX_AUDIO_CAP_TONE) != 0u) {
             write_str((info.caps & NEX_AUDIO_CAP_PLAYBACK) != 0u ? ",tone" : "tone");
         }
+        if ((info.caps & NEX_AUDIO_CAP_STREAM) != 0u) {
+            write_str((info.caps & (NEX_AUDIO_CAP_PLAYBACK | NEX_AUDIO_CAP_TONE)) != 0u ? ",stream" : "stream");
+        }
         write_str(" driver=");
         if (info.driver_kind == NEX_AUDIO_DRIVER_AC97) {
             write_str("ac97");
@@ -344,6 +396,9 @@ int cmd_tone(int argc, char **argv) {
     }
     if (argc >= 4 && !parse_u32_local(argv[3], &device_index)) {
         write_err_usage("tone", " [hz] [ms] [device]\n");
+        return 1;
+    } else if (argc < 4 && !wav_find_default_device(&device_index)) {
+        write_err_str("tone: no playback device\n");
         return 1;
     }
     if (audio_query(device_index, &info) <= 0 || !info.present) {

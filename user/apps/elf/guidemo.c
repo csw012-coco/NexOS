@@ -326,6 +326,7 @@ int main(int argc, char **argv) {
             }
         }
         wm_draw(&wm, info.width, info.height, frame);
+        gfx_present();
         sleep(2u);
     }
     printf("guidemo done\n");

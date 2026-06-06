@@ -843,6 +843,7 @@ static int process_prepare_exec_replace_session_local(struct process_session *se
                                                       struct user_page_mapping *mappings,
                                                       const struct process *proc) {
     struct process preserved;
+    uint64_t old_user_cr3;
 
     if (session == 0 || mappings == 0 || proc == 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
@@ -857,11 +858,16 @@ static int process_prepare_exec_replace_session_local(struct process_session *se
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
     }
+    old_user_cr3 = session->address_space.user_cr3;
     addrspace_release_dynamic_pages();
     if (session->address_space.kernel_cr3 != 0 &&
         !vmm_switch_root_or_fail(session->address_space.kernel_cr3)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
+    }
+    if (old_user_cr3 != 0) {
+        session->address_space.user_cr3 = 0;
+        vmm_destroy_user_root(old_user_cr3);
     }
     session->address_space.kernel_cr3 = vmm_current_root();
     session->address_space.user_cr3 = vmm_create_user_root();

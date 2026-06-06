@@ -245,7 +245,7 @@ uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint6
         case SYS_QUERY_KMSG:
             return syscall_handle_kmsg_query((uint32_t)arg0, user_info_addr);
         case SYS_QUERY_PCI:
-            return syscall_handle_pci_query(user_info_addr);
+            return syscall_handle_pci_query((uint32_t)arg0, user_info_addr);
         case SYS_QUERY_AC97:
             return syscall_handle_ac97_query(user_info_addr);
         case SYS_QUERY_HDA:

@@ -78,7 +78,7 @@ static int xhci_init_controller(uint8_t controller_index, const struct pci_xhci_
     xhci_write32(g_xhci.op, XHCI_OP_CONFIG, g_xhci.max_slots);
     xhci_write32(g_xhci.op, XHCI_OP_DNCTRL, 0u);
 
-    intr0 = g_xhci.runtime + 0x20u;
+    intr0 = g_xhci.runtime + XHCI_RUNTIME_INTR0;
     xhci_write32(intr0, XHCI_INTR_ERSTSZ, XHCI_ERST_ENTRIES);
     xhci_write64(intr0, XHCI_INTR_ERSTBA, g_xhci.erst_phys);
     xhci_write64(intr0, XHCI_INTR_ERDP, g_xhci.event_ring_phys);

@@ -24,3 +24,4 @@ int gfx_fill_triangle(int32_t x0,
                       uint32_t rgb);
 int gfx_draw_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb);
 int gfx_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb);
+int gfx_present(void);

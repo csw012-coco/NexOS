@@ -11,7 +11,7 @@
 
 enum {
     SYSCALL_EXIT_TO_KERNEL = 0xfffffffffffffff0ull,
-    SYSCALL_COPY_CHUNK = 256u,
+    SYSCALL_COPY_CHUNK = 16384u,
     SYSCALL_PAGE_SIZE = NOS_PAGE_SIZE,
     SYSCALL_USER_STRING_MAX = 255u,
     SYSCALL_PATH_MAX = NOS_PATH_MAX
@@ -84,7 +84,7 @@ uint64_t syscall_handle_block_query(uint32_t index, uint64_t user_info_addr);
 uint64_t syscall_handle_part_query(uint32_t disk_index, uint32_t slot, uint64_t user_info_addr);
 uint64_t syscall_handle_mount_query(uint32_t index, uint64_t user_info_addr);
 uint64_t syscall_handle_kmsg_query(uint32_t offset, uint64_t user_info_addr);
-uint64_t syscall_handle_pci_query(uint64_t user_info_addr);
+uint64_t syscall_handle_pci_query(uint32_t index, uint64_t user_info_addr);
 uint64_t syscall_handle_ac97_query(uint64_t user_info_addr);
 uint64_t syscall_handle_hda_query(uint64_t user_info_addr);
 uint64_t syscall_handle_rtl8139_query(uint64_t user_info_addr);
@@ -94,6 +94,7 @@ uint64_t syscall_handle_rtl8139_rx_dump(uint64_t user_info_addr);
 uint64_t syscall_handle_audio_query(uint32_t index, uint64_t user_info_addr);
 uint64_t syscall_handle_audio_tone(uint32_t index, uint32_t hz, uint32_t duration_ms);
 uint64_t syscall_handle_audio_play(uint32_t index, uint64_t user_info_addr);
+uint64_t syscall_handle_audio_play_fd(uint32_t index, uint64_t user_info_addr);
 uint64_t syscall_handle_reboot(void);
 uint64_t syscall_handle_capability_event(uint64_t user_info_addr);
 uint64_t syscall_handle_gfx(uint32_t op, uint64_t user_info_addr);

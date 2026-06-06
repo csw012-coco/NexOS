@@ -46,6 +46,7 @@ static int paging_translate_current(uint64_t virt_addr, uint64_t *phys_out);
 static uint64_t *paging_root_table(uint64_t cr3);
 static uint64_t *paging_alloc_table(uint64_t *phys_out);
 static uint64_t paging_clone_table_deep(uint64_t table_phys, uint32_t level);
+static void paging_destroy_table_deep(uint64_t table_phys, uint32_t level);
 static int paging_walk_in_root(uint64_t root_cr3, uint64_t virt_addr, struct paging_walk_info *info_out);
 static uint64_t *paging_walk_to_pte_in_root(uint64_t root_cr3, uint64_t addr, int create, int user_accessible);
 static int paging_map_page_in_root(uint64_t root_cr3,
@@ -381,8 +382,8 @@ static uint64_t paging_clone_table_deep(uint64_t table_phys, uint32_t level) {
     for (uint32_t i = 0; i < PAGING_TABLE_ENTRIES; i++) {
         uint64_t entry = src_table[i];
 
-        dst_table[i] = entry;
         if ((entry & PAGING_FLAG_PRESENT) == 0 || level == 1 || (entry & PAGING_FLAG_PAGE_SIZE) != 0) {
+            dst_table[i] = entry;
             continue;
         }
 
@@ -390,6 +391,7 @@ static uint64_t paging_clone_table_deep(uint64_t table_phys, uint32_t level) {
             uint64_t cloned_child_phys = paging_clone_table_deep(entry & PAGING_ADDR_MASK, level - 1);
 
             if (cloned_child_phys == 0) {
+                paging_destroy_table_deep(dst_phys, level);
                 return 0;
             }
             dst_table[i] = (entry & ~PAGING_ADDR_MASK) | cloned_child_phys;
@@ -397,6 +399,27 @@ static uint64_t paging_clone_table_deep(uint64_t table_phys, uint32_t level) {
     }
 
     return dst_phys;
+}
+
+static void paging_destroy_table_deep(uint64_t table_phys, uint32_t level) {
+    uint64_t *table;
+
+    if (table_phys == 0 || level == 0) {
+        return;
+    }
+
+    table = (uint64_t *)paging_phys_direct_map(table_phys & PAGING_ADDR_MASK);
+    if (level > 1) {
+        for (uint32_t i = 0; i < PAGING_TABLE_ENTRIES; i++) {
+            uint64_t entry = table[i];
+
+            if ((entry & PAGING_FLAG_PRESENT) == 0 || (entry & PAGING_FLAG_PAGE_SIZE) != 0) {
+                continue;
+            }
+            paging_destroy_table_deep(entry & PAGING_ADDR_MASK, level - 1);
+        }
+    }
+    (void)pmm_free_page(table_phys & PAGING_ADDR_MASK);
 }
 
 void paging_init(uint64_t kernel_phys_base) {
@@ -608,6 +631,15 @@ uint64_t paging_create_user_root(void) {
     g_last_clone_trace.clone_pml4e0 = dst_pml4[0];
     g_last_clone_trace.clone_pml4e511 = dst_pml4[511];
     return dst_pml4_phys;
+}
+
+void paging_destroy_root_deep(uint64_t root_cr3) {
+    uint64_t root_phys = root_cr3 & PAGING_ADDR_MASK;
+
+    if (root_phys == 0 || root_phys == paging_get_current_cr3()) {
+        return;
+    }
+    paging_destroy_table_deep(root_phys, 4);
 }
 
 static uint64_t *paging_walk_to_pte(uint64_t addr, int create) {

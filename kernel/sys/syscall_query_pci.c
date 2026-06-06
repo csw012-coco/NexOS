@@ -15,12 +15,12 @@ static uint64_t syscall_finish_user_output(uint64_t user_info_addr, const void *
     return 1;
 }
 
-uint64_t syscall_handle_pci_query(uint64_t user_info_addr) {
+uint64_t syscall_handle_pci_query(uint32_t index, uint64_t user_info_addr) {
     struct syscall_pci_info info;
 
     if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    kernel_query_pci_info(&info);
+    kernel_query_pci_info(index, &info);
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }

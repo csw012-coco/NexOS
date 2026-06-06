@@ -3,6 +3,7 @@
 # =========================
 ROOT := $(CURDIR)
 BUILD := $(ROOT)/build
+CMD_SUITE_WRAPPER_DIR := $(BUILD)/cmd-wrappers
 BOOT := $(ROOT)/boot
 BOOTX_DIR := $(ROOT)/bootx/bootx
 BOOTX_BUILD := $(BOOTX_DIR)/build
@@ -36,6 +37,8 @@ INIT_SCRIPT := $(ROOT)/user/init/INIT.SH
 OS_CONFIG := $(ROOT)/config/NOS.CFG
 DUMMY_AC97_DRIVER_SRC := $(ROOT)/drivers/dummy/ac97_drv.c
 DUMMY_AC97_DRIVER := $(BUILD)/AC97.DRV
+DUMMY_HDA_DRIVER_SRC := $(ROOT)/drivers/dummy/hda_drv.c
+DUMMY_HDA_DRIVER := $(BUILD)/HDA.DRV
 FASM_TEST_SOURCE := $(ROOT)/user/examples/fasm/test.asm
 CMD_SUITE_NAMES := NEXBOX HELP ACTIONS ACTION MAPPER ECHO CLEAR PWD TTY ENV FONT WHICH TYPE LS CAT LESS HEXDUMP GREP DATE HWCLOCK SLEEP WATCH ON EVENTS CLIPBOARD WC HEAD TAIL FIND AS PICK SELECT SORT-BY COUNT-BY TO VIEW ED VI VIM TOUCH MV CP MKDIR RMDIR RM ASM STAT DU TREE FILE BLK PARTS FDISK DF MOUNTS PROGS FATLS FATFIND FATREAD CPIO MOUNT UMOUNT HOTPLUG RUN RUNELF RUNBG PS SESSION SERVICE JOBS WAIT ALARM TIMEOUT KILL FG BG SWITCH_ROOT REBOOT DMESG LSPCI AC97 HDA RTL8139 RTL8139TX RTL8139RX ARP ROUTE NETSTAT PING DNS DHCP IFCONFIG HTTP WGET NC AUDIO TONE WAV MPLAY DOCTOR NEXCTL SYSINFO MEMINFO MINFO UNAME CPUINFO CONFIG DBG
 QEMU_AUDIODEV ?= pa,id=snd0
@@ -47,6 +50,7 @@ QEMU_NET_TAP_BRIDGE ?= br0
 QEMU_NET_TAP_SUDO ?= sudo
 QEMU_NET_TAP ?= -netdev tap,id=n0,ifname=$(QEMU_NET_TAP_IFNAME),script=no,downscript=no -device rtl8139,netdev=n0
 QEMU_NXFS_SATA ?= -drive if=none,id=nxfsdisk,format=raw,file=$(NXFS_IMAGE) -device ich9-ahci,id=ahci -device ide-hd,drive=nxfsdisk,bus=ahci.0
+QEMU_UEFI_SATA ?= -drive if=none,id=uefiboot,format=raw,file=$(UEFI_IMAGE) -drive if=none,id=uefinxfs,format=raw,file=$(NXFS_IMAGE) -device ich9-ahci,id=uefiahci -device ide-hd,drive=uefiboot,bus=uefiahci.0 -device ide-hd,drive=uefinxfs,bus=uefiahci.1
 QEMU_USB_MSC ?= -drive if=none,id=usbdisk,format=raw,file=$(NXFS_IMAGE) -device usb-ehci,id=ehci -device usb-storage,drive=usbdisk,bus=ehci.0
 QEMU_USB_HID ?= -device usb-kbd,bus=ehci.0 -device usb-mouse,bus=ehci.0
 QEMU_XHCI_MSC ?= -drive if=none,id=xhcidisk,format=raw,file=$(NXFS_IMAGE) -device qemu-xhci,id=xhci -device usb-storage,drive=xhcidisk,bus=xhci.0
@@ -347,7 +351,11 @@ $(DUMMY_AC97_DRIVER): $(DUMMY_AC97_DRIVER_SRC) $(ROOT)/kernel/public/driver/driv
 	$(call log_cmd,DRV,$@)
 	$(Q)$(CC) $(DRV_CFLAGS) -c $< -o $@
 
-$(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCRIPT) $(OS_CONFIG) $(DUMMY_AC97_DRIVER) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
+$(DUMMY_HDA_DRIVER): $(DUMMY_HDA_DRIVER_SRC) $(ROOT)/kernel/public/driver/driver_module.h $(ROOT)/kernel/public/driver/driver.h $(ROOT)/Makefile | $(BUILD)
+	$(call log_cmd,DRV,$@)
+	$(Q)$(CC) $(DRV_CFLAGS) -c $< -o $@
+
+$(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCRIPT) $(OS_CONFIG) $(DUMMY_AC97_DRIVER) $(DUMMY_HDA_DRIVER) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s $(RAMDISK_SIZE) $@
@@ -379,6 +387,7 @@ $(RAMDISK_IMAGE): $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.hex $(INIT_SCR
 	$(Q)mcopy -i $@@@1048576 $(INIT_SCRIPT) ::/INIT.SH
 	$(Q)mcopy -i $@@@1048576 $(OS_CONFIG) ::/NOS.CFG
 	$(Q)mcopy -i $@@@1048576 $(DUMMY_AC97_DRIVER) ::/DRIVERS/AC97.DRV
+	$(Q)mcopy -i $@@@1048576 $(DUMMY_HDA_DRIVER) ::/DRIVERS/HDA.DRV
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/HELLO.ELF ::/CMD/HELLO
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/KEYDEMO.ELF ::/CMD/KEYDEMO
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/YIELDDEMO.ELF ::/CMD/YIELDDEMO
@@ -453,7 +462,15 @@ $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(ROOT)/bootx.cfg $(ROOT)/font.h
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/HELLO.ELF /cmd/hello
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/GUIDEMO.ELF /cmd/guidemo
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/FORTH.ELF /cmd/forth
-	$(Q)for alias in $(CMD_SUITE_NAMES); do lower=$$(printf '%s' "$$alias" | tr 'A-Z' 'a-z'); $(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/$$lower; done
+	$(Q)rm -rf $(CMD_SUITE_WRAPPER_DIR)
+	$(Q)mkdir -p $(CMD_SUITE_WRAPPER_DIR)
+	$(Q)for alias in $(CMD_SUITE_NAMES); do \
+		lower=$$(printf '%s' "$$alias" | tr 'A-Z' 'a-z'); \
+		if [ "$$lower" = nexbox ]; then continue; fi; \
+		script="$(CMD_SUITE_WRAPPER_DIR)/$$lower"; \
+		printf '#!/cmd/ush\nexec /cmd/nexbox %s $$*\n' "$$lower" > "$$script"; \
+		$(NXFS_TOOL) write $@ "$$script" /cmd/$$lower; \
+	done
 
 $(NXFS_IMAGE): $(NXFS_FS)
 	$(call log_cmd,IMAGE,$@)
@@ -548,7 +565,7 @@ $(OVMF_VARS_IMAGE): $(OVMF_VARS_TEMPLATE) | $(BUILD)
 	$(Q)cp $< $@
 
 run: $(IMAGE) $(NXFS_IMAGE)
-	qemu-system-x86_64 \
+	qemu-system-x86_64 -enable-kvm \
 	$(QEMU_SERIAL) \
 	$(QEMU_NET) \
 	-drive if=ide,index=0,media=disk,format=raw,file=$(IMAGE) \
@@ -569,14 +586,13 @@ dev: $(IMAGE) $(NXFS_IMAGE)
 		-audiodev $(QEMU_AUDIODEV)
 
 run-uefi: $(UEFI_IMAGE) $(NXFS_IMAGE) $(OVMF_VARS_IMAGE)
-	qemu-system-x86_64 \
+	qemu-system-x86_64  -enable-kvm \
 	-machine q35 \
 	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	-drive if=pflash,format=raw,file=$(OVMF_VARS_IMAGE) \
 	$(QEMU_SERIAL) \
 	$(QEMU_NET) \
-	-drive if=ide,index=0,media=disk,format=raw,file=$(UEFI_IMAGE) \
-	$(QEMU_NXFS_SATA) \
+	$(QEMU_UEFI_SATA) \
 	-device AC97,audiodev=snd0 \
 	-audiodev $(QEMU_AUDIODEV)
 
@@ -590,9 +606,20 @@ dev-uefi: $(UEFI_IMAGE) $(NXFS_IMAGE) $(OVMF_VARS_IMAGE)
 	-drive if=pflash,format=raw,file=$(OVMF_VARS_IMAGE) \
 	$(QEMU_SERIAL) \
 	$(QEMU_NET) \
-	-drive if=ide,index=0,media=disk,format=raw,file=$(UEFI_IMAGE) \
-	$(QEMU_NXFS_SATA) \
+	$(QEMU_UEFI_SATA) \
 	-device AC97,audiodev=snd0 \
+	-audiodev $(QEMU_AUDIODEV)
+
+run-uefi2: $(UEFI_IMAGE) $(NXFS_IMAGE) $(OVMF_VARS_IMAGE)
+	qemu-system-x86_64  -enable-kvm \
+	-machine q35 \
+	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	-drive if=pflash,format=raw,file=$(OVMF_VARS_IMAGE) \
+	$(QEMU_SERIAL) \
+	$(QEMU_NET) \
+	$(QEMU_UEFI_SATA) \
+	-device intel-hda \
+	-device hda-duplex,audiodev=snd0 \
 	-audiodev $(QEMU_AUDIODEV)
 
 run-hda: $(IMAGE) $(NXFS_IMAGE)
@@ -805,6 +832,7 @@ check-image: $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE) $(NXFS_IMAGE) $(ROOT_FS_IMAGE)
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'NEXCTL'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'SYSINFO'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/DRIVERS | grep -Eq 'AC97 +DRV'
+	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/DRIVERS | grep -Eq 'HDA +DRV'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'INIT +SH'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'NOS +CFG'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'USH +ELF' && { printf '%s\n' '[check] error: unexpected root /USH.ELF copy in ramdisk'; exit 1; } || true

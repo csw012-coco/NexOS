@@ -56,6 +56,7 @@ uint64_t paging_create_kernel_root(void);
 uint64_t paging_clone_root_deep(uint64_t source_cr3);
 uint64_t paging_clone_current_root_deep(void);
 uint64_t paging_create_user_root(void);
+void paging_destroy_root_deep(uint64_t root_cr3);
 void paging_make_page_user_accessible(uint64_t addr);
 void paging_make_range_user_accessible(uint64_t start, uint64_t end);
 void paging_make_range_supervisor_only(uint64_t start, uint64_t end);

@@ -14,6 +14,10 @@ static int64_t vfs_emit_dir_entry(struct vfs_dirent *entry,
     return 1;
 }
 
+static int vfs_mountpoint_hidden_from_root(const struct vfs *vfs, uint8_t kind, uint32_t mount_slot) {
+    return vfs_has_root_override(vfs) && vfs->root_kind == kind && vfs->root_slot == mount_slot;
+}
+
 static int64_t vfs_readdir_root_mountpoint(struct vfs *vfs,
                                            uint32_t *index_io,
                                            struct vfs_dirent *entry,
@@ -21,18 +25,30 @@ static int64_t vfs_readdir_root_mountpoint(struct vfs *vfs,
     struct vfs_mount_info info;
     uint32_t source_known = 0;
     uint32_t builtin_count = vfs_builtin_mount_count(vfs);
+    uint32_t visible_index = 0;
 
-    if (mountpoint_index < builtin_count) {
-        if (!vfs_get_builtin_mount(vfs, mountpoint_index, &info, &source_known)) {
-            return 0;
+    for (uint32_t i = 0; i < builtin_count; i++) {
+        if (!vfs_get_builtin_mount(vfs, i, &info, &source_known) ||
+            vfs_mountpoint_hidden_from_root(vfs, info.kind, 0u)) {
+            continue;
         }
-        (void)source_known;
-        return vfs_emit_dir_entry(entry, index_io, info.name, 0, VFS_ATTR_DIR);
+        if (visible_index == mountpoint_index) {
+            (void)source_known;
+            return vfs_emit_dir_entry(entry, index_io, info.name, 0, VFS_ATTR_DIR);
+        }
+        visible_index++;
     }
-    if (vfs_get_mount(vfs, mountpoint_index - builtin_count, &info) != 0) {
-        return 0;
+    for (uint32_t i = 0; i < vfs_mount_count(vfs); i++) {
+        if (vfs_get_mount(vfs, i, &info) != 0 ||
+            vfs_mountpoint_hidden_from_root(vfs, info.kind, i + 1u)) {
+            continue;
+        }
+        if (visible_index == mountpoint_index) {
+            return vfs_emit_dir_entry(entry, index_io, info.name, 0, VFS_ATTR_DIR);
+        }
+        visible_index++;
     }
-    return vfs_emit_dir_entry(entry, index_io, info.name, 0, VFS_ATTR_DIR);
+    return 0;
 }
 
 static int64_t vfs_readdir_root_view_mountpoints(struct vfs *vfs,

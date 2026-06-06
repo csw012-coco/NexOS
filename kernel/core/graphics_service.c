@@ -49,6 +49,7 @@ enum kernel_gfx_buffer_kind kernel_gfx_buffer_kind(uint32_t op) {
         case SYS_GFX_FILL_TRIANGLE:
         case SYS_GFX_CIRCLE:
         case SYS_GFX_FILL_CIRCLE:
+        case SYS_GFX_PRESENT:
             return KERNEL_GFX_BUFFER_COMMAND_IN;
         default:
             return KERNEL_GFX_BUFFER_INVALID;
@@ -91,6 +92,9 @@ int kernel_gfx_dispatch(uint32_t op, const struct syscall_gfx_command *cmd, stru
             return 1;
         case SYS_GFX_FILL_CIRCLE:
             hal_display_fill_circle(cmd->x0, cmd->y0, cmd->radius, cmd->rgb);
+            return 1;
+        case SYS_GFX_PRESENT:
+            hal_display_present();
             return 1;
         default:
             return 0;

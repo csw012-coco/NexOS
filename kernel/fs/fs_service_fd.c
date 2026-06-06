@@ -103,7 +103,7 @@ static int fs_service_wait_for_read_local(struct process *proc) {
     mappings = process_current_mappings();
     previous_state = proc->state;
     proc->state = PROCESS_STATE_WAITING;
-    sched_tick();
+    sched_tick_excluding_pid(proc->pid);
     fs_service_restore_process_session_local(session, mappings);
     if (fs_service_read_interrupted_local(proc)) {
         return 0;

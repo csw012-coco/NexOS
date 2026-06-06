@@ -178,6 +178,10 @@ int pci_query(struct syscall_pci_info *info) {
     return sys_query(SYS_QUERY_PCI, 0, 0, info);
 }
 
+int pci_query_at(uint32_t index, struct syscall_pci_info *info) {
+    return sys_query(SYS_QUERY_PCI, index, 0, info);
+}
+
 int ac97_query(struct syscall_ac97_info *info) {
     return sys_query(SYS_QUERY_AC97, 0, 0, info);
 }
@@ -217,6 +221,10 @@ int audio_tone(uint32_t index, uint32_t hz, uint32_t duration_ms) {
 
 int audio_play(uint32_t index, const struct syscall_audio_play_info *info) {
     return (int)syscall4(SYS_AUDIO_PLAY, index, (uint64_t)(uintptr_t)info, 0, 0);
+}
+
+int audio_play_fd(uint32_t index, const struct syscall_audio_stream_info *info) {
+    return (int)syscall4(SYS_AUDIO_PLAY_FD, index, (uint64_t)(uintptr_t)info, 0, 0);
 }
 
 int machine_info_query(struct syscall_machine_info *info) {
@@ -446,6 +454,12 @@ int gfx_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
     cmd.radius = radius;
     cmd.rgb = rgb;
     return gfx_command(SYS_GFX_FILL_CIRCLE, &cmd);
+}
+
+int gfx_present(void) {
+    struct syscall_gfx_command cmd = {0};
+
+    return gfx_command(SYS_GFX_PRESENT, &cmd);
 }
 
 int gui_event_cursor_init(struct syscall_gui_event_cursor *cursor) {

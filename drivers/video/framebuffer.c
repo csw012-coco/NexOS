@@ -283,6 +283,25 @@ static uint32_t framebuffer_read_pixel(const struct framebuffer_display_state *s
     return 0;
 }
 
+static void framebuffer_fill_u32(volatile uint32_t *dst, uint32_t count, uint32_t color) {
+    uint32_t i = 0;
+
+    while (i + 8u <= count) {
+        dst[i + 0u] = color;
+        dst[i + 1u] = color;
+        dst[i + 2u] = color;
+        dst[i + 3u] = color;
+        dst[i + 4u] = color;
+        dst[i + 5u] = color;
+        dst[i + 6u] = color;
+        dst[i + 7u] = color;
+        i += 8u;
+    }
+    while (i < count) {
+        dst[i++] = color;
+    }
+}
+
 static void framebuffer_fill_rect(const struct framebuffer_display_state *state,
                                   uint32_t x,
                                   uint32_t y,
@@ -305,12 +324,27 @@ static void framebuffer_fill_rect(const struct framebuffer_display_state *state,
     }
 
     bytes_per_pixel = state->bpp / 8u;
-    if (bytes_per_pixel == 4u && x == 0u && width == state->width && state->pitch == state->width * 4u) {
-        volatile uint32_t *dst = (volatile uint32_t *)(state->base + (uint64_t)y * state->pitch);
-        uint32_t pixels = width * height;
+    if (bytes_per_pixel == 4u) {
+        if (x == 0u && width == state->width && state->pitch == state->width * 4u) {
+            volatile uint32_t *dst = (volatile uint32_t *)(state->base + (uint64_t)y * state->pitch);
 
-        for (uint32_t i = 0; i < pixels; i++) {
-            dst[i] = color;
+            framebuffer_fill_u32(dst, width * height, color);
+        } else {
+            for (uint32_t row = 0; row < height; row++) {
+                volatile uint32_t *dst = (volatile uint32_t *)(state->base +
+                    (uint64_t)(y + row) * state->pitch + (uint64_t)x * 4u);
+
+                framebuffer_fill_u32(dst, width, color);
+            }
+        }
+        framebuffer_mark_dirty((struct framebuffer_display_state *)state, x, y, width, height);
+        return;
+    }
+    if (bytes_per_pixel == 1u) {
+        for (uint32_t row = 0; row < height; row++) {
+            volatile uint8_t *dst = state->base + (uint64_t)(y + row) * state->pitch + x;
+
+            memset((void *)dst, (int)(uint8_t)color, width);
         }
         framebuffer_mark_dirty((struct framebuffer_display_state *)state, x, y, width, height);
         return;
@@ -336,6 +370,17 @@ static uint32_t framebuffer_xrgb_to_pixel(const struct framebuffer_display_state
                                 (uint8_t)((xrgb >> 16) & 0xffu),
                                 (uint8_t)((xrgb >> 8) & 0xffu),
                                 (uint8_t)(xrgb & 0xffu));
+}
+
+static int framebuffer_is_xrgb8888(const struct framebuffer_display_state *state) {
+    return state != 0 &&
+           state->bpp == 32u &&
+           state->red_mask_size == 8u &&
+           state->red_mask_shift == 16u &&
+           state->green_mask_size == 8u &&
+           state->green_mask_shift == 8u &&
+           state->blue_mask_size == 8u &&
+           state->blue_mask_shift == 0u;
 }
 
 static int32_t framebuffer_abs_i32(int32_t value) {
@@ -984,18 +1029,41 @@ static void framebuffer_render_cell(const struct framebuffer_display_state *stat
     bg_pixel = framebuffer_vga_color_to_pixel(state, bg);
     framebuffer_fill_rect(state, x, y, FRAMEBUFFER_FONT_WIDTH, state->cell_height, bg_pixel);
     framebuffer_get_glyph(codepoint, &glyph_width, glyph_rows);
-    for (uint8_t glyph_row = 0; glyph_row < state->cell_height; glyph_row++) {
-        uint16_t row_bits = framebuffer_glyph_row_bits(glyph_rows, glyph_row, state->cell_height);
-        uint8_t bits;
+    if (state->bpp == 32u) {
+        for (uint8_t glyph_row = 0; glyph_row < state->cell_height; glyph_row++) {
+            uint16_t row_bits = framebuffer_glyph_row_bits(glyph_rows, glyph_row, state->cell_height);
+            uint8_t bits;
+            volatile uint32_t *dst;
 
-        if (glyph_width == 16u) {
-            bits = right_half != 0u ? (uint8_t)(row_bits & 0xffu) : (uint8_t)(row_bits >> 8);
-        } else {
-            bits = right_half != 0u ? 0u : (uint8_t)row_bits;
+            if (glyph_width == 16u) {
+                bits = right_half != 0u ? (uint8_t)(row_bits & 0xffu) : (uint8_t)(row_bits >> 8);
+            } else {
+                bits = right_half != 0u ? 0u : (uint8_t)row_bits;
+            }
+            if (bits == 0u) {
+                continue;
+            }
+            dst = (volatile uint32_t *)(state->base + (uint64_t)(y + glyph_row) * state->pitch + (uint64_t)x * 4u);
+            for (uint8_t glyph_col = 0; glyph_col < FRAMEBUFFER_FONT_WIDTH; glyph_col++) {
+                if ((bits & (uint8_t)(0x80u >> glyph_col)) != 0u) {
+                    dst[glyph_col] = fg_pixel;
+                }
+            }
         }
-        for (uint8_t glyph_col = 0; glyph_col < FRAMEBUFFER_FONT_WIDTH; glyph_col++) {
-            if ((bits & (uint8_t)(0x80u >> glyph_col)) != 0u) {
-                framebuffer_write_pixel(state, x + glyph_col, y + glyph_row, fg_pixel);
+    } else {
+        for (uint8_t glyph_row = 0; glyph_row < state->cell_height; glyph_row++) {
+            uint16_t row_bits = framebuffer_glyph_row_bits(glyph_rows, glyph_row, state->cell_height);
+            uint8_t bits;
+
+            if (glyph_width == 16u) {
+                bits = right_half != 0u ? (uint8_t)(row_bits & 0xffu) : (uint8_t)(row_bits >> 8);
+            } else {
+                bits = right_half != 0u ? 0u : (uint8_t)row_bits;
+            }
+            for (uint8_t glyph_col = 0; glyph_col < FRAMEBUFFER_FONT_WIDTH; glyph_col++) {
+                if ((bits & (uint8_t)(0x80u >> glyph_col)) != 0u) {
+                    framebuffer_write_pixel(state, x + glyph_col, y + glyph_row, fg_pixel);
+                }
             }
         }
     }
@@ -1227,8 +1295,13 @@ int64_t framebuffer_device_read(uint32_t *offset_io, void *buffer, uint32_t size
 
 int64_t framebuffer_device_write(uint32_t *offset_io, const void *buffer, uint32_t size) {
     const uint8_t *in = (const uint8_t *)buffer;
+    volatile uint8_t *dst;
     uint32_t fb_size;
     uint32_t copied;
+    uint32_t start_offset;
+    uint32_t end_offset;
+    uint32_t dirty_y;
+    uint32_t dirty_height;
     int redraw_mouse;
 
     if (!g_framebuffer_display.active || offset_io == 0 || buffer == 0) {
@@ -1245,18 +1318,18 @@ int64_t framebuffer_device_write(uint32_t *offset_io, const void *buffer, uint32
     if (copied > fb_size - *offset_io) {
         copied = fb_size - *offset_io;
     }
+    start_offset = *offset_io;
+    end_offset = start_offset + copied - 1u;
+    dirty_y = start_offset / g_framebuffer_display.pitch;
+    dirty_height = end_offset / g_framebuffer_display.pitch - dirty_y + 1u;
     redraw_mouse = framebuffer_begin_mouse_cursor_covered_update(&g_framebuffer_display,
                                                                  0,
-                                                                 0,
+                                                                 dirty_y,
                                                                  g_framebuffer_display.width,
-                                                                 g_framebuffer_display.height);
-    for (uint32_t i = 0; i < copied; i++) {
-        g_framebuffer_display.front_base[*offset_io + i] = in[i];
-        if (g_framebuffer_display.backbuffer_enabled) {
-            g_framebuffer_display.base[*offset_io + i] = in[i];
-        }
-    }
-    framebuffer_mark_dirty(&g_framebuffer_display, 0, 0, g_framebuffer_display.width, g_framebuffer_display.height);
+                                                                 dirty_height);
+    dst = g_framebuffer_display.backbuffer_enabled ? g_framebuffer_display.base : g_framebuffer_display.front_base;
+    memcpy((void *)(dst + start_offset), in, copied);
+    framebuffer_mark_dirty(&g_framebuffer_display, 0, dirty_y, g_framebuffer_display.width, dirty_height);
     framebuffer_end_mouse_cursor_covered_update(&g_framebuffer_display, redraw_mouse);
     *offset_io += copied;
     return (int64_t)copied;
@@ -1417,16 +1490,22 @@ void framebuffer_display_tick(uint32_t ticks) {
     uint32_t y;
     int redraw_mouse;
 
-    if (!g_framebuffer_display.active || g_framebuffer_display.cursor_enabled == 0u) {
+    if (!g_framebuffer_display.active) {
+        return;
+    }
+    if (g_framebuffer_display.cursor_enabled == 0u) {
+        framebuffer_flush_dirty(&g_framebuffer_display);
         return;
     }
     visible = ((ticks / FRAMEBUFFER_CURSOR_BLINK_TICKS) & 1u) == 0u ? 1u : 0u;
     if (visible == g_framebuffer_display.cursor_visible &&
         g_framebuffer_display.cursor_blink_ticks == ticks) {
+        framebuffer_flush_dirty(&g_framebuffer_display);
         return;
     }
     g_framebuffer_display.cursor_blink_ticks = ticks;
     if (visible == g_framebuffer_display.cursor_visible) {
+        framebuffer_flush_dirty(&g_framebuffer_display);
         return;
     }
     g_framebuffer_display.cursor_visible = visible;
@@ -1678,15 +1757,27 @@ void framebuffer_display_blit_surface(const struct surface *surface,
                                                                  (uint32_t)dst_y,
                                                                  dst_width,
                                                                  dst_height);
-    for (uint32_t y = 0; y < height; y++) {
-        const uint32_t *src_row =
-            (const uint32_t *)((const uint8_t *)surface->pixels + (src_y + y) * surface->pitch + src_x * 4u);
+    if (framebuffer_is_xrgb8888(&g_framebuffer_display)) {
+        for (uint32_t y = 0; y < height; y++) {
+            const void *src_row = (const uint8_t *)surface->pixels +
+                                  (src_y + y) * surface->pitch + src_x * 4u;
+            volatile uint8_t *dst_row = g_framebuffer_display.base +
+                                        (uint64_t)((uint32_t)dst_y + y) * g_framebuffer_display.pitch +
+                                        (uint64_t)(uint32_t)dst_x * 4u;
 
-        for (uint32_t x = 0; x < width; x++) {
-            framebuffer_write_pixel(&g_framebuffer_display,
-                                    (uint32_t)dst_x + x,
-                                    (uint32_t)dst_y + y,
-                                    framebuffer_xrgb_to_pixel(&g_framebuffer_display, src_row[x]));
+            memmove((void *)dst_row, src_row, width * 4u);
+        }
+    } else {
+        for (uint32_t y = 0; y < height; y++) {
+            const uint32_t *src_row =
+                (const uint32_t *)((const uint8_t *)surface->pixels + (src_y + y) * surface->pitch + src_x * 4u);
+
+            for (uint32_t x = 0; x < width; x++) {
+                framebuffer_write_pixel(&g_framebuffer_display,
+                                        (uint32_t)dst_x + x,
+                                        (uint32_t)dst_y + y,
+                                        framebuffer_xrgb_to_pixel(&g_framebuffer_display, src_row[x]));
+            }
         }
     }
     framebuffer_mark_dirty(&g_framebuffer_display, (uint32_t)dst_x, (uint32_t)dst_y, dst_width, dst_height);
@@ -1702,7 +1793,6 @@ void framebuffer_display_draw_pixel(int32_t x, int32_t y, uint32_t rgb) {
     color = framebuffer_rgb_to_pixel(&g_framebuffer_display, rgb);
     framebuffer_write_pixel_i32(&g_framebuffer_display, x, y, color);
     framebuffer_mark_dirty_i32(&g_framebuffer_display, x, y, x, y);
-    framebuffer_flush_dirty(&g_framebuffer_display);
 }
 
 void framebuffer_display_draw_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb) {
@@ -1722,7 +1812,6 @@ void framebuffer_display_draw_line(int32_t x0, int32_t y0, int32_t x1, int32_t y
     max_x = framebuffer_max_i32(x0, x1);
     max_y = framebuffer_max_i32(y0, y1);
     framebuffer_mark_dirty_i32(&g_framebuffer_display, min_x, min_y, max_x, max_y);
-    framebuffer_flush_dirty(&g_framebuffer_display);
 }
 
 void framebuffer_display_fill_rect_rgb(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb) {
@@ -1755,7 +1844,6 @@ void framebuffer_display_fill_rect_rgb(int32_t x, int32_t y, uint32_t width, uin
     }
     color = framebuffer_rgb_to_pixel(&g_framebuffer_display, rgb);
     framebuffer_fill_rect(&g_framebuffer_display, (uint32_t)x, (uint32_t)y, width, height, color);
-    framebuffer_flush_dirty(&g_framebuffer_display);
 }
 
 void framebuffer_display_draw_rect(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb) {
@@ -1783,7 +1871,6 @@ void framebuffer_display_draw_rect(int32_t x, int32_t y, uint32_t width, uint32_
         framebuffer_draw_line_raw(&g_framebuffer_display, x1, y, x1, y, color);
     }
     framebuffer_mark_dirty_i32(&g_framebuffer_display, x, y, x1, y1);
-    framebuffer_flush_dirty(&g_framebuffer_display);
 }
 
 void framebuffer_display_draw_triangle(int32_t x0,
@@ -1811,7 +1898,6 @@ void framebuffer_display_draw_triangle(int32_t x0,
     max_x = framebuffer_max_i32(framebuffer_max_i32(x0, x1), x2);
     max_y = framebuffer_max_i32(framebuffer_max_i32(y0, y1), y2);
     framebuffer_mark_dirty_i32(&g_framebuffer_display, min_x, min_y, max_x, max_y);
-    framebuffer_flush_dirty(&g_framebuffer_display);
 }
 
 void framebuffer_display_fill_triangle(int32_t x0,
@@ -1859,7 +1945,6 @@ void framebuffer_display_fill_triangle(int32_t x0,
         framebuffer_draw_line_raw(&g_framebuffer_display, x1, y1, x2, y2, color);
         framebuffer_draw_line_raw(&g_framebuffer_display, x2, y2, x0, y0, color);
         framebuffer_mark_dirty_i32(&g_framebuffer_display, min_x, min_y, max_x, max_y);
-        framebuffer_flush_dirty(&g_framebuffer_display);
         return;
     }
     color = framebuffer_rgb_to_pixel(&g_framebuffer_display, rgb);
@@ -1876,7 +1961,6 @@ void framebuffer_display_fill_triangle(int32_t x0,
         }
     }
     framebuffer_mark_dirty_i32(&g_framebuffer_display, min_x, min_y, max_x, max_y);
-    framebuffer_flush_dirty(&g_framebuffer_display);
 }
 
 void framebuffer_display_draw_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
@@ -1908,7 +1992,6 @@ void framebuffer_display_draw_circle(int32_t cx, int32_t cy, uint32_t radius, ui
                                cy - (int32_t)radius,
                                cx + (int32_t)radius,
                                cy + (int32_t)radius);
-    framebuffer_flush_dirty(&g_framebuffer_display);
 }
 
 void framebuffer_display_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
@@ -1928,6 +2011,12 @@ void framebuffer_display_fill_circle(int32_t cx, int32_t cy, uint32_t radius, ui
         }
     }
     framebuffer_mark_dirty_i32(&g_framebuffer_display, cx - r, cy - r, cx + r, cy + r);
+}
+
+void framebuffer_display_present(void) {
+    if (!g_framebuffer_display.active) {
+        return;
+    }
     framebuffer_flush_dirty(&g_framebuffer_display);
 }
 

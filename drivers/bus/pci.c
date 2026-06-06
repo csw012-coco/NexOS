@@ -90,6 +90,41 @@ int pci_find_device_by_class(uint8_t class_code, uint8_t subclass, struct pci_de
     return pci_find_device_by_class_at(class_code, subclass, 0u, out);
 }
 
+int pci_find_device_by_index(uint32_t index, struct pci_device_info *out) {
+    uint32_t matched = 0u;
+
+    if (out == 0) {
+        return 0;
+    }
+
+    for (uint16_t bus = 0; bus < 256; bus++) {
+        for (uint8_t slot = 0; slot < 32; slot++) {
+            uint8_t function_count = 1;
+
+            if (pci_config_read16((uint8_t)bus, slot, 0, 0x00) == 0xffffu) {
+                continue;
+            }
+            if ((pci_config_read8((uint8_t)bus, slot, 0, 0x0e) & 0x80u) != 0) {
+                function_count = 8;
+            }
+
+            for (uint8_t function = 0; function < function_count; function++) {
+                if (pci_config_read16((uint8_t)bus, slot, function, 0x00) == 0xffffu) {
+                    continue;
+                }
+                if (matched++ != index) {
+                    continue;
+                }
+
+                pci_fill_device_info((uint8_t)bus, slot, function, out);
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
 int pci_find_device_by_class_at(uint8_t class_code, uint8_t subclass, uint32_t index, struct pci_device_info *out) {
     uint32_t matched = 0u;
 

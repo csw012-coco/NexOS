@@ -170,6 +170,7 @@ static int session_should_continue(const struct process *proc) {
 
 void session_finish(struct process_session *session, struct user_page_mapping *mappings) {
     struct process *proc;
+    uint64_t user_cr3;
 
     if (session == 0) {
         return;
@@ -178,12 +179,16 @@ void session_finish(struct process_session *session, struct user_page_mapping *m
     process_bind_session(session, mappings);
 
     if (session->address_space.user_cr3 != 0) {
-        if (!vmm_switch_root_or_fail(session->address_space.user_cr3)) {
+        user_cr3 = session->address_space.user_cr3;
+        if (!vmm_switch_root_or_fail(user_cr3)) {
             return;
         }
         addrspace_release_dynamic_pages();
-        (void)vmm_switch_root_or_fail(session->address_space.kernel_cr3);
+        if (!vmm_switch_root_or_fail(session->address_space.kernel_cr3)) {
+            return;
+        }
         session->address_space.user_cr3 = 0;
+        vmm_destroy_user_root(user_cr3);
     } else {
         addrspace_release_dynamic_pages();
     }

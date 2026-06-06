@@ -4,7 +4,6 @@
 #include "kernel/internal/core/tty_internal.h"
 #include "fs/vfs.h"
 #include "fs/vfs_internal.h"
-#include "kernel/public/core/kprint.h"
 #include "kernel/public/core/tty.h"
 #include "kernel/public/mem/vmm.h"
 #include "kernel/public/proc/scheduler.h"
@@ -216,6 +215,18 @@ static void job_cleanup_runtime(struct job_runtime *runtime) {
 static void job_yield_to_other_ready_work(struct process_session *caller_session,
                                           struct user_page_mapping *caller_mappings) {
     sched_tick();
+    job_restore_bound_session(caller_session, caller_mappings);
+}
+
+static void job_yield_to_other_ready_work_except(struct job_runtime *runtime,
+                                                 struct process_session *caller_session,
+                                                 struct user_page_mapping *caller_mappings) {
+    if (runtime == 0 || runtime->session.process.state != PROCESS_STATE_READY) {
+        job_yield_to_other_ready_work(caller_session, caller_mappings);
+        return;
+    }
+
+    sched_tick_excluding_pid(runtime->session.process.pid);
     job_restore_bound_session(caller_session, caller_mappings);
 }
 
@@ -461,7 +472,7 @@ int job_foreground_pid(uint32_t pid) {
                 job_cleanup_runtime(runtime);
                 break;
             }
-            job_yield_to_other_ready_work(caller_session, caller_mappings);
+            job_yield_to_other_ready_work_except(runtime, caller_session, caller_mappings);
             continue;
         }
         if (runtime->session.process.state == PROCESS_STATE_FREE) {
@@ -469,7 +480,7 @@ int job_foreground_pid(uint32_t pid) {
             break;
         }
         hal_cpu_halt();
-        job_yield_to_other_ready_work(caller_session, caller_mappings);
+        job_yield_to_other_ready_work_except(runtime, caller_session, caller_mappings);
     }
 
     job_restore_bound_session(caller_session, caller_mappings);

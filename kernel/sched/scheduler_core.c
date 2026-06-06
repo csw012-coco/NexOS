@@ -56,6 +56,11 @@ void sched_tick(void) {
     /* POLICY: Select next ready process to run */
     next_slot = sched_policy_select_next();
 
+    if (next_slot < -1) {
+        job_bind_foreground_session();
+        return;
+    }
+
     /* MECHANISM: Execute foreground session (special case, slot = -1) */
     if (next_slot == -1) {
         if (g_user_session.process.state == PROCESS_STATE_READY) {
@@ -92,4 +97,10 @@ void sched_tick(void) {
         sched_policy_on_process_finished((uint32_t)next_slot);
     }
     job_bind_foreground_session();
+}
+
+void sched_tick_excluding_pid(uint32_t pid) {
+    sched_policy_set_excluded_pid(pid);
+    sched_tick();
+    sched_policy_set_excluded_pid(0);
 }

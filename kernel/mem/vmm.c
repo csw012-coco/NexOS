@@ -101,6 +101,10 @@ uint64_t vmm_create_user_root(void) {
     return hal_paging_create_user_root();
 }
 
+void vmm_destroy_user_root(uint64_t root) {
+    hal_paging_destroy_user_root(root);
+}
+
 void vmm_switch_root(uint64_t root) {
     hal_paging_switch_root(root);
 }

@@ -62,6 +62,7 @@ enum syscall_number {
 
     SYS_AUDIO_TONE = 60,
     SYS_AUDIO_PLAY = 61,
+    SYS_AUDIO_PLAY_FD = 70,
     SYS_RTL8139_TX_TEST = 62,
     SYS_RTL8139_RX_DUMP = 63,
     SYS_RTL8139_TX_SEND = 64,
@@ -70,7 +71,7 @@ enum syscall_number {
     SYS_GFX = 67,
     SYS_GUI_EVENT = 68,
     SYS_CLIPBOARD = 69,
-    SYS_MAX = 70
+    SYS_MAX = 71
 };
 
 enum syscall_read_flags {
@@ -230,7 +231,8 @@ enum syscall_gfx_op {
     SYS_GFX_TRIANGLE = 6,
     SYS_GFX_FILL_TRIANGLE = 7,
     SYS_GFX_CIRCLE = 8,
-    SYS_GFX_FILL_CIRCLE = 9
+    SYS_GFX_FILL_CIRCLE = 9,
+    SYS_GFX_PRESENT = 10
 };
 
 struct syscall_gfx_info {
@@ -474,7 +476,11 @@ struct syscall_pci_info {
     uint32_t bus;
     uint32_t slot;
     uint32_t function;
+    uint32_t class_code;
+    uint32_t subclass;
     uint32_t prog_if;
+    uint32_t irq_line;
+    uint32_t irq_pin;
     uint32_t vendor_id;
     uint32_t device_id;
     uint32_t bar0;
@@ -482,6 +488,7 @@ struct syscall_pci_info {
     uint32_t bar2;
     uint32_t bar3;
     uint32_t bar4;
+    uint32_t bar5;
 };
 
 struct syscall_ac97_info {
@@ -576,13 +583,18 @@ struct syscall_rtl8139_tx_info {
 
 enum {
     SYS_AUDIO_CAP_PLAYBACK = 1u << 0,
-    SYS_AUDIO_CAP_TONE = 1u << 1
+    SYS_AUDIO_CAP_TONE = 1u << 1,
+    SYS_AUDIO_CAP_STREAM = 1u << 2
 };
 
 enum {
     SYS_AUDIO_DRIVER_NONE = 0,
     SYS_AUDIO_DRIVER_AC97 = 1,
     SYS_AUDIO_DRIVER_HDA = 2
+};
+
+enum {
+    SYS_AUDIO_PLAY_F_ASYNC = 1u << 0
 };
 
 struct syscall_audio_info {
@@ -602,6 +614,18 @@ struct syscall_audio_play_info {
     uint32_t bits_per_sample;
     uint32_t bytes;
     uint64_t data_addr;
+    uint32_t flags;
+    uint32_t reserved;
+};
+
+struct syscall_audio_stream_info {
+    uint32_t fd;
+    uint32_t sample_rate;
+    uint32_t channels;
+    uint32_t bits_per_sample;
+    uint32_t data_bytes;
+    uint32_t flags;
+    uint32_t reserved;
 };
 
 struct syscall_rtc_info {

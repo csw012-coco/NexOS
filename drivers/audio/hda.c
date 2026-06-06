@@ -3,6 +3,7 @@
 #include "drivers/audio/audio.h"
 #include "drivers/bus/pci.h"
 #include "hal/hal.h"
+#include "kernel/public/driver/driver_module.h"
 
 enum {
     PCI_COMMAND_MEMORY = 1u << 1,
@@ -183,5 +184,36 @@ int hda_query_status(struct hda_status *out) {
     }
     hda_refresh_registers();
     *out = g_hda_status;
+    return 1;
+}
+
+int driver_hda_publish_device(const struct driver_hda_device_info *info) {
+    if (info == NULL) {
+        return 0;
+    }
+    g_hda_status.present = (uint8_t)info->present;
+    g_hda_status.initialized = (uint8_t)info->initialized;
+    g_hda_status.irq_line = (uint8_t)info->irq_line;
+    g_hda_status.irq_pin = (uint8_t)info->irq_pin;
+    g_hda_status.bus = (uint8_t)info->bus;
+    g_hda_status.slot = (uint8_t)info->slot;
+    g_hda_status.function = (uint8_t)info->function;
+    g_hda_status.prog_if = (uint8_t)info->prog_if;
+    g_hda_status.vendor_id = (uint16_t)info->vendor_id;
+    g_hda_status.device_id = (uint16_t)info->device_id;
+    g_hda_status.mmio_base_lo = info->mmio_base_lo;
+    g_hda_status.mmio_base_hi = info->mmio_base_hi;
+    g_hda_status.pci_command = info->pci_command;
+    g_hda_status.gcap = info->gcap;
+    g_hda_status.vmaj = info->vmaj;
+    g_hda_status.vmin = info->vmin;
+    g_hda_status.outpay = info->outpay;
+    g_hda_status.inpay = info->inpay;
+    g_hda_status.gctl = info->gctl;
+    g_hda_status.statests = info->statests;
+    g_hda_status.wakeen = info->wakeen;
+    g_hda_status.corb_size = info->corb_size;
+    g_hda_status.rirb_size = info->rirb_size;
+    g_hda_status.codec_mask = info->codec_mask;
     return 1;
 }

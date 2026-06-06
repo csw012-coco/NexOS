@@ -86,6 +86,21 @@ static int vfs_detect_mount_kind_from_source(struct block_device *dev,
     return vfs_mount_fail(VFS_MOUNT_ERR_FS_DETECT);
 }
 
+static int vfs_source_has_root_program(uint8_t kind, struct block_device *dev, uint32_t partition_lba) {
+    if (kind == VFS_MOUNT_NXFS) {
+        struct nxfs_volume probe;
+        struct nxfs_inode inode;
+        uint32_t inode_index;
+
+        if (nxfs_mount(&probe, dev, partition_lba) != 0) {
+            return 0;
+        }
+        return nxfs_lookup_path(&probe, "/cmd/ush", &inode_index, &inode) == 0 &&
+               inode.type == NXFS_TYPE_FILE;
+    }
+    return 1;
+}
+
 static int vfs_has_mounted_kind(const struct vfs *vfs, uint8_t mount_kind) {
     if (vfs == 0) {
         return 0;
@@ -696,6 +711,45 @@ int vfs_switch_root_to_source(struct vfs *vfs, uint32_t disk_index, uint32_t par
         return -1;
     }
     return vfs_mount_root_from_source(vfs, kind, dev, partition_lba);
+}
+
+int vfs_switch_root_to_first_kind(struct vfs *vfs, uint8_t kind) {
+    if (vfs == 0 || kind == VFS_MOUNT_NONE) {
+        return -1;
+    }
+    for (uint32_t disk_index = 0; disk_index < blockdev_count(); disk_index++) {
+        struct block_device *dev = blockdev_get(disk_index);
+        uint32_t part_count;
+
+        if (dev == 0) {
+            continue;
+        }
+        part_count = blockdev_partition_count(dev);
+        for (uint32_t part_slot = 0; part_slot < part_count; part_slot++) {
+            struct blockdev_partition part;
+            uint32_t partition_lba;
+            uint8_t detected_kind;
+
+            if (blockdev_partition_get(dev, part_slot, &part) != 0 ||
+                vfs_lba_to_u32(part.start_lba, &partition_lba) != 0 ||
+                vfs_detect_mount_kind_from_source(dev, partition_lba, &detected_kind) != 0 ||
+                detected_kind != kind ||
+                !vfs_source_has_root_program(detected_kind, dev, partition_lba)) {
+                continue;
+            }
+            return vfs_mount_root_from_source(vfs, detected_kind, dev, partition_lba);
+        }
+        if (part_count == 0u) {
+            uint8_t detected_kind;
+
+            if (vfs_detect_mount_kind_from_source(dev, 0u, &detected_kind) == 0 &&
+                detected_kind == kind &&
+                vfs_source_has_root_program(detected_kind, dev, 0u)) {
+                return vfs_mount_root_from_source(vfs, detected_kind, dev, 0u);
+            }
+        }
+    }
+    return -1;
 }
 
 uint32_t vfs_mount_count(const struct vfs *vfs) {

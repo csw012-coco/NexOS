@@ -37,6 +37,7 @@ void hal_platform_init(const struct hal_interrupt_handlers *handlers);
 uint64_t hal_paging_current_root(void);
 void hal_paging_switch_root(uint64_t cr3);
 uint64_t hal_paging_create_user_root(void);
+void hal_paging_destroy_user_root(uint64_t cr3);
 void hal_paging_allow_user_page(uint64_t addr);
 void hal_paging_allow_user_range(uint64_t start, uint64_t end);
 void hal_paging_set_supervisor_range(uint64_t start, uint64_t end);
@@ -101,6 +102,7 @@ void hal_display_fill_triangle(int32_t x0,
                                uint32_t rgb);
 void hal_display_draw_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb);
 void hal_display_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb);
+void hal_display_present(void);
 void hal_display_set_mouse_cursor_enabled(int enabled);
 void hal_display_move_mouse_cursor(int32_t dx, int32_t dy);
 int hal_display_mouse_cursor_cell(uint16_t *row_out, uint16_t *col_out);

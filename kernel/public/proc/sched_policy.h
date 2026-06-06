@@ -41,11 +41,18 @@ uint32_t sched_policy_update_wake_times(uint32_t current_ticks);
  * Select the next ready process to run.
  * 
  * Implements the scheduling algorithm (FIFO, round-robin, priority, etc).
- * Returns the runtime slot of the next process, or -1 if none available.
+ * Returns -1 for the foreground session, a runtime slot for a background
+ * process, or -2 if no eligible process is ready.
  * 
  * This is the core policy decision point.
  */
 int32_t sched_policy_select_next(void);
+
+/**
+ * Temporarily exclude one pid from policy selection.
+ * Used while that process is already active on a kernel syscall stack.
+ */
+void sched_policy_set_excluded_pid(uint32_t pid);
 
 /**
  * Mark a process as needing reschedule

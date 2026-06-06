@@ -430,6 +430,15 @@ static int tty_pop_char(struct tty *tty, char *out) {
     return 1;
 }
 
+static void tty_clear_char_queue(struct tty *tty) {
+    if (tty == NULL) {
+        return;
+    }
+    tty->char_head = 0;
+    tty->char_tail = 0;
+    tty->char_count = 0;
+}
+
 static uint16_t tty_prompt_render_rows(uint16_t width, uint16_t origin_col, uint16_t span) {
     uint32_t cells = (uint32_t)origin_col + (uint32_t)span;
 
@@ -757,7 +766,15 @@ void tty_show_prompt(struct tty *tty) {
 }
 
 void tty_set_raw_input(struct tty *tty, int enabled) {
-    tty->raw_input = enabled ? 1u : 0u;
+    uint8_t raw_input = enabled ? 1u : 0u;
+
+    if (tty == NULL) {
+        return;
+    }
+    if (tty->raw_input != 0u && raw_input == 0u) {
+        tty_clear_char_queue(tty);
+    }
+    tty->raw_input = raw_input;
 }
 
 void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {

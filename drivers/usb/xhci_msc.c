@@ -219,7 +219,7 @@ static int xhci_bulk_transfer(struct xhci_enum_device *dev,
     uint32_t completion = 0u;
     struct xhci_trb *ring;
     uint64_t ring_phys;
-    uint64_t trb_phys;
+    uint64_t submitted_trb_phys;
     uint32_t trb_flags;
     uint32_t *enqueue;
     uint8_t *cycle;
@@ -248,25 +248,33 @@ static int xhci_bulk_transfer(struct xhci_enum_device *dev,
     if ((endpoint_id & 1u) != 0u) {
         trb_flags |= 1u << 2;
     }
-    trb_phys = xhci_transfer_ring_trb(ring,
-                                      ring_phys,
-                                      enqueue,
-                                      cycle,
-                                      phys,
-                                      bytes,
-                                      trb_flags);
+    submitted_trb_phys = xhci_transfer_ring_trb(ring,
+                                                ring_phys,
+                                                enqueue,
+                                                cycle,
+                                                phys,
+                                                bytes,
+                                                trb_flags);
+    __asm__ __volatile__("" ::: "memory");
     xhci_write32(g_xhci.doorbell, (uint32_t)dev->slot_id * 4u, endpoint_id);
-    (void)trb_phys;
     if (!xhci_wait_transfer_event_spins(dev->slot_id,
                                         endpoint_id,
                                         &completion,
-                                        0u,
+                                        submitted_trb_phys,
                                         XHCI_MSC_BULK_WAIT_SPINS)) {
+        uint8_t state = xhci_endpoint_state(dev, endpoint_id);
         dev->last_bulk_completion = 0u;
-        kprint("xhci: bulk timeout slot=%u epid=%u bytes=%u\n",
+        kprint("xhci: bulk timeout slot=%u epid=%u bytes=%u trb=%lx state=%u enq=%u cyc=%u ev=%u/%u usbsts=%x\n",
                (uint32_t)dev->slot_id,
                (uint32_t)endpoint_id,
-               bytes);
+               bytes,
+               submitted_trb_phys,
+               (uint32_t)state,
+               *enqueue,
+               (uint32_t)*cycle,
+               g_xhci.event_dequeue,
+               (uint32_t)g_xhci.event_cycle,
+               xhci_read32(g_xhci.op, XHCI_OP_USBSTS));
         xhci_save_active_controller();
         return 0;
     }
@@ -374,7 +382,6 @@ int xhci_msc_command(struct xhci_enum_device *dev,
         xhci_msc_recover_transport(dev, cmd[0], "CBW");
         return 0;
     }
-    xhci_delay_ms(5u);
     if (data_len != 0u) {
         if (data_in) {
             memset(dev->data, 0, data_len);
@@ -397,7 +404,6 @@ int xhci_msc_command(struct xhci_enum_device *dev,
         if (buffer != 0 && data_in) {
             memcpy(buffer, dev->data, data_len);
         }
-        xhci_delay_ms(5u);
     }
     dev->last_msc_phase = 3u;
     for (;;) {

@@ -16,6 +16,10 @@ uint64_t hal_x86_paging_create_user_root_impl(void) {
     return paging_create_user_root();
 }
 
+void hal_x86_paging_destroy_user_root_impl(uint64_t cr3) {
+    paging_destroy_root_deep(cr3);
+}
+
 void hal_x86_paging_allow_user_page_impl(uint64_t addr) {
     paging_make_page_user_accessible(addr);
 }

@@ -4,7 +4,9 @@
 
 #include "kernel/public/sys/syscall.h"
 
-void kernel_query_pci_info(struct syscall_pci_info *info);
+struct audio_pcm_stream;
+
+void kernel_query_pci_info(uint32_t index, struct syscall_pci_info *info);
 void kernel_query_ac97_info(struct syscall_ac97_info *info);
 void kernel_query_hda_info(struct syscall_hda_info *info);
 void kernel_query_rtl8139_info(struct syscall_rtl8139_info *info);
@@ -16,6 +18,7 @@ int kernel_audio_play_tone(uint32_t index, uint32_t hz, uint32_t duration_ms);
 int kernel_audio_play_buffer(uint32_t index,
                              const struct syscall_audio_play_info *play_info,
                              const uint8_t *data);
+int kernel_audio_play_stream(uint32_t index, struct audio_pcm_stream *stream);
 int kernel_query_rtc_info(struct syscall_rtc_info *info);
 int kernel_query_block_info(uint32_t index, struct syscall_block_info *info);
 int kernel_query_part_info(uint32_t disk_index, uint32_t slot, struct syscall_partition_info *info);

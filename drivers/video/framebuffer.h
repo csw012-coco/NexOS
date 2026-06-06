@@ -60,6 +60,7 @@ void framebuffer_display_fill_triangle(int32_t x0,
                                        uint32_t rgb);
 void framebuffer_display_draw_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb);
 void framebuffer_display_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb);
+void framebuffer_display_present(void);
 void framebuffer_display_set_mouse_cursor_enabled(int enabled);
 void framebuffer_display_move_mouse_cursor(int32_t dx, int32_t dy);
 int framebuffer_display_mouse_cursor_cell(uint16_t *row_out, uint16_t *col_out);

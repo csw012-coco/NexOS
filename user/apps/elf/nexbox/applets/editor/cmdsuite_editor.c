@@ -471,17 +471,17 @@ static int vi_read_key_local(void) {
         return VI_KEY_ESC;
     }
     if (seq1 != '[') {
-        return VI_KEY_ESC;
+        return 0;
     }
     if (nex_read(STDIN_FILENO, &seq2, 1u, NEX_READ_NONBLOCK | NEX_READ_CHAR) <= 0) {
-        return VI_KEY_ESC;
+        return 0;
     }
     switch (seq2) {
         case 'A': return VI_KEY_UP;
         case 'B': return VI_KEY_DOWN;
         case 'C': return VI_KEY_RIGHT;
         case 'D': return VI_KEY_LEFT;
-        default: return VI_KEY_ESC;
+        default: return 0;
     }
 }
 

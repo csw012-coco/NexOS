@@ -1,5 +1,83 @@
 #include "drivers/usb/xhci_internal.h"
 
+enum {
+    XHCI_DEFERRED_TRANSFER_EVENTS = 32u
+};
+
+struct xhci_deferred_transfer_event {
+    uint8_t used;
+    uint8_t controller_index;
+    uint8_t slot_id;
+    uint8_t endpoint_id;
+    uint32_t completion;
+    uint64_t trb_phys;
+};
+
+static struct xhci_deferred_transfer_event g_xhci_deferred_transfer_events[XHCI_DEFERRED_TRANSFER_EVENTS];
+static uint8_t g_xhci_deferred_drop_logged;
+static uint8_t g_xhci_deferred_stale_logged;
+
+static int xhci_take_deferred_transfer_event(uint8_t slot_id,
+                                             uint8_t endpoint_id,
+                                             uint64_t expected_trb_phys,
+                                             uint32_t *completion_out) {
+    for (uint32_t i = 0u; i < XHCI_DEFERRED_TRANSFER_EVENTS; i++) {
+        struct xhci_deferred_transfer_event *event = &g_xhci_deferred_transfer_events[i];
+
+        if (!event->used ||
+            event->controller_index != g_xhci_active_controller ||
+            event->slot_id != slot_id ||
+            event->endpoint_id != endpoint_id) {
+            continue;
+        }
+        if (expected_trb_phys != 0u && event->trb_phys != expected_trb_phys) {
+            if (!g_xhci_deferred_stale_logged) {
+                g_xhci_deferred_stale_logged = 1u;
+                kprint("xhci: stale deferred event slot=%u ep=%u got=%lx want=%lx cc=%u\n",
+                       (uint32_t)slot_id,
+                       (uint32_t)endpoint_id,
+                       event->trb_phys,
+                       expected_trb_phys,
+                       event->completion);
+            }
+            event->used = 0u;
+            continue;
+        }
+        if (completion_out != 0) {
+            *completion_out = event->completion;
+        }
+        event->used = 0u;
+        return 1;
+    }
+    return 0;
+}
+
+static void xhci_defer_transfer_event(uint8_t slot_id,
+                                      uint8_t endpoint_id,
+                                      uint32_t completion,
+                                      uint64_t trb_phys) {
+    if (xhci_hid_defer_transfer_event(slot_id, endpoint_id, completion)) {
+        return;
+    }
+    for (uint32_t i = 0u; i < XHCI_DEFERRED_TRANSFER_EVENTS; i++) {
+        struct xhci_deferred_transfer_event *event = &g_xhci_deferred_transfer_events[i];
+
+        if (event->used) {
+            continue;
+        }
+        event->used = 1u;
+        event->controller_index = g_xhci_active_controller;
+        event->slot_id = slot_id;
+        event->endpoint_id = endpoint_id;
+        event->completion = completion;
+        event->trb_phys = trb_phys;
+        return;
+    }
+    if (!g_xhci_deferred_drop_logged) {
+        g_xhci_deferred_drop_logged = 1u;
+        kprint("xhci: deferred transfer event queue full\n");
+    }
+}
 
 static void xhci_ring_command(uint64_t parameter, uint32_t status, uint32_t control) {
     struct xhci_trb *trb = &g_xhci.command_ring[g_xhci.command_enqueue];
@@ -22,14 +100,33 @@ static int xhci_pop_event(struct xhci_trb *out) {
     if (out == 0 || (control & 1u) != g_xhci.event_cycle) {
         return 0;
     }
+    if (XHCI_EVENT_TRACE != 0u) {
+        kprint("xhci: pop ev idx=%u cyc=%u type=%u slot=%u ep=%u cc=%u p=%x:%x st=%x ctl=%x\n",
+               g_xhci.event_dequeue,
+               g_xhci.event_cycle,
+               xhci_trb_type(control),
+               (control >> 24) & 0xffu,
+               (control >> 16) & 0x1fu,
+               (event->status >> 24) & 0xffu,
+               event->parameter_hi,
+               event->parameter_lo,
+               event->status,
+               event->control);
+    }
     *out = *event;
     g_xhci.event_dequeue++;
     if (g_xhci.event_dequeue >= XHCI_RING_TRBS) {
         g_xhci.event_dequeue = 0u;
         g_xhci.event_cycle ^= 1u;
     }
-    xhci_write64(g_xhci.runtime + 0x20u, XHCI_INTR_ERDP,
-                 g_xhci.event_ring_phys + g_xhci.event_dequeue * XHCI_TRB_SIZE + XHCI_ERDP_EHB);
+    {
+        uint64_t erdp = g_xhci.event_ring_phys +
+                        (uint64_t)g_xhci.event_dequeue * XHCI_TRB_SIZE;
+
+        __asm__ __volatile__("" ::: "memory");
+        xhci_write64(g_xhci.runtime + XHCI_RUNTIME_INTR0, XHCI_INTR_ERDP,
+                     erdp | XHCI_ERDP_EHB);
+    }
     return 1;
 }
 
@@ -46,8 +143,9 @@ static int xhci_wait_command_completion(uint8_t *slot_id_out, uint32_t *completi
             uint8_t event_slot_id = (uint8_t)((control >> 24) & 0xffu);
             uint8_t event_endpoint_id = (uint8_t)((control >> 16) & 0x1fu);
             uint32_t completion = (event.status >> 24) & 0xffu;
+            uint64_t event_trb_phys = ((uint64_t)event.parameter_hi << 32) | event.parameter_lo;
 
-            (void)xhci_hid_defer_transfer_event(event_slot_id, event_endpoint_id, completion);
+            xhci_defer_transfer_event(event_slot_id, event_endpoint_id, completion, event_trb_phys);
             continue;
         }
         if (xhci_trb_type(control) != XHCI_TRB_COMMAND_COMPLETION) {
@@ -69,6 +167,9 @@ int xhci_wait_transfer_event_spins(uint8_t slot_id,
                                    uint32_t *completion_out,
                                    uint64_t expected_trb_phys,
                                    uint32_t max_spins) {
+    if (xhci_take_deferred_transfer_event(slot_id, endpoint_id, expected_trb_phys, completion_out)) {
+        return 1;
+    }
     for (uint32_t spin = 0; spin < max_spins; spin++) {
         struct xhci_trb event;
         uint32_t control;
@@ -88,6 +189,15 @@ int xhci_wait_transfer_event_spins(uint8_t slot_id,
 
             if (event_slot_id == slot_id && event_endpoint_id == endpoint_id) {
                 if (expected_trb_phys != 0u && event_trb_phys != expected_trb_phys) {
+                    if (!g_xhci_deferred_stale_logged) {
+                        g_xhci_deferred_stale_logged = 1u;
+                        kprint("xhci: stale transfer event slot=%u ep=%u got=%lx want=%lx cc=%u\n",
+                               (uint32_t)slot_id,
+                               (uint32_t)endpoint_id,
+                               event_trb_phys,
+                               expected_trb_phys,
+                               completion);
+                    }
                     continue;
                 }
                 if (completion_out != 0) {
@@ -95,7 +205,7 @@ int xhci_wait_transfer_event_spins(uint8_t slot_id,
                 }
                 return 1;
             }
-            (void)xhci_hid_defer_transfer_event(event_slot_id, event_endpoint_id, completion);
+            xhci_defer_transfer_event(event_slot_id, event_endpoint_id, completion, event_trb_phys);
             continue;
         }
     }

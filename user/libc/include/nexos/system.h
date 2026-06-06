@@ -24,6 +24,7 @@
 int sys_query(uint32_t kind, uint64_t arg0, uint64_t arg1, void *buffer);
 int kmsg_query(uint32_t offset, struct syscall_kmsg_info *info);
 int pci_query(struct syscall_pci_info *info);
+int pci_query_at(uint32_t index, struct syscall_pci_info *info);
 int machine_info_query(struct syscall_machine_info *info);
 int rtc_query(struct syscall_rtc_info *info);
 int tty_query(uint32_t fd, struct syscall_tty_info *info);

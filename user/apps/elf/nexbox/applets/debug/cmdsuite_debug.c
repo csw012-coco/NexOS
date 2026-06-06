@@ -55,36 +55,53 @@ int cmd_dmesg(void) {
 
 int cmd_lspci(void) {
     struct syscall_pci_info info;
+    uint32_t index = 0;
+    uint32_t printed = 0;
 
-    if (pci_query(&info) <= 0 || !info.present) {
-        write_err_str("lspci: no IDE controller found\n");
+    write_str("PCI devices\n");
+
+    while (pci_query_at(index, &info) > 0 && info.present) {
+        write_dec(index);
+        write_str(" ");
+        write_dec(info.bus);
+        write_str(":");
+        write_dec(info.slot);
+        write_str(".");
+        write_dec(info.function);
+        write_str(" class=");
+        write_hex_u32((info.class_code << 8) | info.subclass);
+        write_str(" prog_if=");
+        write_hex_u32(info.prog_if);
+        write_str(" vendor=");
+        write_hex_u32(info.vendor_id);
+        write_str(" device=");
+        write_hex_u32(info.device_id);
+        write_str(" irq=");
+        write_dec(info.irq_line);
+        write_str(" pin=");
+        write_dec(info.irq_pin);
+        write_str("\n");
+        write_str("  bars ");
+        write_hex_u32(info.bar0);
+        write_str(" ");
+        write_hex_u32(info.bar1);
+        write_str(" ");
+        write_hex_u32(info.bar2);
+        write_str(" ");
+        write_hex_u32(info.bar3);
+        write_str(" ");
+        write_hex_u32(info.bar4);
+        write_str(" ");
+        write_hex_u32(info.bar5);
+        write_str("\n");
+        printed = 1;
+        index++;
+    }
+
+    if (!printed) {
+        write_err_str("lspci: no PCI devices found\n");
         return 1;
     }
-    write_str("PCI devices\n");
-    write_str("ide ");
-    write_dec(info.bus);
-    write_str(":");
-    write_dec(info.slot);
-    write_str(".");
-    write_dec(info.function);
-    write_str(" vendor=");
-    write_hex_u32(info.vendor_id);
-    write_str(" device=");
-    write_hex_u32(info.device_id);
-    write_str(" prog_if=");
-    write_hex_u32(info.prog_if);
-    write_str("\n");
-    write_str("bars ");
-    write_hex_u32(info.bar0);
-    write_str(" ");
-    write_hex_u32(info.bar1);
-    write_str(" ");
-    write_hex_u32(info.bar2);
-    write_str(" ");
-    write_hex_u32(info.bar3);
-    write_str(" ");
-    write_hex_u32(info.bar4);
-    write_str("\n");
     return 0;
 }
 

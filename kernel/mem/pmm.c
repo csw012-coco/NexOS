@@ -74,6 +74,30 @@ uint64_t pmm_alloc_page(void) {
     return free_page_stack[--free_page_count];
 }
 
+uint64_t pmm_alloc_page_below(uint64_t max_phys_exclusive) {
+    uint32_t index;
+    uint64_t phys;
+
+    if (max_phys_exclusive <= PMM_PAGE_SIZE || free_page_count == 0) {
+        return 0;
+    }
+
+    index = free_page_count;
+    while (index > 0u) {
+        index--;
+        phys = free_page_stack[index];
+        if (phys + PMM_PAGE_SIZE <= max_phys_exclusive) {
+            for (uint32_t move = index + 1u; move < free_page_count; move++) {
+                free_page_stack[move - 1u] = free_page_stack[move];
+            }
+            free_page_count--;
+            return phys;
+        }
+    }
+
+    return 0;
+}
+
 uint64_t pmm_alloc_contiguous(uint32_t page_count) {
     uint32_t run;
     uint32_t start_index;
@@ -91,6 +115,53 @@ uint64_t pmm_alloc_contiguous(uint32_t page_count) {
         uint64_t previous = free_page_stack[start_index - 1u];
 
         if (previous == current + PMM_PAGE_SIZE) {
+            run++;
+            if (run == page_count) {
+                uint32_t alloc_start = start_index - 1u;
+                uint32_t alloc_end = alloc_start + page_count - 1u;
+
+                base = free_page_stack[alloc_end];
+                write_index = alloc_start;
+                for (uint32_t read_index = alloc_start + page_count; read_index < free_page_count; read_index++) {
+                    free_page_stack[write_index++] = free_page_stack[read_index];
+                }
+                free_page_count -= page_count;
+                return base;
+            }
+        } else {
+            run = 1u;
+        }
+        start_index--;
+    }
+
+    return 0;
+}
+
+uint64_t pmm_alloc_contiguous_below(uint32_t page_count, uint64_t max_phys_exclusive) {
+    uint32_t run;
+    uint32_t start_index;
+    uint32_t write_index;
+    uint64_t base;
+
+    if (page_count == 0u || free_page_count < page_count) {
+        return 0;
+    }
+    if (page_count == 1u) {
+        return pmm_alloc_page_below(max_phys_exclusive);
+    }
+    if (max_phys_exclusive <= (uint64_t)page_count * PMM_PAGE_SIZE) {
+        return 0;
+    }
+
+    run = 1u;
+    start_index = free_page_count - 1u;
+    while (start_index > 0u) {
+        uint64_t current = free_page_stack[start_index];
+        uint64_t previous = free_page_stack[start_index - 1u];
+        int current_ok = current + PMM_PAGE_SIZE <= max_phys_exclusive;
+        int previous_ok = previous + PMM_PAGE_SIZE <= max_phys_exclusive;
+
+        if (current_ok && previous_ok && previous == current + PMM_PAGE_SIZE) {
             run++;
             if (run == page_count) {
                 uint32_t alloc_start = start_index - 1u;

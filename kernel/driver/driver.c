@@ -1,14 +1,18 @@
 #include "kernel/public/driver/driver.h"
 #include "kernel/public/driver/driver_module.h"
 #include "arch/x86/io.h"
+#include "drivers/audio/audio.h"
 #include "drivers/bus/pci.h"
 #include "fs/vfs.h"
+#include "hal/hal.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/mem/pmm.h"
 #include "lib/string.h"
 
 #define DRIVER_MAX_COUNT 32u
 #define DRIVER_FILE_MAX_COUNT 32u
+#define DRIVER_MODULE_ALLOC_MAX_COUNT 64u
+#define DRIVER_MODULE_ALLOC_MAX_PAGES 256u
 #define DRIVER_ELF_MAX_SECTIONS 64u
 #define DRIVER_ELF_MAX_FILE_SIZE (1024u * 1024u)
 #define DRIVER_ELF_PAGE_SIZE 4096u
@@ -85,8 +89,20 @@ struct driver_kernel_symbol {
     uint64_t value;
 };
 
+struct driver_module_allocation {
+    void *virt;
+    uint64_t phys;
+    uint32_t page_count;
+};
+
 static const struct driver_kernel_symbol g_driver_kernel_symbols[] = {
     { "driver_log", (uint64_t)(uintptr_t)kprint },
+    { "driver_alloc_pages", (uint64_t)(uintptr_t)driver_alloc_pages },
+    { "driver_alloc_pages_below", (uint64_t)(uintptr_t)driver_alloc_pages_below },
+    { "driver_audio_register_device", (uint64_t)(uintptr_t)driver_audio_register_device },
+    { "driver_free_pages", (uint64_t)(uintptr_t)driver_free_pages },
+    { "driver_hda_publish_device", (uint64_t)(uintptr_t)driver_hda_publish_device },
+    { "driver_mmio_map", (uint64_t)(uintptr_t)driver_mmio_map },
     { "driver_memcpy", (uint64_t)(uintptr_t)memcpy },
     { "driver_memmove", (uint64_t)(uintptr_t)memmove },
     { "driver_memset", (uint64_t)(uintptr_t)memset },
@@ -107,11 +123,14 @@ static const struct driver_kernel_symbol g_driver_kernel_symbols[] = {
     { "driver_starts_with", (uint64_t)(uintptr_t)starts_with },
     { "driver_streq", (uint64_t)(uintptr_t)streq },
     { "driver_str_len", (uint64_t)(uintptr_t)str_len },
+    { "driver_timer_current_ticks", (uint64_t)(uintptr_t)driver_timer_current_ticks },
+    { "driver_timer_hz", (uint64_t)(uintptr_t)driver_timer_hz },
     { NULL, 0 }
 };
 
 static struct kernel_driver_record g_driver_records[DRIVER_MAX_COUNT];
 static struct kernel_driver_file g_driver_files[DRIVER_FILE_MAX_COUNT];
+static struct driver_module_allocation g_driver_module_allocs[DRIVER_MODULE_ALLOC_MAX_COUNT];
 static uint32_t g_driver_count;
 static uint32_t g_driver_file_count;
 
@@ -120,7 +139,162 @@ static const char *driver_elf_symbol_name_local(const uint8_t *image,
                                                 const struct driver_elf64_section *sections,
                                                 const struct driver_elf64_section *sym_section,
                                                 const struct driver_elf64_symbol *symbol);
+static void driver_copy_text_local(char *dst, const char *src, uint32_t dst_size);
+static struct driver_module_allocation *driver_module_alloc_find_local(void *virt,
+                                                                       uint32_t page_count);
+static struct driver_module_allocation *driver_module_alloc_free_slot_local(void);
 static int driver_kernel_symbol_resolve_local(const char *name, uint64_t *value_out);
+
+static struct driver_module_allocation *driver_module_alloc_find_local(void *virt,
+                                                                       uint32_t page_count) {
+    uint32_t i;
+
+    if (virt == NULL || page_count == 0u) {
+        return NULL;
+    }
+    for (i = 0; i < DRIVER_MODULE_ALLOC_MAX_COUNT; i++) {
+        if (g_driver_module_allocs[i].virt == virt &&
+            g_driver_module_allocs[i].page_count == page_count) {
+            return &g_driver_module_allocs[i];
+        }
+    }
+    return NULL;
+}
+
+static struct driver_module_allocation *driver_module_alloc_free_slot_local(void) {
+    uint32_t i;
+
+    for (i = 0; i < DRIVER_MODULE_ALLOC_MAX_COUNT; i++) {
+        if (g_driver_module_allocs[i].virt == NULL) {
+            return &g_driver_module_allocs[i];
+        }
+    }
+    return NULL;
+}
+
+void *driver_alloc_pages(uint32_t page_count, uint64_t *phys_out) {
+    struct driver_module_allocation *record;
+    uint64_t phys;
+    void *virt;
+
+    if (phys_out != NULL) {
+        *phys_out = 0;
+    }
+    if (page_count == 0u || page_count > DRIVER_MODULE_ALLOC_MAX_PAGES) {
+        return NULL;
+    }
+    record = driver_module_alloc_free_slot_local();
+    if (record == NULL) {
+        return NULL;
+    }
+    if (page_count == 1u) {
+        phys = pmm_alloc_page();
+    } else {
+        phys = pmm_alloc_contiguous(page_count);
+    }
+    if (phys == 0u) {
+        return NULL;
+    }
+    virt = hal_phys_direct_map(phys);
+    if (virt == NULL) {
+        for (uint32_t i = 0; i < page_count; i++) {
+            (void)pmm_free_page(phys + (uint64_t)i * DRIVER_ELF_PAGE_SIZE);
+        }
+        return NULL;
+    }
+    memset(virt, 0, page_count * DRIVER_ELF_PAGE_SIZE);
+    record->virt = virt;
+    record->phys = phys;
+    record->page_count = page_count;
+    if (phys_out != NULL) {
+        *phys_out = phys;
+    }
+    return virt;
+}
+
+void *driver_alloc_pages_below(uint32_t page_count,
+                               uint64_t max_phys_exclusive,
+                               uint64_t *phys_out) {
+    struct driver_module_allocation *record;
+    uint64_t phys;
+    void *virt;
+
+    if (phys_out != NULL) {
+        *phys_out = 0;
+    }
+    if (page_count == 0u || page_count > DRIVER_MODULE_ALLOC_MAX_PAGES) {
+        return NULL;
+    }
+    record = driver_module_alloc_free_slot_local();
+    if (record == NULL) {
+        return NULL;
+    }
+    phys = pmm_alloc_contiguous_below(page_count, max_phys_exclusive);
+    if (phys == 0u) {
+        return NULL;
+    }
+    virt = hal_phys_direct_map(phys);
+    if (virt == NULL) {
+        for (uint32_t i = 0; i < page_count; i++) {
+            (void)pmm_free_page(phys + (uint64_t)i * DRIVER_ELF_PAGE_SIZE);
+        }
+        return NULL;
+    }
+    memset(virt, 0, page_count * DRIVER_ELF_PAGE_SIZE);
+    record->virt = virt;
+    record->phys = phys;
+    record->page_count = page_count;
+    if (phys_out != NULL) {
+        *phys_out = phys;
+    }
+    return virt;
+}
+
+void driver_free_pages(void *virt, uint32_t page_count) {
+    struct driver_module_allocation *record;
+    uint32_t i;
+
+    record = driver_module_alloc_find_local(virt, page_count);
+    if (record == NULL) {
+        return;
+    }
+    for (i = 0; i < record->page_count; i++) {
+        (void)pmm_free_page(record->phys + (uint64_t)i * DRIVER_ELF_PAGE_SIZE);
+    }
+    record->virt = NULL;
+    record->phys = 0;
+    record->page_count = 0;
+}
+
+void *driver_mmio_map(uint64_t phys) {
+    if (phys == 0u) {
+        return NULL;
+    }
+    return hal_phys_direct_map(phys);
+}
+
+int driver_audio_register_device(const struct driver_audio_device_info *driver_info,
+                                 const struct driver_audio_device_ops *driver_ops,
+                                 void *ctx,
+                                 uint32_t *index_out) {
+    struct audio_device_info info;
+
+    if (driver_info == NULL) {
+        return 0;
+    }
+    info.present = driver_info->present;
+    info.initialized = driver_info->initialized;
+    info.caps = driver_info->caps;
+    info.driver_kind = driver_info->driver_kind;
+    info.sample_rate = driver_info->sample_rate;
+    info.channels = driver_info->channels;
+    info.bits_per_sample = driver_info->bits_per_sample;
+    driver_copy_text_local(info.name, driver_info->name, sizeof(info.name));
+    return audio_register_device(&info,
+                                 (const struct audio_device_ops *)driver_ops,
+                                 ctx,
+                                 index_out);
+}
 
 uint8_t driver_io_in8(uint16_t port) {
     return inb(port);
@@ -234,6 +408,14 @@ void driver_pci_write32(const struct driver_pci_device *dev, uint8_t offset, uin
         return;
     }
     pci_config_write32(dev->bus, dev->slot, dev->function, offset, value);
+}
+
+uint32_t driver_timer_current_ticks(void) {
+    return hal_timer_current_ticks();
+}
+
+uint32_t driver_timer_hz(void) {
+    return hal_timer_hz();
 }
 
 static char driver_ascii_upper_local(char ch) {

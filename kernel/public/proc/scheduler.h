@@ -16,3 +16,4 @@ uint64_t sched_prepare_user_frame_return(const struct syscall_frame *frame);
 uint32_t sched_current_ticks(void);
 void sched_on_timer_tick(uint32_t current_ticks);
 void sched_tick(void);
+void sched_tick_excluding_pid(uint32_t pid);

@@ -34,6 +34,7 @@ void hal_x86_io_out16_impl(uint16_t port, uint16_t value);
 uint64_t hal_x86_paging_current_root_impl(void);
 void hal_x86_paging_switch_root_impl(uint64_t cr3);
 uint64_t hal_x86_paging_create_user_root_impl(void);
+void hal_x86_paging_destroy_user_root_impl(uint64_t cr3);
 void hal_x86_paging_allow_user_page_impl(uint64_t addr);
 void hal_x86_paging_allow_user_range_impl(uint64_t start, uint64_t end);
 void hal_x86_paging_set_supervisor_range_impl(uint64_t start, uint64_t end);

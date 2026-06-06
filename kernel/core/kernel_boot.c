@@ -30,8 +30,6 @@ static const struct kernel_driver *g_kernel_builtin_drivers[] = {
     &ahci_kernel_driver,
     &xhci_kernel_driver,
     &ehci_kernel_driver,
-    &ac97_kernel_driver,
-    &hda_kernel_driver,
     &rtl8139_kernel_driver,
 };
 

@@ -25,8 +25,8 @@ static void kernel_query_copy_name(char *dst, uint32_t dst_size, const char *src
     dst[i] = '\0';
 }
 
-void kernel_query_pci_info(struct syscall_pci_info *info) {
-    struct pci_ide_controller ide;
+void kernel_query_pci_info(uint32_t index, struct syscall_pci_info *info) {
+    struct pci_device_info device;
 
     if (info == 0) {
         return;
@@ -36,7 +36,11 @@ void kernel_query_pci_info(struct syscall_pci_info *info) {
     info->bus = 0;
     info->slot = 0;
     info->function = 0;
+    info->class_code = 0;
+    info->subclass = 0;
     info->prog_if = 0;
+    info->irq_line = 0;
+    info->irq_pin = 0;
     info->vendor_id = 0;
     info->device_id = 0;
     info->bar0 = 0;
@@ -44,23 +48,29 @@ void kernel_query_pci_info(struct syscall_pci_info *info) {
     info->bar2 = 0;
     info->bar3 = 0;
     info->bar4 = 0;
+    info->bar5 = 0;
 
-    if (!pci_find_ide_controller(&ide)) {
+    if (!pci_find_device_by_index(index, &device)) {
         return;
     }
 
     info->present = 1;
-    info->bus = ide.bus;
-    info->slot = ide.slot;
-    info->function = ide.function;
-    info->prog_if = ide.prog_if;
-    info->vendor_id = ide.vendor_id;
-    info->device_id = ide.device_id;
-    info->bar0 = ide.bar0;
-    info->bar1 = ide.bar1;
-    info->bar2 = ide.bar2;
-    info->bar3 = ide.bar3;
-    info->bar4 = ide.bar4;
+    info->bus = device.bus;
+    info->slot = device.slot;
+    info->function = device.function;
+    info->class_code = device.class_code;
+    info->subclass = device.subclass;
+    info->prog_if = device.prog_if;
+    info->irq_line = device.irq_line;
+    info->irq_pin = device.irq_pin;
+    info->vendor_id = device.vendor_id;
+    info->device_id = device.device_id;
+    info->bar0 = device.bar0;
+    info->bar1 = device.bar1;
+    info->bar2 = device.bar2;
+    info->bar3 = device.bar3;
+    info->bar4 = device.bar4;
+    info->bar5 = device.bar5;
 }
 
 void kernel_query_ac97_info(struct syscall_ac97_info *info) {
@@ -374,7 +384,12 @@ int kernel_audio_play_buffer(uint32_t index,
                           play_info->bytes,
                           play_info->sample_rate,
                           play_info->channels,
-                          play_info->bits_per_sample);
+                          play_info->bits_per_sample,
+                          play_info->flags);
+}
+
+int kernel_audio_play_stream(uint32_t index, struct audio_pcm_stream *stream) {
+    return audio_play_stream(index, stream);
 }
 
 int kernel_query_block_info(uint32_t index, struct syscall_block_info *info) {

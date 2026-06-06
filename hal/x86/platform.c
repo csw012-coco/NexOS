@@ -48,6 +48,10 @@ uint64_t hal_paging_create_user_root(void) {
     return hal_x86_paging_create_user_root_impl();
 }
 
+void hal_paging_destroy_user_root(uint64_t cr3) {
+    hal_x86_paging_destroy_user_root_impl(cr3);
+}
+
 void hal_paging_allow_user_page(uint64_t addr) {
     hal_x86_paging_allow_user_page_impl(addr);
 }
@@ -348,6 +352,12 @@ void hal_display_draw_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t r
 void hal_display_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
     if (framebuffer_display_active()) {
         framebuffer_display_fill_circle(cx, cy, radius, rgb);
+    }
+}
+
+void hal_display_present(void) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_present();
     }
 }
 

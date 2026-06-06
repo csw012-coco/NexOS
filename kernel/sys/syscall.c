@@ -127,6 +127,8 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
                                              (uint32_t)frame->rdx);
         case SYS_AUDIO_PLAY:
             return syscall_handle_audio_play((uint32_t)frame->rbx, frame->rcx);
+        case SYS_AUDIO_PLAY_FD:
+            return syscall_handle_audio_play_fd((uint32_t)frame->rbx, frame->rcx);
         case SYS_RTL8139_TX_TEST:
             return syscall_handle_rtl8139_tx_test();
         case SYS_RTL8139_TX_SEND:

@@ -4,13 +4,29 @@
 
 enum {
     AUDIO_CAP_PLAYBACK = 1u << 0,
-    AUDIO_CAP_TONE = 1u << 1
+    AUDIO_CAP_TONE = 1u << 1,
+    AUDIO_CAP_STREAM = 1u << 2
 };
 
 enum {
     AUDIO_DRIVER_NONE = 0,
     AUDIO_DRIVER_AC97 = 1,
     AUDIO_DRIVER_HDA = 2
+};
+
+enum {
+    AUDIO_PLAY_F_ASYNC = 1u << 0
+};
+
+struct audio_pcm_stream {
+    uint32_t sample_rate;
+    uint32_t channels;
+    uint32_t bits_per_sample;
+    uint32_t data_bytes;
+    uint32_t flags;
+    void *ctx;
+    uint32_t (*read)(void *ctx, void *buffer, uint32_t bytes);
+    uint32_t (*cancelled)(void *ctx);
 };
 
 struct audio_device_info {
@@ -31,7 +47,9 @@ struct audio_device_ops {
                     uint32_t bytes,
                     uint32_t sample_rate,
                     uint32_t channels,
-                    uint32_t bits_per_sample);
+                    uint32_t bits_per_sample,
+                    uint32_t flags);
+    int (*play_stream)(void *ctx, struct audio_pcm_stream *stream);
 };
 
 int audio_register_device(const struct audio_device_info *info,
@@ -47,4 +65,6 @@ int audio_play_pcm(uint32_t index,
                    uint32_t bytes,
                    uint32_t sample_rate,
                    uint32_t channels,
-                   uint32_t bits_per_sample);
+                   uint32_t bits_per_sample,
+                   uint32_t flags);
+int audio_play_stream(uint32_t index, struct audio_pcm_stream *stream);

@@ -458,7 +458,9 @@ static int ac97_play_pcm_local(void *ctx,
                                uint32_t bytes,
                                uint32_t sample_rate,
                                uint32_t channels,
-                               uint32_t bits_per_sample) {
+                               uint32_t bits_per_sample,
+                               uint32_t flags) {
+    (void)flags;
     uint16_t nabmbar = (uint16_t)(uintptr_t)ctx;
     uint16_t nambar = g_ac97_status.nambar;
     uint32_t src_frame_bytes;

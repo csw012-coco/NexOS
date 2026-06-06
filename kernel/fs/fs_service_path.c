@@ -298,6 +298,9 @@ uint64_t fs_service_switch_root(struct vfs *vfs, const char *target) {
     if (vfs == 0 || target == 0) {
         return (uint64_t)-1;
     }
+    if (streq(target, "/dev/root") || streq(target, "root")) {
+        return vfs_switch_root_to_first_kind(vfs, VFS_MOUNT_NXFS) == 0 ? 0u : (uint64_t)-1;
+    }
     if (fs_service_parse_block_target(target, &disk_index, &part_index)) {
         return vfs_switch_root_to_source(vfs, disk_index, part_index) == 0 ? 0u : (uint64_t)-1;
     }

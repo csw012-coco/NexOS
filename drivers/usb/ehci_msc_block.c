@@ -72,6 +72,61 @@ int ehci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count, 
             dev->read_cache_valid = 0u;
         }
     }
+    if (count > 1u) {
+        uint32_t done = 0u;
+
+        dev->read_cache_valid = 0u;
+        while (done < count) {
+            uint8_t ok = 0u;
+            uint32_t chunk = count - done;
+
+            if (chunk > EHCI_PAGE_SIZE / EHCI_SECTOR_SIZE) {
+                chunk = EHCI_PAGE_SIZE / EHCI_SECTOR_SIZE;
+            }
+            for (uint32_t attempt = 0; attempt < EHCI_MSC_RW_RETRIES; attempt++) {
+                memset(cmd, 0, sizeof(cmd));
+                cmd[0] = SCSI_READ_10;
+                usb_write_u32be(cmd + 2, (uint32_t)(lba + done));
+                cmd[7] = (uint8_t)((chunk >> 8) & 0xffu);
+                cmd[8] = (uint8_t)(chunk & 0xffu);
+                if (ehci_msc_command_recover(dev,
+                                             cmd,
+                                             10u,
+                                             out + done * EHCI_SECTOR_SIZE,
+                                             chunk * EHCI_SECTOR_SIZE,
+                                             1u)) {
+                    if (ehci_msc_buffer_has_transport_signature(out + done * EHCI_SECTOR_SIZE)) {
+                        kprint("ehci: MSC read lba=%lx count=%u returned transport signature in data buffer\n",
+                               lba + done,
+                               chunk);
+                        (void)ehci_msc_reset_recovery(dev);
+                        ehci_msc_retry_delay(dev);
+                        continue;
+                    }
+                    ok = 1u;
+                    break;
+                }
+                ehci_msc_retry_delay(dev);
+            }
+            if (!ok) {
+                uint8_t failed_phase = dev->last_msc_phase;
+                uint8_t failed_status = dev->last_msc_status;
+
+                (void)ehci_msc_request_sense(dev, dev->data, 18u);
+                kprint("ehci: MSC read lba=%lx count=%u failed phase=%u status=%u sense=%x/%x/%x\n",
+                       lba + done,
+                       chunk,
+                       (uint32_t)failed_phase,
+                       (uint32_t)failed_status,
+                       (uint32_t)dev->last_sense_key,
+                       (uint32_t)dev->last_sense_asc,
+                       (uint32_t)dev->last_sense_ascq);
+                return -1;
+            }
+            done += chunk;
+        }
+        return 0;
+    }
     for (uint32_t i = 0; i < count; i++) {
         uint8_t ok = 0u;
         uint8_t verify_failed = 0u;

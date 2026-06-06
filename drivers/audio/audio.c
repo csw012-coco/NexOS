@@ -107,7 +107,8 @@ int audio_play_pcm(uint32_t index,
                    uint32_t bytes,
                    uint32_t sample_rate,
                    uint32_t channels,
-                   uint32_t bits_per_sample) {
+                   uint32_t bits_per_sample,
+                   uint32_t flags) {
     if (index >= AUDIO_MAX_DEVICES || !g_audio_slots[index].used) {
         return 0;
     }
@@ -119,5 +120,17 @@ int audio_play_pcm(uint32_t index,
                                               bytes,
                                               sample_rate,
                                               channels,
-                                              bits_per_sample);
+                                              bits_per_sample,
+                                              flags);
+}
+
+int audio_play_stream(uint32_t index, struct audio_pcm_stream *stream) {
+    if (index >= AUDIO_MAX_DEVICES || !g_audio_slots[index].used) {
+        return 0;
+    }
+    if (stream == 0 || g_audio_slots[index].ops == 0 ||
+        g_audio_slots[index].ops->play_stream == 0) {
+        return 0;
+    }
+    return g_audio_slots[index].ops->play_stream(g_audio_slots[index].ctx, stream);
 }

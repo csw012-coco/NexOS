@@ -16,6 +16,7 @@ static int xhci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
     struct xhci_enum_device *dev = (struct xhci_enum_device *)bdev->driver_data;
     uint8_t *out = (uint8_t *)buffer;
     int result = 0;
+    uint32_t done = 0u;
 
     if (dev == 0 || buffer == 0 || count == 0u ||
         lba >= dev->sector_count || (uint64_t)count > dev->sector_count - lba) {
@@ -24,18 +25,29 @@ static int xhci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
     if (!xhci_try_begin_busy()) {
         return -1;
     }
-    for (uint32_t i = 0; i < count; i++) {
+    while (done < count) {
         uint8_t cmd[10];
         uint8_t ok = 0u;
         uint8_t failed_phase = 0u;
         uint8_t failed_status = 0u;
+        uint32_t chunk = count - done;
+
+        if (chunk > XHCI_PAGE_SIZE / XHCI_SECTOR_SIZE) {
+            chunk = XHCI_PAGE_SIZE / XHCI_SECTOR_SIZE;
+        }
 
         memset(cmd, 0, sizeof(cmd));
         cmd[0] = SCSI_READ_10;
-        usb_write_u32be(cmd + 2, (uint32_t)(lba + i));
-        cmd[8] = 1u;
+        usb_write_u32be(cmd + 2, (uint32_t)(lba + done));
+        cmd[7] = (uint8_t)((chunk >> 8) & 0xffu);
+        cmd[8] = (uint8_t)(chunk & 0xffu);
         for (uint32_t attempt = 0u; attempt < XHCI_MSC_RW_RETRIES; attempt++) {
-            if (xhci_msc_command(dev, cmd, 10u, out + i * XHCI_SECTOR_SIZE, XHCI_SECTOR_SIZE, 1u)) {
+            if (xhci_msc_command(dev,
+                                 cmd,
+                                 10u,
+                                 out + done * XHCI_SECTOR_SIZE,
+                                 chunk * XHCI_SECTOR_SIZE,
+                                 1u)) {
                 ok = 1u;
                 break;
             }
@@ -48,8 +60,9 @@ static int xhci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
             xhci_msc_retry_delay(failed_phase, failed_status);
         }
         if (!ok) {
-            kprint("xhci: MSC read lba=%lx failed phase=%u status=%u sense=%x/%x/%x\n",
-                   lba + i,
+            kprint("xhci: MSC read lba=%lx count=%u failed phase=%u status=%u sense=%x/%x/%x\n",
+                   lba + done,
+                   chunk,
                    (uint32_t)failed_phase,
                    (uint32_t)failed_status,
                    (uint32_t)dev->last_sense_key,
@@ -58,6 +71,7 @@ static int xhci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
             result = -1;
             break;
         }
+        done += chunk;
     }
     xhci_end_busy();
     return result;
@@ -67,6 +81,7 @@ static int xhci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t
     struct xhci_enum_device *dev = (struct xhci_enum_device *)bdev->driver_data;
     const uint8_t *in = (const uint8_t *)buffer;
     int result = 0;
+    uint32_t done = 0u;
 
     if (dev == 0 || buffer == 0 || count == 0u ||
         lba >= dev->sector_count || (uint64_t)count > dev->sector_count - lba) {
@@ -75,18 +90,29 @@ static int xhci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t
     if (!xhci_try_begin_busy()) {
         return -1;
     }
-    for (uint32_t i = 0; i < count; i++) {
+    while (done < count) {
         uint8_t cmd[10];
         uint8_t ok = 0u;
         uint8_t failed_phase = 0u;
         uint8_t failed_status = 0u;
+        uint32_t chunk = count - done;
+
+        if (chunk > XHCI_PAGE_SIZE / XHCI_SECTOR_SIZE) {
+            chunk = XHCI_PAGE_SIZE / XHCI_SECTOR_SIZE;
+        }
 
         memset(cmd, 0, sizeof(cmd));
         cmd[0] = SCSI_WRITE_10;
-        usb_write_u32be(cmd + 2, (uint32_t)(lba + i));
-        cmd[8] = 1u;
+        usb_write_u32be(cmd + 2, (uint32_t)(lba + done));
+        cmd[7] = (uint8_t)((chunk >> 8) & 0xffu);
+        cmd[8] = (uint8_t)(chunk & 0xffu);
         for (uint32_t attempt = 0u; attempt < XHCI_MSC_RW_RETRIES; attempt++) {
-            if (xhci_msc_command(dev, cmd, 10u, (void *)(in + i * XHCI_SECTOR_SIZE), XHCI_SECTOR_SIZE, 0u)) {
+            if (xhci_msc_command(dev,
+                                 cmd,
+                                 10u,
+                                 (void *)(in + done * XHCI_SECTOR_SIZE),
+                                 chunk * XHCI_SECTOR_SIZE,
+                                 0u)) {
                 ok = 1u;
                 break;
             }
@@ -99,8 +125,9 @@ static int xhci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t
             xhci_msc_retry_delay(failed_phase, failed_status);
         }
         if (!ok) {
-            kprint("xhci: MSC write lba=%lx failed phase=%u status=%u sense=%x/%x/%x\n",
-                   lba + i,
+            kprint("xhci: MSC write lba=%lx count=%u failed phase=%u status=%u sense=%x/%x/%x\n",
+                   lba + done,
+                   chunk,
                    (uint32_t)failed_phase,
                    (uint32_t)failed_status,
                    (uint32_t)dev->last_sense_key,
@@ -109,6 +136,7 @@ static int xhci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t
             result = -1;
             break;
         }
+        done += chunk;
     }
     xhci_end_busy();
     return result;
