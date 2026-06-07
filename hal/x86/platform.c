@@ -24,6 +24,18 @@ int hal_display_enable_backbuffer(void) {
     return framebuffer_display_enable_backbuffer();
 }
 
+void hal_display_begin_update(void) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_begin_update();
+    }
+}
+
+void hal_display_end_update(void) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_end_update();
+    }
+}
+
 void hal_display_load_font(const struct bootx_boot_info *boot_info) {
     framebuffer_display_load_font_from_boot_modules(boot_info);
 }

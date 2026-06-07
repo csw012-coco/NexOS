@@ -3,8 +3,11 @@
 enum {
     WM_WINDOW_MAX = 4,
     WM_TITLEBAR_HEIGHT = 24,
-    WM_CLOSE_SIZE = 12
+    WM_CLOSE_SIZE = 12,
+    WM_GFX_BATCH_CAPACITY = SYS_GFX_BATCH_MAX_COMMANDS
 };
+
+static struct syscall_gfx_batch_entry g_wm_gfx_batch[WM_GFX_BATCH_CAPACITY];
 
 struct wm_window {
     int32_t x;
@@ -325,6 +328,7 @@ int main(int argc, char **argv) {
                 }
             }
         }
+        (void)gfx_batch_begin(g_wm_gfx_batch, WM_GFX_BATCH_CAPACITY);
         wm_draw(&wm, info.width, info.height, frame);
         gfx_present();
         sleep(2u);

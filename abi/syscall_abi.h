@@ -232,7 +232,13 @@ enum syscall_gfx_op {
     SYS_GFX_FILL_TRIANGLE = 7,
     SYS_GFX_CIRCLE = 8,
     SYS_GFX_FILL_CIRCLE = 9,
-    SYS_GFX_PRESENT = 10
+    SYS_GFX_PRESENT = 10,
+    SYS_GFX_BATCH = 11
+};
+
+enum syscall_gfx_batch_flags {
+    SYS_GFX_BATCH_PRESENT = 1u << 0,
+    SYS_GFX_BATCH_MAX_COMMANDS = 256
 };
 
 struct syscall_gfx_info {
@@ -255,6 +261,18 @@ struct syscall_gfx_command {
     uint32_t height;
     uint32_t radius;
     uint32_t rgb;
+};
+
+struct syscall_gfx_batch_entry {
+    uint32_t op;
+    uint32_t reserved;
+    struct syscall_gfx_command command;
+};
+
+struct syscall_gfx_batch {
+    uint64_t entries_addr;
+    uint32_t count;
+    uint32_t flags;
 };
 
 enum syscall_clipboard_op {

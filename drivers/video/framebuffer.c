@@ -18,7 +18,15 @@ enum {
     FRAMEBUFFER_FONT_INDEX_PAGES = 0x1100,
     FRAMEBUFFER_MOUSE_CURSOR_WIDTH = 12,
     FRAMEBUFFER_MOUSE_CURSOR_HEIGHT = 18,
-    FRAMEBUFFER_MOUSE_CURSOR_PIXELS = FRAMEBUFFER_MOUSE_CURSOR_WIDTH * FRAMEBUFFER_MOUSE_CURSOR_HEIGHT
+    FRAMEBUFFER_MOUSE_CURSOR_PIXELS = FRAMEBUFFER_MOUSE_CURSOR_WIDTH * FRAMEBUFFER_MOUSE_CURSOR_HEIGHT,
+    FRAMEBUFFER_DIRTY_RECT_MAX = 32
+};
+
+struct framebuffer_dirty_rect {
+    uint32_t x0;
+    uint32_t y0;
+    uint32_t x1;
+    uint32_t y1;
 };
 
 struct framebuffer_cached_glyph {
@@ -52,14 +60,12 @@ struct framebuffer_display_state {
     uint8_t cursor_visible;
     uint8_t cursor_start;
     uint8_t cursor_end;
+    uint32_t update_depth;
     uint16_t cursor_row;
     uint16_t cursor_col;
     uint32_t cursor_blink_ticks;
-    uint8_t dirty_valid;
-    uint32_t dirty_x0;
-    uint32_t dirty_y0;
-    uint32_t dirty_x1;
-    uint32_t dirty_y1;
+    uint32_t dirty_count;
+    struct framebuffer_dirty_rect dirty_rects[FRAMEBUFFER_DIRTY_RECT_MAX];
     uint8_t mouse_cursor_enabled;
     uint8_t mouse_cursor_visible;
     uint8_t mouse_cursor_initialized;
@@ -177,6 +183,7 @@ static void framebuffer_mark_dirty(struct framebuffer_display_state *state,
                                    uint32_t height) {
     uint32_t x1;
     uint32_t y1;
+    struct framebuffer_dirty_rect dirty;
 
     if (state == 0 || width == 0u || height == 0u || x >= state->width || y >= state->height) {
         return;
@@ -193,51 +200,87 @@ static void framebuffer_mark_dirty(struct framebuffer_display_state *state,
         return;
     }
 
-    if (!state->dirty_valid) {
-        state->dirty_valid = 1u;
-        state->dirty_x0 = x;
-        state->dirty_y0 = y;
-        state->dirty_x1 = x1;
-        state->dirty_y1 = y1;
+    dirty.x0 = x;
+    dirty.y0 = y;
+    dirty.x1 = x1;
+    dirty.y1 = y1;
+
+    for (uint32_t i = 0; i < state->dirty_count;) {
+        struct framebuffer_dirty_rect *current = &state->dirty_rects[i];
+
+        if (dirty.x0 > current->x1 || current->x0 > dirty.x1 ||
+            dirty.y0 > current->y1 || current->y0 > dirty.y1) {
+            i++;
+            continue;
+        }
+        if (current->x0 < dirty.x0) {
+            dirty.x0 = current->x0;
+        }
+        if (current->y0 < dirty.y0) {
+            dirty.y0 = current->y0;
+        }
+        if (current->x1 > dirty.x1) {
+            dirty.x1 = current->x1;
+        }
+        if (current->y1 > dirty.y1) {
+            dirty.y1 = current->y1;
+        }
+        state->dirty_count--;
+        state->dirty_rects[i] = state->dirty_rects[state->dirty_count];
+    }
+
+    if (state->dirty_count < FRAMEBUFFER_DIRTY_RECT_MAX) {
+        state->dirty_rects[state->dirty_count++] = dirty;
         return;
     }
-    if (x < state->dirty_x0) {
-        state->dirty_x0 = x;
+
+    for (uint32_t i = 0; i < state->dirty_count; i++) {
+        const struct framebuffer_dirty_rect *current = &state->dirty_rects[i];
+
+        if (current->x0 < dirty.x0) {
+            dirty.x0 = current->x0;
+        }
+        if (current->y0 < dirty.y0) {
+            dirty.y0 = current->y0;
+        }
+        if (current->x1 > dirty.x1) {
+            dirty.x1 = current->x1;
+        }
+        if (current->y1 > dirty.y1) {
+            dirty.y1 = current->y1;
+        }
     }
-    if (y < state->dirty_y0) {
-        state->dirty_y0 = y;
-    }
-    if (x1 > state->dirty_x1) {
-        state->dirty_x1 = x1;
-    }
-    if (y1 > state->dirty_y1) {
-        state->dirty_y1 = y1;
-    }
+    state->dirty_rects[0] = dirty;
+    state->dirty_count = 1u;
 }
 
 static void framebuffer_flush_dirty(struct framebuffer_display_state *state) {
     uint32_t bytes_per_pixel;
-    uint32_t row_bytes;
 
-    if (state == 0 || !state->backbuffer_enabled || !state->dirty_valid ||
+    if (state == 0 || state->update_depth != 0u) {
+        return;
+    }
+    if (!state->backbuffer_enabled || state->dirty_count == 0u ||
         state->front_base == 0 || state->base == 0) {
-        if (state != 0) {
-            state->dirty_valid = 0u;
-        }
+        state->dirty_count = 0u;
         return;
     }
 
     bytes_per_pixel = state->bpp / 8u;
-    row_bytes = (state->dirty_x1 - state->dirty_x0) * bytes_per_pixel;
-    for (uint32_t y = state->dirty_y0; y < state->dirty_y1; y++) {
-        volatile uint8_t *src = state->base + (uint64_t)y * state->pitch +
-                                (uint64_t)state->dirty_x0 * bytes_per_pixel;
-        volatile uint8_t *dst = state->front_base + (uint64_t)y * state->pitch +
-                                (uint64_t)state->dirty_x0 * bytes_per_pixel;
+    for (uint32_t i = 0; i < state->dirty_count; i++) {
+        const struct framebuffer_dirty_rect *dirty = &state->dirty_rects[i];
+        uint32_t row_bytes = (dirty->x1 - dirty->x0) * bytes_per_pixel;
 
-        memmove((void *)dst, (const void *)src, row_bytes);
+        for (uint32_t y = dirty->y0; y < dirty->y1; y++) {
+            volatile uint8_t *src = state->base + (uint64_t)y * state->pitch +
+                                    (uint64_t)dirty->x0 * bytes_per_pixel;
+            volatile uint8_t *dst = state->front_base + (uint64_t)y * state->pitch +
+                                    (uint64_t)dirty->x0 * bytes_per_pixel;
+
+            memmove((void *)dst, (const void *)src, row_bytes);
+        }
     }
-    state->dirty_valid = 0u;
+    state->dirty_count = 0u;
 }
 
 static void framebuffer_write_pixel(const struct framebuffer_display_state *state,
@@ -1174,10 +1217,11 @@ void framebuffer_display_init(const struct bootx_console_info *console) {
         ? (uint8_t)(state->cell_height - FRAMEBUFFER_CURSOR_UNDERLINE_ROWS)
         : 0u;
     state->cursor_end = (uint8_t)(state->cell_height - 1u);
+    state->update_depth = 0u;
     state->cursor_row = 0;
     state->cursor_col = 0;
     state->cursor_blink_ticks = 0u;
-    state->dirty_valid = 0u;
+    state->dirty_count = 0u;
     state->mouse_cursor_enabled = 0u;
     state->mouse_cursor_visible = 0u;
     state->mouse_cursor_initialized = 0u;
@@ -1234,6 +1278,23 @@ int framebuffer_display_enable_backbuffer(void) {
     framebuffer_mark_dirty(state, 0, 0, state->width, state->height);
     framebuffer_flush_dirty(state);
     return 1;
+}
+
+void framebuffer_display_begin_update(void) {
+    if (!g_framebuffer_display.active) {
+        return;
+    }
+    g_framebuffer_display.update_depth++;
+}
+
+void framebuffer_display_end_update(void) {
+    if (!g_framebuffer_display.active || g_framebuffer_display.update_depth == 0u) {
+        return;
+    }
+    g_framebuffer_display.update_depth--;
+    if (g_framebuffer_display.update_depth == 0u) {
+        framebuffer_flush_dirty(&g_framebuffer_display);
+    }
 }
 
 void framebuffer_display_load_font_from_boot_modules(const struct bootx_boot_info *boot_info) {

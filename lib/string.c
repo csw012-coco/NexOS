@@ -39,10 +39,18 @@ const char *skip_spaces(const char *text) {
 void *memcpy(void *dst, const void *src, uint32_t size) {
     uint8_t *out = (uint8_t *)dst;
     const uint8_t *in = (const uint8_t *)src;
+    uint64_t qwords = size / sizeof(uint64_t);
+    uint64_t bytes = size % sizeof(uint64_t);
 
-    for (uint32_t i = 0; i < size; i++) {
-        out[i] = in[i];
-    }
+    __asm__ volatile (
+        "cld\n\t"
+        "rep movsq\n\t"
+        "mov %[bytes], %%rcx\n\t"
+        "rep movsb"
+        : "+D"(out), "+S"(in), "+c"(qwords)
+        : [bytes] "r"(bytes)
+        : "memory", "cc"
+    );
     return dst;
 }
 
@@ -58,20 +66,44 @@ void *memset(void *dst, int value, uint32_t size) {
 void *memmove(void *dst, const void *src, uint32_t size) {
     uint8_t *out = (uint8_t *)dst;
     const uint8_t *in = (const uint8_t *)src;
+    uint64_t qwords;
+    uint64_t bytes;
 
     if (out == in || size == 0u) {
         return dst;
     }
 
-    if (out < in) {
-        for (uint32_t i = 0; i < size; i++) {
-            out[i] = in[i];
-        }
-    } else {
-        for (uint32_t i = size; i != 0u; i--) {
-            out[i - 1u] = in[i - 1u];
-        }
+    if (out < in || out >= in + size) {
+        return memcpy(dst, src, size);
     }
 
+    qwords = size / sizeof(uint64_t);
+    bytes = size % sizeof(uint64_t);
+    if (qwords != 0u) {
+        uint8_t *out_end = out + size - sizeof(uint64_t);
+        const uint8_t *in_end = in + size - sizeof(uint64_t);
+
+        __asm__ volatile (
+            "std\n\t"
+            "rep movsq\n\t"
+            "cld"
+            : "+D"(out_end), "+S"(in_end), "+c"(qwords)
+            :
+            : "memory", "cc"
+        );
+    }
+    if (bytes != 0u) {
+        uint8_t *out_end = out + bytes - 1u;
+        const uint8_t *in_end = in + bytes - 1u;
+
+        __asm__ volatile (
+            "std\n\t"
+            "rep movsb\n\t"
+            "cld"
+            : "+D"(out_end), "+S"(in_end), "+c"(bytes)
+            :
+            : "memory", "cc"
+        );
+    }
     return dst;
 }

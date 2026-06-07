@@ -341,12 +341,60 @@ int clipboard_size(void) {
     return (int)syscall4(SYS_CLIPBOARD, SYS_CLIPBOARD_SIZE, (uint64_t)(uintptr_t)&transfer, 0, 0);
 }
 
+static struct syscall_gfx_batch_entry *g_gfx_batch_entries;
+static uint32_t g_gfx_batch_count;
+static uint32_t g_gfx_batch_capacity;
+
 static int gfx_command(uint32_t op, const struct syscall_gfx_command *cmd) {
+    if (g_gfx_batch_entries != 0) {
+        struct syscall_gfx_batch_entry *entry;
+
+        if (g_gfx_batch_count >= g_gfx_batch_capacity ||
+            op == SYS_GFX_INFO || op == SYS_GFX_PRESENT || op == SYS_GFX_BATCH) {
+            return -1;
+        }
+        entry = &g_gfx_batch_entries[g_gfx_batch_count++];
+        entry->op = op;
+        entry->reserved = 0u;
+        entry->command = *cmd;
+        return 0;
+    }
     return (int)syscall4(SYS_GFX, op, (uint64_t)(uintptr_t)cmd, 0, 0);
 }
 
 int gfx_info(struct syscall_gfx_info *info) {
     return (int)syscall4(SYS_GFX, SYS_GFX_INFO, (uint64_t)(uintptr_t)info, 0, 0);
+}
+
+int gfx_batch_begin(struct syscall_gfx_batch_entry *entries, uint32_t capacity) {
+    if (entries == 0 || capacity == 0u || g_gfx_batch_entries != 0) {
+        return -1;
+    }
+    g_gfx_batch_entries = entries;
+    g_gfx_batch_count = 0u;
+    g_gfx_batch_capacity = capacity;
+    return 0;
+}
+
+int gfx_batch_submit(uint32_t flags) {
+    struct syscall_gfx_batch batch;
+
+    if (g_gfx_batch_entries == 0) {
+        return -1;
+    }
+    batch.entries_addr = (uint64_t)(uintptr_t)g_gfx_batch_entries;
+    batch.count = g_gfx_batch_count;
+    batch.flags = flags;
+    g_gfx_batch_entries = 0;
+    g_gfx_batch_count = 0u;
+    g_gfx_batch_capacity = 0u;
+    return (int)syscall4(SYS_GFX, SYS_GFX_BATCH, (uint64_t)(uintptr_t)&batch, 0, 0);
+}
+
+void gfx_batch_cancel(void) {
+    g_gfx_batch_entries = 0;
+    g_gfx_batch_count = 0u;
+    g_gfx_batch_capacity = 0u;
 }
 
 int gfx_clear(uint32_t rgb) {
@@ -459,6 +507,9 @@ int gfx_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
 int gfx_present(void) {
     struct syscall_gfx_command cmd = {0};
 
+    if (g_gfx_batch_entries != 0) {
+        return gfx_batch_submit(SYS_GFX_BATCH_PRESENT);
+    }
     return gfx_command(SYS_GFX_PRESENT, &cmd);
 }
 

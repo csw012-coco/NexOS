@@ -305,6 +305,7 @@ static void console_render_row(const struct console *console, uint16_t row) {
     if (console == 0 || !console->visible || g_console_visible_display != console) {
         return;
     }
+    hal_display_begin_update();
     blank = console_blank_cell(console);
     history_end = console->history_base_line + console->history_line_count;
     line = console->view_top_line + (uint32_t)(row - console->top_row);
@@ -316,6 +317,7 @@ static void console_render_row(const struct console *console, uint16_t row) {
         }
         hal_display_write_cell(row, col, cell);
     }
+    hal_display_end_update();
 }
 
 static void console_render_view(const struct console *console) {
@@ -339,8 +341,10 @@ static void console_sync_cursor(const struct console *console) {
 }
 
 static void console_render_and_sync(const struct console *console) {
+    hal_display_begin_update();
     console_render_view(console);
     console_sync_cursor(console);
+    hal_display_end_update();
 }
 
 static void console_render_selection_range(const struct console *console,
@@ -395,6 +399,7 @@ static void console_render_selection_state_change(struct console *console,
                                                   uint16_t old_anchor_col,
                                                   uint32_t old_focus_line,
                                                   uint16_t old_focus_col) {
+    hal_display_begin_update();
     if (old_active) {
         uint32_t start_line;
         uint32_t end_line;
@@ -424,6 +429,7 @@ static void console_render_selection_state_change(struct console *console,
         console_render_selection_range(console, start_line, start_col, end_line, end_col);
     }
     console_sync_cursor(console);
+    hal_display_end_update();
 }
 
 static void console_resume_live_view(struct console *console) {
@@ -461,9 +467,11 @@ static void console_scroll_live_display(struct console *console) {
     if (console == 0 || !console->visible || g_console_visible_display != console) {
         return;
     }
+    hal_display_begin_update();
     hal_display_scroll_rows(console->top_row, console->bottom_row, console->default_color);
 
     console_render_row(console, console->bottom_row);
+    hal_display_end_update();
 }
 
 static void console_newline(struct console *console) {
@@ -568,11 +576,13 @@ int console_is_visible(const struct console *console) {
 void console_clear_row(struct console *console, uint16_t row, uint8_t color) {
     uint32_t line;
 
+    hal_display_begin_update();
     console_resume_live_view(console);
     line = console_row_to_line(console, row);
     console_clear_history_line(console, line, color);
     console_render_row(console, row);
     console_sync_cursor(console);
+    hal_display_end_update();
 }
 
 void console_set_cursor(struct console *console, uint16_t row, uint16_t col) {
@@ -697,71 +707,84 @@ void console_put_codepoint(struct console *console, uint32_t codepoint, uint8_t 
 }
 
 void console_write(struct console *console, const char *text, uint8_t color) {
+    hal_display_begin_update();
     while (*text != '\0') {
         console_putc(console, *text++, color);
     }
+    hal_display_end_update();
 }
 
 void console_write_dec(struct console *console, uint32_t value, uint8_t color) {
     char buf[11];
     int pos = 0;
 
+    hal_display_begin_update();
     if (value == 0) {
         console_putc(console, '0', color);
-        return;
-    }
+    } else {
+        while (value > 0 && pos < (int)sizeof(buf)) {
+            buf[pos++] = (char)('0' + (value % 10u));
+            value /= 10u;
+        }
 
-    while (value > 0 && pos < (int)sizeof(buf)) {
-        buf[pos++] = (char)('0' + (value % 10u));
-        value /= 10u;
+        while (pos > 0) {
+            console_putc(console, buf[--pos], color);
+        }
     }
-
-    while (pos > 0) {
-        console_putc(console, buf[--pos], color);
-    }
+    hal_display_end_update();
 }
 
 void console_write_hex64(struct console *console, uint64_t value, uint8_t color) {
+    hal_display_begin_update();
     for (int shift = 60; shift >= 0; shift -= 4) {
         console_putc(console, digits[(value >> shift) & 0x0f], color);
     }
+    hal_display_end_update();
 }
 
 void console_write_at(const struct console *console, uint16_t row, uint16_t col, const char *text, uint8_t color) {
     struct console *mutable_console = (struct console *)console;
 
+    hal_display_begin_update();
     console_resume_live_view(mutable_console);
     while (*text != '\0' && col < console_text_width()) {
         console_put_at(mutable_console, row, col++, *text++, color);
     }
+    hal_display_end_update();
 }
 
 void console_write_dec_at(const struct console *console, uint16_t row, uint16_t col, uint32_t value, uint8_t color) {
     char buf[11];
     int pos = 0;
 
+    hal_display_begin_update();
     if (value == 0) {
         console_put_at(console, row, col, '0', color);
-        return;
+    } else {
+        while (value > 0 && pos < (int)sizeof(buf)) {
+            buf[pos++] = (char)('0' + (value % 10u));
+            value /= 10u;
+        }
+        while (pos > 0 && col < console_text_width()) {
+            console_put_at(console, row, col++, buf[--pos], color);
+        }
     }
-    while (value > 0 && pos < (int)sizeof(buf)) {
-        buf[pos++] = (char)('0' + (value % 10u));
-        value /= 10u;
-    }
-    while (pos > 0 && col < console_text_width()) {
-        console_put_at(console, row, col++, buf[--pos], color);
-    }
+    hal_display_end_update();
 }
 
 void console_write_hex32_at(const struct console *console, uint16_t row, uint16_t col, uint32_t value, uint8_t color) {
+    hal_display_begin_update();
     for (int shift = 28; shift >= 0 && col < console_text_width(); shift -= 4) {
         console_put_at(console, row, col++, digits[(value >> shift) & 0x0f], color);
     }
+    hal_display_end_update();
 }
 
 void console_write_hex64_at(const struct console *console, uint16_t row, uint16_t col, uint64_t value, uint8_t color) {
+    hal_display_begin_update();
     console_write_hex32_at(console, row, col, (uint32_t)(value >> 32), color);
     console_write_hex32_at(console, row, col + 8u, (uint32_t)value, color);
+    hal_display_end_update();
 }
 
 void console_scroll_page_up(struct console *console) {

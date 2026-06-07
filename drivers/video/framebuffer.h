@@ -11,6 +11,8 @@ enum {
 
 void framebuffer_display_init(const struct bootx_console_info *console);
 int framebuffer_display_enable_backbuffer(void);
+void framebuffer_display_begin_update(void);
+void framebuffer_display_end_update(void);
 void framebuffer_display_load_font_from_boot_modules(const struct bootx_boot_info *boot_info);
 int framebuffer_display_active(void);
 uint32_t framebuffer_device_size(void);

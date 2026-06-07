@@ -100,3 +100,14 @@ int kernel_gfx_dispatch(uint32_t op, const struct syscall_gfx_command *cmd, stru
             return 0;
     }
 }
+
+void kernel_gfx_begin_batch(void) {
+    hal_display_begin_update();
+}
+
+void kernel_gfx_end_batch(uint32_t flags) {
+    if ((flags & SYS_GFX_BATCH_PRESENT) != 0u) {
+        hal_display_present();
+    }
+    hal_display_end_update();
+}

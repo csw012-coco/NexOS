@@ -33,6 +33,8 @@ void hal_paging_init(uint64_t kernel_phys_addr);
 void hal_display_load_font(const struct bootx_boot_info *boot_info);
 void hal_display_init(const struct bootx_console_info *console);
 int hal_display_enable_backbuffer(void);
+void hal_display_begin_update(void);
+void hal_display_end_update(void);
 void hal_platform_init(const struct hal_interrupt_handlers *handlers);
 uint64_t hal_paging_current_root(void);
 void hal_paging_switch_root(uint64_t cr3);

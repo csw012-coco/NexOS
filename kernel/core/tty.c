@@ -692,6 +692,7 @@ void tty_putc(struct tty *tty, char ch, uint8_t color) {
 uint32_t tty_write(struct tty *tty, const char *data, uint32_t len, uint8_t color) {
     uint32_t written = 0;
 
+    hal_display_begin_update();
     if (len != 0u) {
         /*
          * Output produced outside the active line editor should break the
@@ -718,6 +719,7 @@ uint32_t tty_write(struct tty *tty, const char *data, uint32_t len, uint8_t colo
             written += consumed;
         }
     }
+    hal_display_end_update();
     return written;
 }
 
