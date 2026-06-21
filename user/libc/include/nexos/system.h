@@ -20,6 +20,7 @@
 #define NEX_QUERY_MACHINE_INFO SYS_QUERY_MACHINE_INFO
 #define NEX_QUERY_RTC SYS_QUERY_RTC
 #define NEX_QUERY_TTY SYS_QUERY_TTY
+#define NEX_QUERY_PROFILE SYS_QUERY_PROFILE
 
 int sys_query(uint32_t kind, uint64_t arg0, uint64_t arg1, void *buffer);
 int kmsg_query(uint32_t offset, struct syscall_kmsg_info *info);
@@ -28,6 +29,7 @@ int pci_query_at(uint32_t index, struct syscall_pci_info *info);
 int machine_info_query(struct syscall_machine_info *info);
 int rtc_query(struct syscall_rtc_info *info);
 int tty_query(uint32_t fd, struct syscall_tty_info *info);
+int profile_query(uint32_t index, uint32_t flags, struct syscall_profile_info *info);
 void clear(void);
 uint32_t ticks(void);
 uint64_t page_alloc(void);
@@ -41,4 +43,4 @@ int clipboard_set(const char *text, uint32_t len);
 int clipboard_clear(void);
 int clipboard_size(void);
 __attribute__((noreturn)) void exit_with_code(uint64_t code);
-__attribute__((noreturn)) void exit(void);
+__attribute__((noreturn)) void exit(int status);

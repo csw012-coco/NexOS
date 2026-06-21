@@ -1,5 +1,53 @@
 #include "user/libc/include/nlibc.h"
 
+void *memcpy(void *dst, const void *src, size_t count) {
+    unsigned char *out = dst;
+    const unsigned char *in = src;
+
+    for (size_t i = 0; i < count; i++) {
+        out[i] = in[i];
+    }
+    return dst;
+}
+
+void *memmove(void *dst, const void *src, size_t count) {
+    unsigned char *out = dst;
+    const unsigned char *in = src;
+
+    if (out < in) {
+        for (size_t i = 0; i < count; i++) {
+            out[i] = in[i];
+        }
+    } else if (out > in) {
+        while (count != 0) {
+            count--;
+            out[count] = in[count];
+        }
+    }
+    return dst;
+}
+
+void *memset(void *dst, int value, size_t count) {
+    unsigned char *out = dst;
+
+    for (size_t i = 0; i < count; i++) {
+        out[i] = (unsigned char)value;
+    }
+    return dst;
+}
+
+int memcmp(const void *a, const void *b, size_t count) {
+    const unsigned char *left = a;
+    const unsigned char *right = b;
+
+    for (size_t i = 0; i < count; i++) {
+        if (left[i] != right[i]) {
+            return (int)left[i] - (int)right[i];
+        }
+    }
+    return 0;
+}
+
 size_t strlen(const char *text) {
     size_t len = 0;
 
@@ -10,6 +58,33 @@ size_t strlen(const char *text) {
         len++;
     }
     return len;
+}
+
+char *strcpy(char *dst, const char *src) {
+    size_t i = 0;
+
+    do {
+        dst[i] = src[i];
+    } while (src[i++] != '\0');
+    return dst;
+}
+
+char *strncpy(char *dst, const char *src, size_t count) {
+    size_t i = 0;
+
+    while (i < count && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    while (i < count) {
+        dst[i++] = '\0';
+    }
+    return dst;
+}
+
+char *strcat(char *dst, const char *src) {
+    strcpy(dst + strlen(dst), src);
+    return dst;
 }
 
 int strcmp(const char *a, const char *b) {
@@ -83,6 +158,40 @@ char *strrchr(const char *text, int ch) {
         }
         i++;
     }
+}
+
+char *strstr(const char *text, const char *needle) {
+    size_t needle_len;
+
+    if (text == 0 || needle == 0) {
+        return 0;
+    }
+    needle_len = strlen(needle);
+    if (needle_len == 0) {
+        return (char *)text;
+    }
+    while (*text != '\0') {
+        if (strncmp(text, needle, needle_len) == 0) {
+            return (char *)text;
+        }
+        text++;
+    }
+    return 0;
+}
+
+char *strdup(const char *text) {
+    size_t size;
+    char *copy;
+
+    if (text == 0) {
+        return 0;
+    }
+    size = strlen(text) + 1u;
+    copy = malloc(size);
+    if (copy != 0) {
+        memcpy(copy, text, size);
+    }
+    return copy;
 }
 
 void strlcpy(char *dst, size_t dst_size, const char *src) {

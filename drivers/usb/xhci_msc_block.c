@@ -142,6 +142,29 @@ static int xhci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t
     return result;
 }
 
+static int xhci_msc_flush_impl(struct block_device *bdev) {
+    struct xhci_enum_device *dev = bdev != 0
+        ? (struct xhci_enum_device *)bdev->driver_data
+        : 0;
+    uint8_t cmd[10];
+    int ok;
+
+    if (dev == 0 || !xhci_try_begin_busy()) {
+        return -1;
+    }
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = SCSI_SYNCHRONIZE_CACHE_10;
+    ok = xhci_msc_command(dev, cmd, 10u, 0, 0u, 0u);
+    if (!ok) {
+        (void)xhci_msc_request_sense(dev);
+        if (dev->last_sense_key == 0x05u) {
+            ok = 1;
+        }
+    }
+    xhci_end_busy();
+    return ok ? 0 : -1;
+}
+
 int xhci_msc_register_blockdev(struct xhci_enum_device *dev) {
     if (dev == 0) {
         return 0;
@@ -152,6 +175,7 @@ int xhci_msc_register_blockdev(struct xhci_enum_device *dev) {
     dev->blockdev.block_count = dev->sector_count;
     dev->blockdev.read = xhci_msc_read_impl;
     dev->blockdev.write = xhci_msc_write_impl;
+    dev->blockdev.flush = xhci_msc_flush_impl;
     dev->blockdev.driver_data = dev;
     if (blockdev_register(&dev->blockdev) != 0) {
         kprint("xhci: slot%u MSC block register failed\n", (uint32_t)dev->slot_id);

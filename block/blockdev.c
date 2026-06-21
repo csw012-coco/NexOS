@@ -1,5 +1,6 @@
 #include "block/blockdev.h"
 #include "block/block_event.h"
+#include "kernel/public/core/profile.h"
 
 enum {
     BLOCKDEV_MAX = 16,
@@ -20,6 +21,9 @@ enum {
 
 static struct block_device *devices[BLOCKDEV_MAX];
 static uint32_t device_count;
+static uint32_t g_block_profile_read;
+static uint32_t g_block_profile_write;
+static uint32_t g_block_profile_flush;
 
 static const uint8_t gpt_guid_zero[16] = {
     0
@@ -366,10 +370,21 @@ int blockdev_partition_get(struct block_device *dev, uint32_t index, struct bloc
 }
 
 int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *buffer) {
+    uint64_t start;
+    int rc;
+
     if (dev == 0 || dev->read == 0 || buffer == 0 || count == 0) {
         return -1;
     }
-    return dev->read(dev, lba, count, buffer);
+    if (g_block_profile_read == 0u) {
+        g_block_profile_read = kernel_profile_register("block.read");
+    }
+    start = kernel_profile_clock();
+    rc = dev->read(dev, lba, count, buffer);
+    kernel_profile_record(g_block_profile_read,
+                          kernel_profile_clock() - start,
+                          rc == 0 ? (uint64_t)count * dev->block_size : 0u);
+    return rc;
 }
 
 int blockdev_write(struct block_device *dev, uint64_t lba, uint32_t count, const void *buffer) {
@@ -378,9 +393,40 @@ int blockdev_write(struct block_device *dev, uint64_t lba, uint32_t count, const
     if (dev == 0 || dev->write == 0 || buffer == 0 || count == 0) {
         return -1;
     }
-    rc = dev->write(dev, lba, count, buffer);
+    if (g_block_profile_write == 0u) {
+        g_block_profile_write = kernel_profile_register("block.write");
+    }
+    {
+        uint64_t start = kernel_profile_clock();
+
+        rc = dev->write(dev, lba, count, buffer);
+        kernel_profile_record(g_block_profile_write,
+                              kernel_profile_clock() - start,
+                              rc == 0 ? (uint64_t)count * dev->block_size : 0u);
+    }
     if (rc == 0 && lba == 0u) {
         (void)blockdev_rescan_partitions(dev);
     }
+    return rc;
+}
+
+int blockdev_flush(struct block_device *dev) {
+    uint64_t start;
+    int rc;
+
+    if (dev == 0) {
+        return -1;
+    }
+    if (dev->flush == 0) {
+        return 0;
+    }
+    if (g_block_profile_flush == 0u) {
+        g_block_profile_flush = kernel_profile_register("block.flush");
+    }
+    start = kernel_profile_clock();
+    rc = dev->flush(dev);
+    kernel_profile_record(g_block_profile_flush,
+                          kernel_profile_clock() - start,
+                          0u);
     return rc;
 }

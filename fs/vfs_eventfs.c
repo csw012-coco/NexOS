@@ -2,6 +2,18 @@
 #include "fs/vfs_text.h"
 #include "lib/string.h"
 
+#define VFS_EVENTFS_JSON_EOF_OFFSET UINT32_MAX
+
+static int vfs_eventfs_is_json_node(uint32_t event_id) {
+    return event_id == VFS_EVENT_TIMER_JSON ||
+           event_id == VFS_EVENT_INPUT_KEYBOARD_JSON ||
+           event_id == VFS_EVENT_NET_STATUS_JSON ||
+           event_id == VFS_EVENT_FILE_CHANGE_JSON ||
+           event_id == VFS_EVENT_INPUT_MOUSE_JSON ||
+           event_id == VFS_EVENT_BLOCK_CHANGE_JSON ||
+           event_id == VFS_EVENT_SECURITY_CAPABILITY_JSON;
+}
+
 static int64_t vfs_eventfs_emit_dir_entry(struct vfs_dirent *entry,
                                           uint32_t *index_io,
                                           const char *name,
@@ -23,9 +35,15 @@ int64_t vfs_read_from_eventfs(struct vfs *vfs,
                               uint32_t size) {
     char *event_text;
     uint32_t event_text_size;
+    int json_node;
+    int64_t copied;
 
     if (vfs == 0 || node == 0 || offset_io == 0 || buffer == 0) {
         return -1;
+    }
+    json_node = vfs_eventfs_is_json_node(node->aux_index);
+    if (json_node && *offset_io == VFS_EVENTFS_JSON_EOF_OFFSET) {
+        return 0;
     }
     event_text = vfs->eventfs_text;
     if (*offset_io == 0 ||
@@ -40,7 +58,11 @@ int64_t vfs_read_from_eventfs(struct vfs *vfs,
     if (event_text_size == 0) {
         return 0;
     }
-    return vfs_read_from_generated_text(offset_io, buffer, size, event_text, event_text_size);
+    copied = vfs_read_from_generated_text(offset_io, buffer, size, event_text, event_text_size);
+    if (json_node && copied > 0 && *offset_io >= event_text_size) {
+        *offset_io = VFS_EVENTFS_JSON_EOF_OFFSET;
+    }
+    return copied;
 }
 
 int64_t vfs_read_dir_eventfs(struct vfs_node *node, uint32_t *index_io, struct vfs_dirent *entry) {

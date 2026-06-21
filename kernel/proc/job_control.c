@@ -7,6 +7,7 @@
 #include "kernel/public/core/tty.h"
 #include "kernel/public/mem/vmm.h"
 #include "kernel/public/proc/scheduler.h"
+#include "lib/string.h"
 
 enum job_terminal_kind {
     JOB_TERMINAL_NONE = 0,
@@ -212,28 +213,23 @@ static void job_cleanup_runtime(struct job_runtime *runtime) {
     job_reset_runtime(runtime);
 }
 
-static void job_yield_to_other_ready_work(struct process_session *caller_session,
-                                          struct user_page_mapping *caller_mappings) {
-    sched_tick();
-    job_restore_bound_session(caller_session, caller_mappings);
-}
-
-static void job_yield_to_other_ready_work_except(struct job_runtime *runtime,
-                                                 struct process_session *caller_session,
-                                                 struct user_page_mapping *caller_mappings) {
-    if (runtime == 0 || runtime->session.process.state != PROCESS_STATE_READY) {
-        job_yield_to_other_ready_work(caller_session, caller_mappings);
-        return;
+static void job_update_ready_work_while_foreground_waits(struct process_session *caller_session,
+                                                         struct user_page_mapping *caller_mappings,
+                                                         uint32_t foreground_pid) {
+    sched_on_timer_tick(sched_current_ticks());
+    if (foreground_pid != 0u) {
+        sched_tick_excluding_pid(foreground_pid);
     }
-
-    sched_tick_excluding_pid(runtime->session.process.pid);
     job_restore_bound_session(caller_session, caller_mappings);
 }
 
 static int job_start_runtime_session(struct job_runtime *runtime, struct process *proc, uint64_t kernel_cr3) {
     runtime->used = 1;
     process_bind_session(&runtime->session, runtime->mappings);
+    runtime->session.fpu_state_valid = 0u;
     runtime->session.process = *proc;
+    process_forget_files(proc);
+    process_discard_non_stdio_files(&runtime->session.process);
     runtime->session.process.image_kind = PROCESS_IMAGE_ELF;
     runtime->session.process.address_space = &runtime->session.address_space;
     runtime->session.process.state = PROCESS_STATE_READY;
@@ -386,6 +382,92 @@ int job_run_background(struct vfs *vfs, const char *name83) {
     return job_run_background_with_pid(vfs, name83, 0, PROCESS_EXEC_AUTO, 0);
 }
 
+int job_fork_current(const struct syscall_frame *frame, uint32_t *child_pid_out) {
+    struct process_session *parent_session = process_current_session();
+    struct user_page_mapping *parent_mappings = process_current_mappings();
+    struct process *parent = process_current_mut();
+    struct process *slot_proc;
+    struct job_runtime *child;
+    uint64_t child_root;
+
+    if (frame == 0 || parent_session == 0 || parent_mappings == 0 || parent == 0 ||
+        parent->image_kind == PROCESS_IMAGE_NONE ||
+        parent_session->address_space.user_cr3 == 0) {
+        return 0;
+    }
+    slot_proc = process_alloc_slot(0, parent);
+    if (slot_proc == 0) {
+        return 0;
+    }
+    child = &g_bg_runtimes[slot_proc->slot];
+    job_reset_runtime(child);
+    child_root = vmm_clone_root_cow(parent_session->address_space.user_cr3);
+    if (child_root == 0) {
+        g_process_slot_used[slot_proc->slot] = 0;
+        process_clear_slot_state(slot_proc);
+        return 0;
+    }
+
+    child->used = 1u;
+    child->entry = parent->entry;
+    child->stack_top = parent->stack_top;
+    child->session.address_space = parent_session->address_space;
+    child->session.address_space.user_cr3 = child_root;
+    child->session.address_space.reserved_phys_base = 0;
+    child->session.address_space.reserved_phys_limit = 0;
+    child->session.address_space.reserved_phys_next = 0;
+    child->session.process = *slot_proc;
+    process_forget_files(slot_proc);
+    child->session.process.address_space = &child->session.address_space;
+    child->session.process.image_kind = parent->image_kind;
+    child->session.process.entry = parent->entry;
+    child->session.process.stack_top = parent->stack_top;
+    process_set_name(&child->session.process,
+                     parent->name != 0 ? parent->name : "fork-child");
+    child->session.process.saved_frame = *frame;
+    child->session.process.saved_frame.rax = 0;
+    child->session.process.has_saved_frame = 1u;
+    child->session.process.state = PROCESS_STATE_READY;
+    child->session.process.exit_code = 0;
+    child->session.process.wake_tick = 0;
+    child->session.fpu_state_valid = parent_session->fpu_state_valid;
+    child->session.elf_image_size = parent_session->elf_image_size;
+    child->session.elf_segment_count = parent_session->elf_segment_count;
+    child->session.elf_backing_slot = parent_session->elf_backing_slot;
+    memcpy(child->session.elf_segments,
+           parent_session->elf_segments,
+           sizeof(child->session.elf_segments));
+    if (parent_session->elf_image_size != 0 &&
+        !process_retain_elf_backing(&child->session)) {
+        job_cleanup_runtime(child);
+        return 0;
+    }
+    if (parent_session->fpu_state_valid) {
+        memcpy(child->session.fpu_state,
+               parent_session->fpu_state,
+               sizeof(child->session.fpu_state));
+    }
+    for (uint32_t i = 0; i < USER_DYNAMIC_PAGE_LIMIT; i++) {
+        child->mappings[i] = parent_mappings[i];
+        child->mappings[i].reserved_pool = 0;
+    }
+    if (!addrspace_fork_retain_shared(child_root, child->mappings)) {
+        job_cleanup_runtime(child);
+        return 0;
+    }
+    for (uint32_t i = SYS_FD_STDERR + 1u; i < PROCESS_FILE_MAX; i++) {
+        if (file_is_active(&parent->files[i]) &&
+            !file_clone(&child->session.process.files[i], &parent->files[i])) {
+            job_cleanup_runtime(child);
+            return 0;
+        }
+    }
+    if (child_pid_out != 0) {
+        *child_pid_out = child->session.process.pid;
+    }
+    return 1;
+}
+
 uint32_t job_capacity(void) {
     return USER_PROCESS_LIMIT;
 }
@@ -472,15 +554,16 @@ int job_foreground_pid(uint32_t pid) {
                 job_cleanup_runtime(runtime);
                 break;
             }
-            job_yield_to_other_ready_work_except(runtime, caller_session, caller_mappings);
+            job_update_ready_work_while_foreground_waits(caller_session, caller_mappings, pid);
             continue;
         }
         if (runtime->session.process.state == PROCESS_STATE_FREE) {
             job_reset_runtime(runtime);
             break;
         }
-        hal_cpu_halt();
-        job_yield_to_other_ready_work_except(runtime, caller_session, caller_mappings);
+        hal_display_service_pending();
+        hal_cpu_wait_for_interrupt();
+        job_update_ready_work_while_foreground_waits(caller_session, caller_mappings, pid);
     }
 
     job_restore_bound_session(caller_session, caller_mappings);
@@ -503,6 +586,17 @@ int job_background_pid(uint32_t pid) {
         runtime->session.process.wake_tick = 0;
     }
     return 1;
+}
+
+int job_current_process_foreground_allowed(void) {
+    const struct process *proc = process_current();
+    struct job_terminal_ref terminal;
+
+    if (proc == 0) {
+        return 0;
+    }
+    terminal = job_process_terminal(proc);
+    return job_terminal_foreground_pid(terminal) == proc->pid;
 }
 
 int job_serial_current_process_foreground_allowed(void) {

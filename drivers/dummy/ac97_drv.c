@@ -35,12 +35,19 @@ enum {
     AC97_BDL_FLAG_BUP = 0x4000u,
     AC97_SAMPLE_RATE = 48000u,
     AC97_OUTPUT_BYTES_PER_SECOND = AC97_SAMPLE_RATE * 2u * 2u,
+    AC97_CACHE_LINE_BYTES = 64u,
     AC97_PAGE_BYTES = 4096u,
     AC97_BUFFER_PAGES = 16u,
     AC97_BUFFER_BYTES = AC97_PAGE_BYTES * AC97_BUFFER_PAGES,
     AC97_BUFFER_FRAMES = AC97_BUFFER_BYTES / 4u,
     AC97_BDL_ENTRIES = 32u,
-    AC97_STREAM_READ_PAGES = 256u
+    AC97_PREBUFFER_DESCRIPTORS = 24u,
+    AC97_SAFE_MARGIN_DESCRIPTORS = 4u,
+    AC97_REFILL_BATCH_DESCRIPTORS = 4u,
+    AC97_XRUN_SURVIVE_DESCRIPTORS = 2u,
+    AC97_STREAM_READ_PAGES = 256u,
+    AC97_STREAM_READ_CHUNK_DESCRIPTORS = 4u,
+    AC97_LOG_RATE_LIMIT_SECONDS = 1u
 };
 
 struct ac97_mod_bdl_entry {
@@ -48,6 +55,22 @@ struct ac97_mod_bdl_entry {
     uint16_t samples;
     uint16_t flags;
 } __attribute__((packed));
+
+struct ac97_pcm_policy {
+    uint8_t prebuffer_desc;
+    uint8_t safe_margin_desc;
+    uint8_t refill_batch_desc;
+    uint8_t xrun_survive_desc;
+    uint8_t read_chunk_desc;
+};
+
+static const struct ac97_pcm_policy ac97_common_pcm_policy = {
+    AC97_PREBUFFER_DESCRIPTORS,
+    AC97_SAFE_MARGIN_DESCRIPTORS,
+    AC97_REFILL_BATCH_DESCRIPTORS,
+    AC97_XRUN_SURVIVE_DESCRIPTORS,
+    AC97_STREAM_READ_CHUNK_DESCRIPTORS
+};
 
 struct ac97_mod_state {
     uint8_t initialized;
@@ -62,9 +85,22 @@ struct ac97_mod_state {
     uint8_t *buffers[AC97_BDL_ENTRIES];
     uint32_t buffer_count;
     uint8_t stream_active;
-    uint8_t stream_last_civ;
+    uint8_t play_civ;
+    uint8_t write_lvi;
+    uint8_t filled_count;
     void *stream_cancel_ctx;
     uint32_t (*stream_cancelled)(void *ctx);
+    uint32_t underrun_count;
+    uint32_t progress_timeout_count;
+    uint32_t log_underrun_tick;
+    uint32_t log_underrun_suppressed;
+    uint32_t log_progress_tick;
+    uint32_t log_progress_suppressed;
+    uint8_t q_prebuffer_desc;
+    uint8_t q_safe_margin_desc;
+    uint8_t q_refill_batch_desc;
+    uint8_t q_xrun_survive_desc;
+    uint8_t q_read_chunk_desc;
 };
 
 static struct ac97_mod_state g_ac97_mod;
@@ -118,8 +154,135 @@ static void ac97_mod_delay_local(uint32_t spins) {
     }
 }
 
-static void ac97_mod_flush_cache_local(void) {
-    __asm__ __volatile__("wbinvd" ::: "memory");
+static void ac97_mod_flush_range_local(const void *ptr, uint32_t bytes) {
+    uintptr_t addr;
+    uintptr_t end;
+
+    if (ptr == NULL || bytes == 0u) {
+        return;
+    }
+    addr = (uintptr_t)ptr & ~(uintptr_t)(AC97_CACHE_LINE_BYTES - 1u);
+    end = ((uintptr_t)ptr + bytes + AC97_CACHE_LINE_BYTES - 1u) &
+          ~(uintptr_t)(AC97_CACHE_LINE_BYTES - 1u);
+    while (addr < end) {
+        __asm__ __volatile__("clflush (%0)" :: "r"((void *)addr) : "memory");
+        addr += AC97_CACHE_LINE_BYTES;
+    }
+    __asm__ __volatile__("mfence" ::: "memory");
+}
+
+static void ac97_mod_flush_descriptor_local(uint32_t index) {
+    if (g_ac97_mod.bdl == NULL || index >= AC97_BDL_ENTRIES) {
+        return;
+    }
+    ac97_mod_flush_range_local(&g_ac97_mod.bdl[index], sizeof(g_ac97_mod.bdl[index]));
+}
+
+static void ac97_mod_flush_buffer_local(uint32_t index) {
+    if (index >= AC97_BDL_ENTRIES || g_ac97_mod.buffers[index] == NULL) {
+        return;
+    }
+    ac97_mod_flush_range_local(g_ac97_mod.buffers[index], AC97_BUFFER_BYTES);
+}
+
+static void ac97_mod_flush_bdl_local(void) {
+    if (g_ac97_mod.bdl == NULL) {
+        return;
+    }
+    ac97_mod_flush_range_local(g_ac97_mod.bdl,
+                               sizeof(g_ac97_mod.bdl[0]) * AC97_BDL_ENTRIES);
+}
+
+static uint32_t ac97_mod_log_rate_interval_ticks_local(void) {
+    uint32_t timer_hz = driver_timer_hz();
+
+    if (timer_hz == 0u) {
+        timer_hz = 100u;
+    }
+    return timer_hz * AC97_LOG_RATE_LIMIT_SECONDS;
+}
+
+static int ac97_mod_log_ratelimit_local(uint32_t *last_tick,
+                                        uint32_t *suppressed) {
+    uint32_t now;
+    uint32_t interval;
+
+    if (last_tick == NULL || suppressed == NULL) {
+        return 1;
+    }
+    now = driver_timer_current_ticks();
+    interval = ac97_mod_log_rate_interval_ticks_local();
+    if (*last_tick == 0u || (uint32_t)(now - *last_tick) >= interval) {
+        *last_tick = now;
+        return 1;
+    }
+    *suppressed = *suppressed + 1u;
+    return 0;
+}
+
+static uint32_t ac97_mod_log_take_suppressed_local(uint32_t *suppressed) {
+    uint32_t value;
+
+    if (suppressed == NULL) {
+        return 0u;
+    }
+    value = *suppressed;
+    *suppressed = 0u;
+    return value;
+}
+
+static uint8_t ac97_mod_ring_next_local(uint8_t index) {
+    return (uint8_t)(((uint32_t)index + 1u) & 0x1fu);
+}
+
+static uint8_t ac97_mod_ring_prev_local(uint8_t index) {
+    return (uint8_t)(((uint32_t)index + AC97_BDL_ENTRIES - 1u) & 0x1fu);
+}
+
+static uint8_t ac97_mod_ring_distance_local(uint8_t from, uint8_t to) {
+    return (uint8_t)(((uint32_t)to + AC97_BDL_ENTRIES - (uint32_t)from) & 0x1fu);
+}
+
+static void ac97_mod_apply_policy_local(const struct ac97_pcm_policy *policy) {
+    if (policy == NULL) {
+        policy = &ac97_common_pcm_policy;
+    }
+    g_ac97_mod.q_prebuffer_desc = policy->prebuffer_desc;
+    g_ac97_mod.q_safe_margin_desc = policy->safe_margin_desc;
+    g_ac97_mod.q_refill_batch_desc = policy->refill_batch_desc;
+    g_ac97_mod.q_xrun_survive_desc = policy->xrun_survive_desc;
+    g_ac97_mod.q_read_chunk_desc = policy->read_chunk_desc;
+    if (g_ac97_mod.q_prebuffer_desc == 0u ||
+        g_ac97_mod.q_prebuffer_desc >= AC97_BDL_ENTRIES) {
+        g_ac97_mod.q_prebuffer_desc = AC97_PREBUFFER_DESCRIPTORS;
+    }
+    if (g_ac97_mod.q_safe_margin_desc == 0u ||
+        g_ac97_mod.q_safe_margin_desc >= AC97_BDL_ENTRIES) {
+        g_ac97_mod.q_safe_margin_desc = AC97_SAFE_MARGIN_DESCRIPTORS;
+    }
+    if (g_ac97_mod.q_prebuffer_desc + g_ac97_mod.q_safe_margin_desc >=
+        AC97_BDL_ENTRIES) {
+        g_ac97_mod.q_safe_margin_desc = AC97_SAFE_MARGIN_DESCRIPTORS;
+    }
+    if (g_ac97_mod.q_refill_batch_desc == 0u ||
+        g_ac97_mod.q_refill_batch_desc >= AC97_BDL_ENTRIES) {
+        g_ac97_mod.q_refill_batch_desc = AC97_REFILL_BATCH_DESCRIPTORS;
+    }
+    if (g_ac97_mod.q_xrun_survive_desc == 0u ||
+        g_ac97_mod.q_xrun_survive_desc >= AC97_BDL_ENTRIES) {
+        g_ac97_mod.q_xrun_survive_desc = AC97_XRUN_SURVIVE_DESCRIPTORS;
+    }
+    if (g_ac97_mod.q_read_chunk_desc == 0u ||
+        g_ac97_mod.q_read_chunk_desc > AC97_BDL_ENTRIES) {
+        g_ac97_mod.q_read_chunk_desc = AC97_STREAM_READ_CHUNK_DESCRIPTORS;
+    }
+    ac97_mod_log("driver: AC97MOD policy codec=%x prebuf=%u margin=%u batch=%u xrun=%u read=%u\n",
+                 g_ac97_mod.codec_id,
+                 (uint32_t)g_ac97_mod.q_prebuffer_desc,
+                 (uint32_t)g_ac97_mod.q_safe_margin_desc,
+                 (uint32_t)g_ac97_mod.q_refill_batch_desc,
+                 (uint32_t)g_ac97_mod.q_xrun_survive_desc,
+                 (uint32_t)g_ac97_mod.q_read_chunk_desc);
 }
 
 static int ac97_mod_wait_codec_ready_local(void) {
@@ -171,7 +334,9 @@ static void ac97_mod_stop_channel_local(void) {
 static void ac97_mod_reset_stream_local(void) {
     ac97_mod_stop_channel_local();
     g_ac97_mod.stream_active = 0u;
-    g_ac97_mod.stream_last_civ = 0u;
+    g_ac97_mod.play_civ = 0u;
+    g_ac97_mod.write_lvi = 0u;
+    g_ac97_mod.filled_count = 0u;
     g_ac97_mod.stream_cancel_ctx = NULL;
     g_ac97_mod.stream_cancelled = NULL;
 }
@@ -324,6 +489,15 @@ static uint32_t ac97_mod_prepare_repeated_bdl_local(uint32_t total_frames,
     return total_frames == 0u ? 0u : (total_frames + chunk_frames - 1u) / chunk_frames;
 }
 
+static void ac97_mod_flush_allocated_dma_local(void) {
+    uint32_t index;
+
+    for (index = 0; index < g_ac97_mod.buffer_count; index++) {
+        ac97_mod_flush_buffer_local(index);
+    }
+    ac97_mod_flush_bdl_local();
+}
+
 static int ac97_mod_configure_output_rate_local(uint32_t sample_rate) {
     uint16_t ext_audio_id;
 
@@ -353,7 +527,7 @@ static int ac97_mod_start_and_wait_local(uint32_t descriptors, uint32_t duration
     if (!ac97_mod_wait_channel_reset_local()) {
         return 0;
     }
-    ac97_mod_flush_cache_local();
+    ac97_mod_flush_allocated_dma_local();
     ac97_mod_bus_write32_local(AC97_PO_BDBAR, (uint32_t)g_ac97_mod.bdl_phys);
     ac97_mod_bus_write8_local(AC97_PO_LVI, (uint8_t)(descriptors - 1u));
     ac97_mod_bus_write16_local(AC97_PO_SR, AC97_PO_SR_CLEAR);
@@ -451,6 +625,11 @@ static void ac97_mod_zero_descriptor_local(uint32_t index) {
     for (i = 0; i < dwords; i++) {
         dst[i] = 0u;
     }
+}
+
+static void ac97_mod_commit_descriptor_local(uint32_t index) {
+    ac97_mod_flush_buffer_local(index);
+    ac97_mod_flush_descriptor_local(index);
 }
 
 static int ac97_mod_stream_source_read_next_local(struct ac97_mod_stream_source *source) {
@@ -647,6 +826,12 @@ static void ac97_mod_set_bdl_descriptor_local(uint32_t index,
     g_ac97_mod.bdl[index].addr = (uint32_t)g_ac97_mod.buffer_phys[index];
     g_ac97_mod.bdl[index].samples = samples;
     g_ac97_mod.bdl[index].flags = flags;
+    ac97_mod_commit_descriptor_local(index);
+}
+
+static void ac97_mod_zero_bdl_descriptor_local(uint32_t index, uint16_t flags) {
+    ac97_mod_zero_descriptor_local(index);
+    ac97_mod_set_bdl_descriptor_local(index, 2u, flags);
 }
 
 static int ac97_mod_wait_dma_started_local(void) {
@@ -696,13 +881,88 @@ static int ac97_mod_wait_dma_halt_local(void) {
     return 0;
 }
 
+static void ac97_mod_stream_note_lvi_local(uint8_t descriptor) {
+    g_ac97_mod.write_lvi = descriptor;
+    if (g_ac97_mod.filled_count < AC97_BDL_ENTRIES) {
+        g_ac97_mod.filled_count++;
+    }
+    ac97_mod_bus_write8_local(AC97_PO_LVI, descriptor);
+    ac97_mod_bus_write16_local(AC97_PO_SR, AC97_PO_SR_CLEAR);
+}
+
+static void ac97_mod_stream_update_civ_local(uint8_t civ) {
+    uint8_t delta = ac97_mod_ring_distance_local(g_ac97_mod.play_civ, civ);
+
+    if (delta == 0u) {
+        return;
+    }
+    if (delta >= g_ac97_mod.filled_count) {
+        g_ac97_mod.filled_count = 0u;
+    } else {
+        g_ac97_mod.filled_count = (uint8_t)(g_ac97_mod.filled_count - delta);
+    }
+    g_ac97_mod.play_civ = civ;
+}
+
+static void ac97_mod_stream_prime_state_local(uint8_t lvi) {
+    uint8_t civ = (uint8_t)(ac97_mod_bus_read8_local(AC97_PO_CIV) & 0x1fu);
+
+    g_ac97_mod.play_civ = civ;
+    g_ac97_mod.write_lvi = lvi;
+    g_ac97_mod.filled_count = (uint8_t)((uint32_t)lvi + 1u);
+}
+
+static int ac97_mod_stream_survive_underrun_local(uint16_t status) {
+    uint8_t civ = (uint8_t)(ac97_mod_bus_read8_local(AC97_PO_CIV) & 0x1fu);
+    uint8_t descriptor;
+    uint32_t index;
+
+    g_ac97_mod.underrun_count++;
+    if (ac97_mod_log_ratelimit_local(&g_ac97_mod.log_underrun_tick,
+                                     &g_ac97_mod.log_underrun_suppressed)) {
+        ac97_mod_log("driver: AC97MOD underrun survive count=%u sr=%x civ=%u lvi=%u filled=%u free=%u pad=%u suppressed=%u\n",
+                     g_ac97_mod.underrun_count,
+                     (uint32_t)status,
+                     (uint32_t)civ,
+                     (uint32_t)(ac97_mod_bus_read8_local(AC97_PO_LVI) & 0x1fu),
+                     (uint32_t)g_ac97_mod.filled_count,
+                     AC97_BDL_ENTRIES - (uint32_t)g_ac97_mod.filled_count,
+                     (uint32_t)g_ac97_mod.q_xrun_survive_desc,
+                     ac97_mod_log_take_suppressed_local(
+                         &g_ac97_mod.log_underrun_suppressed));
+    }
+
+    ac97_mod_bus_write8_local(AC97_PO_CR, 0u);
+    ac97_mod_bus_write16_local(AC97_PO_SR, AC97_PO_SR_CLEAR);
+    g_ac97_mod.play_civ = civ;
+    g_ac97_mod.write_lvi = ac97_mod_ring_prev_local(civ);
+    g_ac97_mod.filled_count = 0u;
+    descriptor = civ;
+    for (index = 0; index < g_ac97_mod.q_xrun_survive_desc; index++) {
+        ac97_mod_zero_bdl_descriptor_local((uint32_t)descriptor, AC97_BDL_FLAGS_NONE);
+        g_ac97_mod.write_lvi = descriptor;
+        g_ac97_mod.filled_count++;
+        descriptor = ac97_mod_ring_next_local(descriptor);
+    }
+    ac97_mod_bus_write8_local(AC97_PO_LVI, g_ac97_mod.write_lvi);
+    ac97_mod_bus_write16_local(AC97_PO_SR, AC97_PO_SR_CLEAR);
+    ac97_mod_bus_write8_local(AC97_PO_CR, AC97_PO_CR_START);
+    if (!ac97_mod_wait_dma_started_local()) {
+        g_ac97_mod.stream_active = 0u;
+        return 0;
+    }
+    g_ac97_mod.stream_active = 1u;
+    g_ac97_mod.play_civ = (uint8_t)(ac97_mod_bus_read8_local(AC97_PO_CIV) & 0x1fu);
+    return 1;
+}
+
 static int ac97_mod_start_pcm_stream_local(uint8_t lvi) {
     ac97_mod_stop_channel_local();
     ac97_mod_bus_write8_local(AC97_PO_CR, AC97_PO_CR_RESET);
     if (!ac97_mod_wait_channel_reset_local()) {
         return 0;
     }
-    ac97_mod_flush_cache_local();
+    ac97_mod_flush_bdl_local();
     ac97_mod_bus_write32_local(AC97_PO_BDBAR, (uint32_t)g_ac97_mod.bdl_phys);
     ac97_mod_bus_write8_local(AC97_PO_LVI, (uint8_t)(lvi & 0x1fu));
     ac97_mod_bus_write16_local(AC97_PO_SR, AC97_PO_SR_CLEAR);
@@ -711,7 +971,7 @@ static int ac97_mod_start_pcm_stream_local(uint8_t lvi) {
         ac97_mod_stop_channel_local();
         return 0;
     }
-    g_ac97_mod.stream_last_civ = (uint8_t)(ac97_mod_bus_read8_local(AC97_PO_CIV) & 0x1fu);
+    ac97_mod_stream_prime_state_local((uint8_t)(lvi & 0x1fu));
     g_ac97_mod.stream_active = 1u;
     return 1;
 }
@@ -724,65 +984,69 @@ static int ac97_mod_stream_alive_local(void) {
     }
     status = ac97_mod_bus_read16_local(AC97_PO_SR);
     if ((status & AC97_PO_SR_DCH) == 0u) {
+        ac97_mod_stream_update_civ_local(
+            (uint8_t)(ac97_mod_bus_read8_local(AC97_PO_CIV) & 0x1fu));
         return 1;
     }
-    ac97_mod_log("driver: AC97MOD stream halted sr=%x civ=%u lvi=%u\n",
-                 (uint32_t)status,
-                 (uint32_t)(ac97_mod_bus_read8_local(AC97_PO_CIV) & 0x1fu),
-                 (uint32_t)(ac97_mod_bus_read8_local(AC97_PO_LVI) & 0x1fu));
-    g_ac97_mod.stream_active = 0u;
-    return 0;
+    return ac97_mod_stream_survive_underrun_local(status);
 }
 
-static int ac97_mod_wait_completed_descriptor_local(uint8_t *descriptor_out,
-                                                    uint8_t *civ_out) {
+static int ac97_mod_wait_writable_descriptor_local(uint8_t *descriptor_out) {
     uint32_t timer_hz = driver_timer_hz();
     uint32_t timeout_ticks;
     uint32_t start_ticks;
 
-    if (descriptor_out == NULL || civ_out == NULL) {
+    if (descriptor_out == NULL) {
         return 0;
     }
     if (timer_hz == 0u) {
         timer_hz = 100u;
     }
-    timeout_ticks = timer_hz * 2u;
-    if (timeout_ticks < 2u) {
-        timeout_ticks = 2u;
+    timeout_ticks = timer_hz * 5u;
+    if (timeout_ticks < 10u) {
+        timeout_ticks = 10u;
     }
     start_ticks = driver_timer_current_ticks();
     for (;;) {
         uint16_t status = ac97_mod_bus_read16_local(AC97_PO_SR);
         uint8_t civ = (uint8_t)(ac97_mod_bus_read8_local(AC97_PO_CIV) & 0x1fu);
+        uint32_t free_desc;
 
         if (ac97_mod_stream_cancelled_local()) {
             g_ac97_mod.stream_active = 0u;
             return 0;
         }
         if ((status & AC97_PO_SR_DCH) != 0u) {
-            ac97_mod_log("driver: AC97MOD stream underrun sr=%x civ=%u lvi=%u\n",
-                         (uint32_t)status,
-                         (uint32_t)civ,
-                         (uint32_t)(ac97_mod_bus_read8_local(AC97_PO_LVI) & 0x1fu));
-            g_ac97_mod.stream_active = 0u;
-            return 0;
+            if (!ac97_mod_stream_survive_underrun_local(status)) {
+                return 0;
+            }
+            start_ticks = driver_timer_current_ticks();
+            continue;
         }
-        if (civ != g_ac97_mod.stream_last_civ) {
-            *descriptor_out = g_ac97_mod.stream_last_civ;
-            *civ_out = civ;
+        ac97_mod_stream_update_civ_local(civ);
+        free_desc = AC97_BDL_ENTRIES - (uint32_t)g_ac97_mod.filled_count;
+        if (free_desc > g_ac97_mod.q_safe_margin_desc) {
+            *descriptor_out = ac97_mod_ring_next_local(g_ac97_mod.write_lvi);
             return 1;
         }
         if ((status & AC97_PO_SR_CELV) != 0u) {
-            uint8_t lvi = (uint8_t)((uint32_t)(civ + AC97_BDL_ENTRIES - 1u) & 0x1fu);
-
-            ac97_mod_bus_write8_local(AC97_PO_LVI, lvi);
+            ac97_mod_bus_write8_local(AC97_PO_LVI, g_ac97_mod.write_lvi);
             ac97_mod_bus_write16_local(AC97_PO_SR, AC97_PO_SR_CLEAR);
         }
         if ((uint32_t)(driver_timer_current_ticks() - start_ticks) > timeout_ticks) {
-            ac97_mod_log("driver: AC97MOD stream progress timeout sr=%x civ=%u lvi=%u\n",
-                         (uint32_t)status,
-                         (uint32_t)civ,
-                         (uint32_t)(ac97_mod_bus_read8_local(AC97_PO_LVI) & 0x1fu));
+            g_ac97_mod.progress_timeout_count++;
+            if (ac97_mod_log_ratelimit_local(&g_ac97_mod.log_progress_tick,
+                                             &g_ac97_mod.log_progress_suppressed)) {
+                ac97_mod_log("driver: AC97MOD stream progress timeout count=%u sr=%x civ=%u lvi=%u filled=%u free=%u suppressed=%u\n",
+                             g_ac97_mod.progress_timeout_count,
+                             (uint32_t)status,
+                             (uint32_t)civ,
+                             (uint32_t)(ac97_mod_bus_read8_local(AC97_PO_LVI) & 0x1fu),
+                             (uint32_t)g_ac97_mod.filled_count,
+                             AC97_BDL_ENTRIES - (uint32_t)g_ac97_mod.filled_count,
+                             ac97_mod_log_take_suppressed_local(
+                                 &g_ac97_mod.log_progress_suppressed));
+            }
             return 0;
         }
         ac97_mod_delay_local(20000u);
@@ -798,7 +1062,7 @@ static uint8_t ac97_mod_prefill_pcm_ring_local(const uint8_t *src,
                                                uint8_t final_chunk) {
     uint32_t index;
 
-    for (index = 0; index < AC97_BDL_ENTRIES; index++) {
+    for (index = 0; index < g_ac97_mod.q_prebuffer_desc; index++) {
         struct ac97_mod_fill_result fill =
             ac97_mod_fill_pcm_descriptor_local(index,
                                                src,
@@ -816,7 +1080,7 @@ static uint8_t ac97_mod_prefill_pcm_ring_local(const uint8_t *src,
             return (uint8_t)index;
         }
     }
-    return (uint8_t)(AC97_BDL_ENTRIES - 1u);
+    return (uint8_t)(g_ac97_mod.q_prebuffer_desc - 1u);
 }
 
 static uint8_t ac97_mod_prefill_stream_ring_local(struct ac97_mod_stream_source *source,
@@ -828,7 +1092,7 @@ static uint8_t ac97_mod_prefill_stream_ring_local(struct ac97_mod_stream_source 
     if (out_end != NULL) {
         *out_end = 0u;
     }
-    for (index = 0; index < AC97_BDL_ENTRIES; index++) {
+    for (index = 0; index < g_ac97_mod.q_prebuffer_desc; index++) {
         struct ac97_mod_fill_result fill =
             ac97_mod_fill_stream_descriptor_local(index,
                                                   source,
@@ -844,7 +1108,7 @@ static uint8_t ac97_mod_prefill_stream_ring_local(struct ac97_mod_stream_source 
             return (uint8_t)index;
         }
     }
-    return (uint8_t)(AC97_BDL_ENTRIES - 1u);
+    return (uint8_t)(g_ac97_mod.q_prebuffer_desc - 1u);
 }
 
 static int ac97_mod_stream_pcm_data_local(const uint8_t *src,
@@ -856,15 +1120,18 @@ static int ac97_mod_stream_pcm_data_local(const uint8_t *src,
                                           uint8_t final_chunk) {
     while ((uint32_t)(*src_pos >> 32) < input_frames) {
         uint8_t descriptor;
-        uint8_t civ;
+        uint32_t refill_count = 0u;
 
         if (!ac97_mod_stream_alive_local()) {
             return 0;
         }
-        if (!ac97_mod_wait_completed_descriptor_local(&descriptor, &civ)) {
+        if (!ac97_mod_wait_writable_descriptor_local(&descriptor)) {
             return 0;
         }
-        while (descriptor != civ && (uint32_t)(*src_pos >> 32) < input_frames) {
+        while (refill_count < g_ac97_mod.q_refill_batch_desc &&
+               AC97_BDL_ENTRIES - (uint32_t)g_ac97_mod.filled_count >
+                   g_ac97_mod.q_safe_margin_desc &&
+               (uint32_t)(*src_pos >> 32) < input_frames) {
             struct ac97_mod_fill_result fill;
             uint16_t flags;
 
@@ -879,11 +1146,9 @@ static int ac97_mod_stream_pcm_data_local(const uint8_t *src,
                 AC97_BDL_FLAG_BUP :
                 AC97_BDL_FLAGS_NONE;
             ac97_mod_set_bdl_descriptor_local((uint32_t)descriptor, fill.samples, flags);
-            ac97_mod_flush_cache_local();
-            ac97_mod_bus_write8_local(AC97_PO_LVI, descriptor);
-            ac97_mod_bus_write16_local(AC97_PO_SR, AC97_PO_SR_CLEAR);
-            descriptor = (uint8_t)((uint32_t)(descriptor + 1u) & 0x1fu);
-            g_ac97_mod.stream_last_civ = descriptor;
+            ac97_mod_stream_note_lvi_local(descriptor);
+            descriptor = ac97_mod_ring_next_local(descriptor);
+            refill_count++;
             if (fill.end != 0u) {
                 return 1;
             }
@@ -1034,6 +1299,9 @@ static int ac97_mod_play_stream_local(void *ctx,
         return 0;
     }
     read_capacity = AC97_STREAM_READ_PAGES * AC97_PAGE_BYTES;
+    if (read_capacity > g_ac97_mod.q_read_chunk_desc * AC97_BUFFER_BYTES) {
+        read_capacity = g_ac97_mod.q_read_chunk_desc * AC97_BUFFER_BYTES;
+    }
     read_capacity -= read_capacity % src_frame_bytes;
     if (read_capacity == 0u) {
         goto done;
@@ -1075,7 +1343,7 @@ static int ac97_mod_play_stream_local(void *ctx,
     }
     while (source_end == 0u) {
         uint8_t descriptor;
-        uint8_t civ;
+        uint32_t refill_count = 0u;
 
         if (ac97_mod_stream_cancelled_local()) {
             goto done;
@@ -1083,10 +1351,13 @@ static int ac97_mod_play_stream_local(void *ctx,
         if (!ac97_mod_stream_alive_local()) {
             goto done;
         }
-        if (!ac97_mod_wait_completed_descriptor_local(&descriptor, &civ)) {
+        if (!ac97_mod_wait_writable_descriptor_local(&descriptor)) {
             goto done;
         }
-        while (descriptor != civ && source_end == 0u) {
+        while (refill_count < g_ac97_mod.q_refill_batch_desc &&
+               AC97_BDL_ENTRIES - (uint32_t)g_ac97_mod.filled_count >
+                   g_ac97_mod.q_safe_margin_desc &&
+               source_end == 0u) {
             struct ac97_mod_fill_result fill =
                 ac97_mod_fill_stream_descriptor_local((uint32_t)descriptor,
                                                       &source,
@@ -1095,11 +1366,9 @@ static int ac97_mod_play_stream_local(void *ctx,
             uint16_t flags = fill.end != 0u ? AC97_BDL_FLAG_BUP : AC97_BDL_FLAGS_NONE;
 
             ac97_mod_set_bdl_descriptor_local((uint32_t)descriptor, fill.samples, flags);
-            ac97_mod_flush_cache_local();
-            ac97_mod_bus_write8_local(AC97_PO_LVI, descriptor);
-            ac97_mod_bus_write16_local(AC97_PO_SR, AC97_PO_SR_CLEAR);
-            descriptor = (uint8_t)((uint32_t)(descriptor + 1u) & 0x1fu);
-            g_ac97_mod.stream_last_civ = descriptor;
+            ac97_mod_stream_note_lvi_local(descriptor);
+            descriptor = ac97_mod_ring_next_local(descriptor);
+            refill_count++;
             if (fill.end != 0u) {
                 source_end = 1u;
             }
@@ -1193,6 +1462,7 @@ static int ac97_mod_init(void) {
         ((uint32_t)ac97_mod_mixer_read16_local(AC97_CODEC_VENDOR_ID1) << 16) |
         (uint32_t)ac97_mod_mixer_read16_local(AC97_CODEC_VENDOR_ID2);
     g_ac97_mod.global_status = ac97_mod_bus_read32_local(AC97_GLOB_STA);
+    ac97_mod_apply_policy_local(&ac97_common_pcm_policy);
     g_ac97_mod.initialized = 1u;
     if (!ac97_mod_prepare_dma_local() ||
         !ac97_mod_prepare_buffer_pages_local(1u) ||

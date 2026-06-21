@@ -35,6 +35,7 @@ static void ramdisk_reset(struct ramdisk_device *ramdisk) {
     ramdisk->dev.block_count = 0;
     ramdisk->dev.read = 0;
     ramdisk->dev.write = 0;
+    ramdisk->dev.flush = 0;
     ramdisk->dev.driver_data = ramdisk;
 }
 
@@ -60,8 +61,12 @@ static int ramdisk_read(struct block_device *dev, uint64_t lba, uint32_t count, 
     if (start + bytes > ramdisk->size) {
         return -1;
     }
-    for (uint64_t i = 0; i < bytes; i++) {
-        out[i] = ramdisk->base[start + i];
+    for (uint64_t copied = 0; copied < bytes;) {
+        uint64_t remaining = bytes - copied;
+        uint32_t chunk = remaining > 0x7fffffffu ? 0x7fffffffu : (uint32_t)remaining;
+
+        memcpy(out + copied, ramdisk->base + start + copied, chunk);
+        copied += chunk;
     }
     return 0;
 }
@@ -88,8 +93,12 @@ static int ramdisk_write(struct block_device *dev, uint64_t lba, uint32_t count,
     if (start + bytes > ramdisk->size) {
         return -1;
     }
-    for (uint64_t i = 0; i < bytes; i++) {
-        ramdisk->base[start + i] = in[i];
+    for (uint64_t copied = 0; copied < bytes;) {
+        uint64_t remaining = bytes - copied;
+        uint32_t chunk = remaining > 0x7fffffffu ? 0x7fffffffu : (uint32_t)remaining;
+
+        memcpy(ramdisk->base + start + copied, in + copied, chunk);
+        copied += chunk;
     }
     return 0;
 }
@@ -163,6 +172,7 @@ void ramdisk_init_from_boot_modules(const struct bootx_boot_info *boot_info) {
         ramdisk->dev.block_count = size / RAMDISK_BLOCK_SIZE;
         ramdisk->dev.read = ramdisk_read;
         ramdisk->dev.write = ramdisk->writable ? ramdisk_write : 0;
+        ramdisk->dev.flush = 0;
         if (ramdisk->dev.block_count == 0) {
             continue;
         }

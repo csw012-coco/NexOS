@@ -1,11 +1,15 @@
 #include "kernel/public/mem/vmm.h"
 #include "hal/hal.h"
 #include "arch/x86/paging.h"
+#include "lib/string.h"
 
 enum {
     VMM_PAGE_SIZE = 4096u,
     VMM_USER_STRING_MAX = 255u,
-    VMM_COPY_BOUNCE_SIZE = 256u
+    VMM_COPY_BOUNCE_SIZE = 256u,
+    VMM_FLAG_PRESENT = 0x1u,
+    VMM_FLAG_RW = 0x2u,
+    VMM_FLAG_USER = 0x4u
 };
 
 static uint64_t vmm_align_down(uint64_t value, uint64_t align) {
@@ -14,23 +18,6 @@ static uint64_t vmm_align_down(uint64_t value, uint64_t align) {
 
 static uint64_t vmm_align_up(uint64_t value, uint64_t align) {
     return (value + align - 1u) & ~(align - 1u);
-}
-
-static void vmm_mem_copy(void *dest, const void *src, uint64_t size) {
-    uint8_t *d = (uint8_t *)dest;
-    const uint8_t *s = (const uint8_t *)src;
-
-    for (uint64_t i = 0; i < size; i++) {
-        d[i] = s[i];
-    }
-}
-
-static void vmm_mem_set(void *dest, uint8_t value, uint64_t size) {
-    uint8_t *d = (uint8_t *)dest;
-
-    for (uint64_t i = 0; i < size; i++) {
-        d[i] = value;
-    }
 }
 
 static int vmm_user_range_valid(uint64_t user_addr, uint32_t size, uint64_t *start_out, uint64_t *end_out) {
@@ -64,6 +51,7 @@ static int vmm_user_range_valid(uint64_t user_addr, uint32_t size, uint64_t *sta
 static int vmm_user_range_has_perms(uint64_t user_addr, uint32_t size, uint64_t required_flags) {
     uint64_t start;
     uint64_t end;
+    int require_write = (required_flags & VMM_FLAG_RW) != 0;
 
     if (!vmm_user_range_valid(user_addr, size, &start, &end)) {
         return 0;
@@ -72,12 +60,51 @@ static int vmm_user_range_has_perms(uint64_t user_addr, uint32_t size, uint64_t 
         uint64_t phys;
         uint64_t flags;
 
-        if (!vmm_query_info(start, &phys, &flags) || (flags & required_flags) != required_flags) {
+        if (!vmm_query_info(start, &phys, &flags)) {
+            return 0;
+        }
+        if (require_write &&
+            (flags & (VMM_FLAG_PRESENT | VMM_FLAG_USER)) == (VMM_FLAG_PRESENT | VMM_FLAG_USER) &&
+            (flags & VMM_FLAG_RW) == 0 &&
+            vmm_resolve_cow_fault(vmm_current_root(), start, VMM_FLAG_PRESENT | VMM_FLAG_RW | VMM_FLAG_USER)) {
+            if (!vmm_query_info(start, &phys, &flags)) {
+                return 0;
+            }
+        }
+        if ((flags & required_flags) != required_flags) {
             return 0;
         }
         start += VMM_PAGE_SIZE;
     }
     return 1;
+}
+
+static int vmm_ensure_user_page_writable(uint64_t user_addr, uint64_t *phys_out) {
+    uint64_t phys;
+    uint64_t flags;
+
+    if (!vmm_query_info(user_addr, &phys, &flags)) {
+        return 0;
+    }
+    if ((flags & (VMM_FLAG_PRESENT | VMM_FLAG_RW | VMM_FLAG_USER)) ==
+        (VMM_FLAG_PRESENT | VMM_FLAG_RW | VMM_FLAG_USER)) {
+        if (phys_out != 0) {
+            *phys_out = phys;
+        }
+        return 1;
+    }
+    if ((flags & (VMM_FLAG_PRESENT | VMM_FLAG_USER)) == (VMM_FLAG_PRESENT | VMM_FLAG_USER) &&
+        (flags & VMM_FLAG_RW) == 0 &&
+        vmm_resolve_cow_fault(vmm_current_root(), user_addr, VMM_FLAG_PRESENT | VMM_FLAG_RW | VMM_FLAG_USER) &&
+        vmm_query_info(user_addr, &phys, &flags) &&
+        (flags & (VMM_FLAG_PRESENT | VMM_FLAG_RW | VMM_FLAG_USER)) ==
+            (VMM_FLAG_PRESENT | VMM_FLAG_RW | VMM_FLAG_USER)) {
+        if (phys_out != 0) {
+            *phys_out = phys;
+        }
+        return 1;
+    }
+    return 0;
 }
 
 static uint32_t vmm_page_chunk_size(uint64_t virt, uint64_t remaining, uint64_t *page_off_out) {
@@ -99,6 +126,14 @@ uint64_t vmm_current_root(void) {
 
 uint64_t vmm_create_user_root(void) {
     return hal_paging_create_user_root();
+}
+
+uint64_t vmm_clone_root_cow(uint64_t source_root) {
+    return hal_paging_clone_root_cow(source_root);
+}
+
+int vmm_resolve_cow_fault(uint64_t root, uint64_t fault_addr, uint64_t error_code) {
+    return hal_paging_resolve_cow_fault(root, fault_addr, error_code);
 }
 
 void vmm_destroy_user_root(uint64_t root) {
@@ -162,11 +197,11 @@ int vmm_nx_enabled(void) {
 }
 
 int vmm_user_readable(uint64_t user_addr, uint32_t size) {
-    return vmm_user_range_has_perms(user_addr, size, 0x1u | 0x4u);
+    return vmm_user_range_has_perms(user_addr, size, VMM_FLAG_PRESENT | VMM_FLAG_USER);
 }
 
 int vmm_user_writable(uint64_t user_addr, uint32_t size) {
-    return vmm_user_range_has_perms(user_addr, size, 0x1u | 0x2u | 0x4u);
+    return vmm_user_range_has_perms(user_addr, size, VMM_FLAG_PRESENT | VMM_FLAG_RW | VMM_FLAG_USER);
 }
 
 int vmm_user_page_mapped(uint64_t user_addr) {
@@ -179,33 +214,33 @@ int vmm_user_page_mapped(uint64_t user_addr) {
     if (!vmm_query_info(user_addr, &phys, &flags)) {
         return 0;
     }
-    return (flags & 0x1u) != 0 && (flags & 0x4u) != 0;
+    return (flags & VMM_FLAG_PRESENT) != 0 && (flags & VMM_FLAG_USER) != 0;
 }
 
 int vmm_copy_from_user(void *dest, uint64_t user_addr, uint32_t size) {
     uint8_t *out = (uint8_t *)dest;
     uint32_t offset = 0;
 
-    if (!vmm_user_readable(user_addr, size)) {
+    if (dest == 0 || !vmm_user_range_valid(user_addr, size, 0, 0)) {
         return 0;
     }
 
     while (offset < size) {
         uint64_t virt = user_addr + offset;
         uint64_t phys;
+        uint64_t flags;
         uint64_t phys_page;
         uint64_t page_off;
         uint32_t chunk = vmm_page_chunk_size(virt, size - offset, &page_off);
         const uint8_t *src;
 
-        if (!vmm_query(virt, &phys)) {
+        if (!vmm_query_info(virt, &phys, &flags) ||
+            (flags & (VMM_FLAG_PRESENT | VMM_FLAG_USER)) != (VMM_FLAG_PRESENT | VMM_FLAG_USER)) {
             return 0;
         }
         phys_page = phys & ~(uint64_t)(VMM_PAGE_SIZE - 1u);
         src = (const uint8_t *)hal_phys_direct_map(phys_page);
-        for (uint32_t i = 0; i < chunk; i++) {
-            out[offset + i] = src[page_off + i];
-        }
+        memcpy(out + offset, src + page_off, chunk);
         offset += chunk;
     }
     return 1;
@@ -215,7 +250,7 @@ int vmm_copy_to_user(uint64_t user_addr, const void *src, uint32_t size) {
     const uint8_t *in = (const uint8_t *)src;
     uint32_t offset = 0;
 
-    if (!vmm_user_writable(user_addr, size)) {
+    if (src == 0 || !vmm_user_range_valid(user_addr, size, 0, 0)) {
         return 0;
     }
 
@@ -227,31 +262,45 @@ int vmm_copy_to_user(uint64_t user_addr, const void *src, uint32_t size) {
         uint32_t chunk = vmm_page_chunk_size(virt, size - offset, &page_off);
         uint8_t *dest;
 
-        if (!vmm_query(virt, &phys)) {
+        if (!vmm_ensure_user_page_writable(virt, &phys)) {
             return 0;
         }
         phys_page = phys & ~(uint64_t)(VMM_PAGE_SIZE - 1u);
         dest = (uint8_t *)hal_phys_direct_map(phys_page);
-        for (uint32_t i = 0; i < chunk; i++) {
-            dest[page_off + i] = in[offset + i];
-        }
+        memcpy(dest + page_off, in + offset, chunk);
         offset += chunk;
     }
     return 1;
 }
 
 int vmm_copy_user_cstr(char *dest, uint64_t user_addr, uint32_t max_len) {
-    uint32_t i;
+    uint32_t copied = 0;
 
     if (dest == 0 || max_len == 0 || max_len > VMM_USER_STRING_MAX + 1u) {
         return 0;
     }
-    for (i = 0; i + 1u < max_len; i++) {
-        if (!vmm_copy_from_user(&dest[i], user_addr + i, 1)) {
+    while (copied + 1u < max_len) {
+        uint64_t virt = user_addr + copied;
+        uint64_t phys;
+        uint64_t flags;
+        uint64_t page_off;
+        uint32_t chunk = vmm_page_chunk_size(virt, max_len - 1u - copied, &page_off);
+        const uint8_t *src;
+
+        if (virt < user_addr ||
+            !vmm_query_info(virt, &phys, &flags) ||
+            (flags & (VMM_FLAG_PRESENT | VMM_FLAG_USER)) != (VMM_FLAG_PRESENT | VMM_FLAG_USER)) {
             return 0;
         }
-        if (dest[i] == '\0') {
-            return 1;
+        src = (const uint8_t *)hal_phys_direct_map(
+            phys & ~(uint64_t)(VMM_PAGE_SIZE - 1u));
+        for (uint32_t i = 0; i < chunk; i++) {
+            char ch = (char)src[page_off + i];
+
+            dest[copied++] = ch;
+            if (ch == '\0') {
+                return 1;
+            }
         }
     }
     dest[max_len - 1u] = '\0';
@@ -274,7 +323,7 @@ int vmm_zero_range(uint64_t start, uint64_t size) {
         }
         phys_page = phys & ~(uint64_t)(VMM_PAGE_SIZE - 1u);
         dest = (uint8_t *)hal_phys_direct_map(phys_page);
-        vmm_mem_set(dest + page_off, 0, chunk);
+        memset(dest + page_off, 0, chunk);
         offset += chunk;
     }
     return 1;
@@ -297,7 +346,7 @@ int vmm_copy_to_range(uint64_t dest, const uint8_t *src, uint64_t size) {
         }
         phys_page = phys & ~(uint64_t)(VMM_PAGE_SIZE - 1u);
         out = (uint8_t *)hal_phys_direct_map(phys_page);
-        vmm_mem_copy(out + page_off, src + offset, chunk);
+        memcpy(out + page_off, src + offset, chunk);
         offset += chunk;
     }
     return 1;

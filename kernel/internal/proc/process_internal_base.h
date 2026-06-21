@@ -6,18 +6,20 @@
 
 enum {
     USER_PAGE_SIZE = NOS_PAGE_SIZE,
-    USER_DYNAMIC_PAGE_LIMIT = 512,
+    USER_DYNAMIC_PAGE_LIMIT = 2048,
     USER_PROCESS_LIMIT = NOS_PROCESS_SLOT_MAX,
     USER_ELF_ARG_MAX = 8,
     USER_ELF_ENV_MAX = 16,
-    USER_ALLOC_BASE = 0xffffffff80800000ull,
-    USER_ALLOC_END = 0xffffffff81000000ull,
     USER_ELF_BASE = 0x0000008000000000ull,
     USER_ELF_LIMIT = 0x0000008000400000ull,
     USER_ELF_STACK_TOP = 0x0000008000800000ull,
-    USER_ELF_STACK_SIZE = 0x4000ull,
+    USER_ELF_STACK_SIZE = 0x10000ull,
     USER_ELF_STACK_BOTTOM = USER_ELF_STACK_TOP - USER_ELF_STACK_SIZE,
     USER_ELF_STACK_INIT = USER_ELF_STACK_TOP - 8ull,
+    USER_MMAP_BASE = 0x0000008000500000ull,
+    USER_MMAP_END = 0x0000008000700000ull,
+    USER_ALLOC_BASE = 0x0000008000800000ull,
+    USER_ALLOC_END = 0x0000008001000000ull,
     ELF_ET_EXEC = 2,
     ELF_EM_X86_64 = 62,
     ELF_CLASS_64 = 2,
@@ -25,6 +27,18 @@ enum {
     ELF_PT_LOAD = 1,
     ELF_PF_X = 1,
     ELF_PF_W = 2
+};
+
+enum {
+    PROCESS_ELF_SEGMENT_MAX = 16
+};
+
+struct process_elf_segment {
+    uint64_t vaddr;
+    uint64_t memsz;
+    uint64_t filesz;
+    uint64_t offset;
+    uint32_t perms;
 };
 
 enum {
@@ -74,11 +88,20 @@ struct user_page_mapping {
     uint64_t phys_addr;
     uint8_t used;
     uint8_t reserved_pool;
+    uint8_t shared;
+    uint8_t writable;
+    uint16_t shm_slot;
 };
 
 struct process_session {
     struct address_space address_space;
     struct process process;
+    uint32_t elf_image_size;
+    uint16_t elf_segment_count;
+    uint8_t elf_backing_slot;
+    struct process_elf_segment elf_segments[PROCESS_ELF_SEGMENT_MAX];
+    uint8_t fpu_state[HAL_FPU_STATE_SIZE] __attribute__((aligned(16)));
+    uint8_t fpu_state_valid;
 };
 
 struct job_runtime {
@@ -125,6 +148,7 @@ struct cpu_user_state {
     uint32_t nested_kernel_stack_depth;
     struct process_session *active_sessions[USER_PROCESS_LIMIT];
     struct user_page_mapping *active_mappings[USER_PROCESS_LIMIT];
+    uint8_t kernel_fpu_state[HAL_FPU_STATE_SIZE] __attribute__((aligned(16)));
 };
 
 extern struct cpu_user_state g_cpu_user_state[USER_CPU_COUNT];

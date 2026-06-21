@@ -1,6 +1,7 @@
 #include "drivers/video/framebuffer.h"
 #include "drivers/video/framebuffer_font.h"
 #include "kernel/public/core/kprint.h"
+#include "kernel/public/core/profile.h"
 #include "kernel/public/mem/pmm.h"
 #include "hal/hal.h"
 #include <stddef.h>
@@ -19,7 +20,9 @@ enum {
     FRAMEBUFFER_MOUSE_CURSOR_WIDTH = 12,
     FRAMEBUFFER_MOUSE_CURSOR_HEIGHT = 18,
     FRAMEBUFFER_MOUSE_CURSOR_PIXELS = FRAMEBUFFER_MOUSE_CURSOR_WIDTH * FRAMEBUFFER_MOUSE_CURSOR_HEIGHT,
-    FRAMEBUFFER_DIRTY_RECT_MAX = 32
+    FRAMEBUFFER_DIRTY_RECT_MAX = 32,
+    FRAMEBUFFER_DIRTY_RECT_COLLAPSE = 8,
+    FRAMEBUFFER_PRESENT_HZ = 60
 };
 
 struct framebuffer_dirty_rect {
@@ -64,6 +67,8 @@ struct framebuffer_display_state {
     uint16_t cursor_row;
     uint16_t cursor_col;
     uint32_t cursor_blink_ticks;
+    uint32_t present_accumulator;
+    uint8_t present_pending;
     uint32_t dirty_count;
     struct framebuffer_dirty_rect dirty_rects[FRAMEBUFFER_DIRTY_RECT_MAX];
     uint8_t mouse_cursor_enabled;
@@ -87,6 +92,8 @@ static const char *g_framebuffer_font_module_text;
 static uint32_t g_framebuffer_font_module_size;
 static uint32_t g_framebuffer_font_page_offsets[FRAMEBUFFER_FONT_INDEX_PAGES];
 static uint8_t g_framebuffer_font_page_valid[FRAMEBUFFER_FONT_INDEX_PAGES];
+static uint32_t g_framebuffer_profile_present;
+static uint32_t g_framebuffer_profile_rects;
 
 static const uint32_t g_framebuffer_palette[16][3] = {
     {0x00u, 0x00u, 0x00u},
@@ -229,7 +236,7 @@ static void framebuffer_mark_dirty(struct framebuffer_display_state *state,
         state->dirty_rects[i] = state->dirty_rects[state->dirty_count];
     }
 
-    if (state->dirty_count < FRAMEBUFFER_DIRTY_RECT_MAX) {
+    if (state->dirty_count < FRAMEBUFFER_DIRTY_RECT_COLLAPSE) {
         state->dirty_rects[state->dirty_count++] = dirty;
         return;
     }
@@ -256,6 +263,9 @@ static void framebuffer_mark_dirty(struct framebuffer_display_state *state,
 
 static void framebuffer_flush_dirty(struct framebuffer_display_state *state) {
     uint32_t bytes_per_pixel;
+    uint32_t rect_count;
+    uint64_t bytes = 0u;
+    uint64_t start;
 
     if (state == 0 || state->update_depth != 0u) {
         return;
@@ -266,21 +276,40 @@ static void framebuffer_flush_dirty(struct framebuffer_display_state *state) {
         return;
     }
 
+    if (g_framebuffer_profile_present == 0u) {
+        g_framebuffer_profile_present = kernel_profile_register("framebuffer.present");
+        g_framebuffer_profile_rects = kernel_profile_register("framebuffer.rects");
+    }
+    start = kernel_profile_clock();
+    rect_count = state->dirty_count;
     bytes_per_pixel = state->bpp / 8u;
     for (uint32_t i = 0; i < state->dirty_count; i++) {
         const struct framebuffer_dirty_rect *dirty = &state->dirty_rects[i];
         uint32_t row_bytes = (dirty->x1 - dirty->x0) * bytes_per_pixel;
+        uint32_t rows = dirty->y1 - dirty->y0;
 
+        bytes += (uint64_t)row_bytes * rows;
+        if (dirty->x0 == 0u && row_bytes == state->pitch) {
+            const void *src = (const void *)(state->base + (uint64_t)dirty->y0 * state->pitch);
+            void *dst = (void *)(state->front_base + (uint64_t)dirty->y0 * state->pitch);
+
+            memcpy_wc(dst, src, row_bytes * rows);
+            continue;
+        }
         for (uint32_t y = dirty->y0; y < dirty->y1; y++) {
             volatile uint8_t *src = state->base + (uint64_t)y * state->pitch +
                                     (uint64_t)dirty->x0 * bytes_per_pixel;
             volatile uint8_t *dst = state->front_base + (uint64_t)y * state->pitch +
                                     (uint64_t)dirty->x0 * bytes_per_pixel;
 
-            memmove((void *)dst, (const void *)src, row_bytes);
+            memcpy_wc((void *)dst, (const void *)src, row_bytes);
         }
     }
     state->dirty_count = 0u;
+    kernel_profile_record(g_framebuffer_profile_present,
+                          kernel_profile_clock() - start,
+                          bytes);
+    kernel_profile_record(g_framebuffer_profile_rects, 0u, rect_count);
 }
 
 static void framebuffer_write_pixel(const struct framebuffer_display_state *state,
@@ -692,7 +721,6 @@ static void framebuffer_end_mouse_cursor_covered_update(struct framebuffer_displ
     if (redraw) {
         framebuffer_draw_mouse_cursor(state);
     }
-    framebuffer_flush_dirty(state);
 }
 
 static int framebuffer_hex_digit_value(char ch) {
@@ -1221,6 +1249,8 @@ void framebuffer_display_init(const struct bootx_console_info *console) {
     state->cursor_row = 0;
     state->cursor_col = 0;
     state->cursor_blink_ticks = 0u;
+    state->present_accumulator = 0u;
+    state->present_pending = 0u;
     state->dirty_count = 0u;
     state->mouse_cursor_enabled = 0u;
     state->mouse_cursor_visible = 0u;
@@ -1292,9 +1322,6 @@ void framebuffer_display_end_update(void) {
         return;
     }
     g_framebuffer_display.update_depth--;
-    if (g_framebuffer_display.update_depth == 0u) {
-        framebuffer_flush_dirty(&g_framebuffer_display);
-    }
 }
 
 void framebuffer_display_load_font_from_boot_modules(const struct bootx_boot_info *boot_info) {
@@ -1549,38 +1576,52 @@ void framebuffer_display_tick(uint32_t ticks) {
     uint8_t visible;
     uint32_t x;
     uint32_t y;
+    uint32_t timer_hz;
     int redraw_mouse;
 
     if (!g_framebuffer_display.active) {
         return;
     }
-    if (g_framebuffer_display.cursor_enabled == 0u) {
-        framebuffer_flush_dirty(&g_framebuffer_display);
+    if (g_framebuffer_display.cursor_enabled != 0u) {
+        visible = ((ticks / FRAMEBUFFER_CURSOR_BLINK_TICKS) & 1u) == 0u ? 1u : 0u;
+        if (visible != g_framebuffer_display.cursor_visible) {
+            g_framebuffer_display.cursor_blink_ticks = ticks;
+            g_framebuffer_display.cursor_visible = visible;
+            x = g_framebuffer_display.origin_x +
+                (uint32_t)g_framebuffer_display.cursor_col * FRAMEBUFFER_FONT_WIDTH;
+            y = g_framebuffer_display.origin_y +
+                (uint32_t)g_framebuffer_display.cursor_row * g_framebuffer_display.cell_height;
+            redraw_mouse = framebuffer_begin_mouse_cursor_covered_update(&g_framebuffer_display,
+                                                                         x,
+                                                                         y,
+                                                                         FRAMEBUFFER_FONT_WIDTH,
+                                                                         g_framebuffer_display.cell_height);
+            framebuffer_render_cell(&g_framebuffer_display,
+                                    g_framebuffer_display.cursor_row,
+                                    g_framebuffer_display.cursor_col);
+            framebuffer_end_mouse_cursor_covered_update(&g_framebuffer_display, redraw_mouse);
+        }
+    }
+
+    timer_hz = hal_timer_hz();
+    if (timer_hz == 0u) {
+        timer_hz = 100u;
+    }
+    g_framebuffer_display.present_accumulator += FRAMEBUFFER_PRESENT_HZ;
+    if (g_framebuffer_display.present_accumulator >= timer_hz) {
+        g_framebuffer_display.present_accumulator -= timer_hz;
+        g_framebuffer_display.present_pending = 1u;
+    }
+}
+
+void framebuffer_display_service_pending(void) {
+    if (!g_framebuffer_display.active ||
+        !g_framebuffer_display.present_pending ||
+        g_framebuffer_display.update_depth != 0u) {
         return;
     }
-    visible = ((ticks / FRAMEBUFFER_CURSOR_BLINK_TICKS) & 1u) == 0u ? 1u : 0u;
-    if (visible == g_framebuffer_display.cursor_visible &&
-        g_framebuffer_display.cursor_blink_ticks == ticks) {
-        framebuffer_flush_dirty(&g_framebuffer_display);
-        return;
-    }
-    g_framebuffer_display.cursor_blink_ticks = ticks;
-    if (visible == g_framebuffer_display.cursor_visible) {
-        framebuffer_flush_dirty(&g_framebuffer_display);
-        return;
-    }
-    g_framebuffer_display.cursor_visible = visible;
-    x = g_framebuffer_display.origin_x + (uint32_t)g_framebuffer_display.cursor_col * FRAMEBUFFER_FONT_WIDTH;
-    y = g_framebuffer_display.origin_y + (uint32_t)g_framebuffer_display.cursor_row * g_framebuffer_display.cell_height;
-    redraw_mouse = framebuffer_begin_mouse_cursor_covered_update(&g_framebuffer_display,
-                                                                 x,
-                                                                 y,
-                                                                 FRAMEBUFFER_FONT_WIDTH,
-                                                                 g_framebuffer_display.cell_height);
-    framebuffer_render_cell(&g_framebuffer_display,
-                            g_framebuffer_display.cursor_row,
-                            g_framebuffer_display.cursor_col);
-    framebuffer_end_mouse_cursor_covered_update(&g_framebuffer_display, redraw_mouse);
+    g_framebuffer_display.present_pending = 0u;
+    framebuffer_flush_dirty(&g_framebuffer_display);
 }
 
 uint16_t framebuffer_display_columns(void) {
@@ -1845,6 +1886,89 @@ void framebuffer_display_blit_surface(const struct surface *surface,
     framebuffer_end_mouse_cursor_covered_update(&g_framebuffer_display, redraw_mouse);
 }
 
+void framebuffer_display_blit_xrgb8888(const uint32_t *pixels,
+                                       uint32_t pitch,
+                                       uint32_t width,
+                                       uint32_t height,
+                                       int32_t dst_x,
+                                       int32_t dst_y) {
+    const uint8_t *src = (const uint8_t *)pixels;
+    uint32_t src_x = 0u;
+    uint32_t src_y = 0u;
+    int redraw_mouse;
+
+    if (!g_framebuffer_display.active || g_framebuffer_display.base == 0 ||
+        pixels == 0 || width == 0u || height == 0u ||
+        width > 0xffffffffu / 4u || pitch < width * 4u ||
+        dst_x >= (int32_t)g_framebuffer_display.width ||
+        dst_y >= (int32_t)g_framebuffer_display.height) {
+        return;
+    }
+    if (dst_x < 0) {
+        uint32_t crop = (uint32_t)(-(int64_t)dst_x);
+
+        if (crop >= width) {
+            return;
+        }
+        src_x = crop;
+        width -= crop;
+        dst_x = 0;
+    }
+    if (dst_y < 0) {
+        uint32_t crop = (uint32_t)(-(int64_t)dst_y);
+
+        if (crop >= height) {
+            return;
+        }
+        src_y = crop;
+        height -= crop;
+        dst_y = 0;
+    }
+    if ((uint32_t)dst_x + width > g_framebuffer_display.width) {
+        width = g_framebuffer_display.width - (uint32_t)dst_x;
+    }
+    if ((uint32_t)dst_y + height > g_framebuffer_display.height) {
+        height = g_framebuffer_display.height - (uint32_t)dst_y;
+    }
+    if (width == 0u || height == 0u) {
+        return;
+    }
+
+    redraw_mouse = framebuffer_begin_mouse_cursor_covered_update(&g_framebuffer_display,
+                                                                 (uint32_t)dst_x,
+                                                                 (uint32_t)dst_y,
+                                                                 width,
+                                                                 height);
+    if (framebuffer_is_xrgb8888(&g_framebuffer_display)) {
+        for (uint32_t y = 0; y < height; y++) {
+            const void *src_row = src + (src_y + y) * pitch + src_x * 4u;
+            volatile uint8_t *dst_row = g_framebuffer_display.base +
+                                        (uint64_t)((uint32_t)dst_y + y) * g_framebuffer_display.pitch +
+                                        (uint64_t)(uint32_t)dst_x * 4u;
+
+            memmove((void *)dst_row, src_row, width * 4u);
+        }
+    } else {
+        for (uint32_t y = 0; y < height; y++) {
+            const uint32_t *src_row =
+                (const uint32_t *)(src + (src_y + y) * pitch + src_x * 4u);
+
+            for (uint32_t x = 0; x < width; x++) {
+                framebuffer_write_pixel(&g_framebuffer_display,
+                                        (uint32_t)dst_x + x,
+                                        (uint32_t)dst_y + y,
+                                        framebuffer_xrgb_to_pixel(&g_framebuffer_display, src_row[x]));
+            }
+        }
+    }
+    framebuffer_mark_dirty(&g_framebuffer_display,
+                           (uint32_t)dst_x,
+                           (uint32_t)dst_y,
+                           width,
+                           height);
+    framebuffer_end_mouse_cursor_covered_update(&g_framebuffer_display, redraw_mouse);
+}
+
 void framebuffer_display_draw_pixel(int32_t x, int32_t y, uint32_t rgb) {
     uint32_t color;
 
@@ -2078,6 +2202,7 @@ void framebuffer_display_present(void) {
     if (!g_framebuffer_display.active) {
         return;
     }
+    g_framebuffer_display.present_pending = 0u;
     framebuffer_flush_dirty(&g_framebuffer_display);
 }
 
@@ -2095,12 +2220,10 @@ void framebuffer_display_set_mouse_cursor_enabled(int enabled) {
         }
         state->mouse_cursor_enabled = 1u;
         framebuffer_draw_mouse_cursor(state);
-        framebuffer_flush_dirty(state);
         return;
     }
     framebuffer_restore_mouse_cursor(state);
     state->mouse_cursor_enabled = 0u;
-    framebuffer_flush_dirty(state);
 }
 
 void framebuffer_display_move_mouse_cursor(int32_t dx, int32_t dy) {
@@ -2138,7 +2261,6 @@ void framebuffer_display_move_mouse_cursor(int32_t dx, int32_t dy) {
     state->mouse_cursor_x = x;
     state->mouse_cursor_y = y;
     framebuffer_draw_mouse_cursor(state);
-    framebuffer_flush_dirty(state);
 }
 
 int framebuffer_display_mouse_cursor_cell(uint16_t *row_out, uint16_t *col_out) {

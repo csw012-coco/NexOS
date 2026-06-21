@@ -77,6 +77,7 @@ Commands:
 - `action`
 - `mapper`
 - `echo`
+- `yes`
 - `clear`
 - `pwd`
 - `tty`
@@ -319,7 +320,7 @@ enumeration order.
 
 The current built-in applet list exposed by `help` is:
 
-`help actions action mapper echo clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg`
+`help actions action mapper echo yes clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg`
 
 ## Naming Notes
 

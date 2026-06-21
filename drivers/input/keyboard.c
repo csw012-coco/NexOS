@@ -51,6 +51,7 @@ static enum keyboard_keycode keyboard_lookup_keycode(uint8_t scancode, int exten
         [0x3b] = KEYBOARD_KEY_F1,
         [0x3c] = KEYBOARD_KEY_F2,
         [0x3d] = KEYBOARD_KEY_F3,
+        [0x3e] = KEYBOARD_KEY_F4,
         [0x45] = KEYBOARD_KEY_NUM_LOCK,
         [0x46] = KEYBOARD_KEY_SCROLL_LOCK,
         [0x47] = KEYBOARD_KEY_HOME,
@@ -162,6 +163,16 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
     event.num_lock = g_num_lock_active;
     event.scroll_lock = g_scroll_lock_active;
 
+    /*
+     * Korean 103-key PS/2 keyboards send the Hangul key as a standalone
+     * 0xf2 make code rather than a normal set-1 make/break pair.
+     */
+    if (scancode == 0xf2u) {
+        g_extended_prefix_active = 0u;
+        event.keycode = KEYBOARD_KEY_HANGUL;
+        event.pressed = 1u;
+        return event;
+    }
     if (scancode == 0xe0u) {
         g_extended_prefix_active = 1u;
         return event;
@@ -185,7 +196,6 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
             g_ctrl_active = release ? 0u : 1u;
             break;
         case KEYBOARD_KEY_LEFT_ALT:
-        case KEYBOARD_KEY_RIGHT_ALT:
             g_alt_active = release ? 0u : 1u;
             break;
         case KEYBOARD_KEY_CAPS_LOCK:
@@ -252,7 +262,6 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
             g_ctrl_active = release ? 0u : 1u;
             break;
         case KEYBOARD_KEY_LEFT_ALT:
-        case KEYBOARD_KEY_RIGHT_ALT:
             g_alt_active = release ? 0u : 1u;
             break;
         case KEYBOARD_KEY_CAPS_LOCK:

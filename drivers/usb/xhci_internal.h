@@ -165,7 +165,8 @@ enum {
     SCSI_INQUIRY = 0x12u,
     SCSI_READ_CAPACITY_10 = 0x25u,
     SCSI_READ_10 = 0x28u,
-    SCSI_WRITE_10 = 0x2au
+    SCSI_WRITE_10 = 0x2au,
+    SCSI_SYNCHRONIZE_CACHE_10 = 0x35u
 };
 
 struct xhci_trb {

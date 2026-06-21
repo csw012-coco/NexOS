@@ -1,40 +1,26 @@
 #include "user/apps/elf/nexbox/core/cmdsuite_shared.h"
 
-static void write_process_state(uint32_t state) {
+static const char *process_state_name_local(uint32_t state) {
     switch (state) {
         case NEX_PROC_STATE_READY:
-            write_str("ready");
-            break;
+            return "ready";
         case NEX_PROC_STATE_RUNNING:
-            write_str("running");
-            break;
+            return "running";
         case NEX_PROC_STATE_SLEEPING:
-            write_str("sleeping");
-            break;
+            return "sleeping";
         case NEX_PROC_STATE_STOPPED:
-            write_str("stopped");
-            break;
+            return "stopped";
         case NEX_PROC_STATE_EXITED:
-            write_str("exited");
-            break;
+            return "exited";
         case NEX_PROC_STATE_WAITING:
-            write_str("waiting");
-            break;
+            return "waiting";
         default:
-            write_str("free");
-            break;
+            return "free";
     }
 }
 
-static void write_process_kind(uint32_t kind) {
-    switch (kind) {
-        case NEX_PROC_IMAGE_ELF:
-            write_str("elf");
-            break;
-        default:
-            write_str("none");
-            break;
-    }
+static void write_process_state(uint32_t state) {
+    write_str(process_state_name_local(state));
 }
 
 static void write_process_table_header(int jobs_view) {
@@ -46,65 +32,47 @@ static void write_process_table_header(int jobs_view) {
 }
 
 static void write_process_info_line(const struct syscall_process_info *info, int jobs_view) {
-    write_dec(info->slot);
-    write_str(info->slot < 10u ? "    " : "   ");
-    write_dec(info->pid);
-    if (info->pid < 10u) {
-        write_str("     ");
-    } else if (info->pid < 100u) {
-        write_str("    ");
-    } else if (info->pid < 1000u) {
-        write_str("   ");
-    } else if (info->pid < 10000u) {
-        write_str("  ");
-    } else {
-        write_str(" ");
-    }
-    write_process_state(info->state);
-    if (info->state == NEX_PROC_STATE_READY) {
-        write_str("        ");
-    } else if (info->state == NEX_PROC_STATE_RUNNING) {
-        write_str("       ");
-    } else if (info->state == NEX_PROC_STATE_SLEEPING) {
-        write_str("     ");
-    } else if (info->state == NEX_PROC_STATE_STOPPED) {
-        write_str("      ");
-    } else if (info->state == NEX_PROC_STATE_EXITED) {
-        write_str("       ");
-    } else if (info->state == NEX_PROC_STATE_WAITING) {
-        write_str("       ");
-    } else {
-        write_str("         ");
-    }
     if (jobs_view) {
         if (info->state == NEX_PROC_STATE_SLEEPING) {
-            write_dec(info->wake_tick);
+            dprintf(STDOUT_FILENO,
+                    "%u %u %s %u %s\n",
+                    info->slot,
+                    info->pid,
+                    process_state_name_local(info->state),
+                    info->wake_tick,
+                    info->name[0] != '\0' ? info->name : "(unnamed)");
         } else {
-            write_str("-");
-        }
-        if (info->state != NEX_PROC_STATE_SLEEPING || info->wake_tick < 10u) {
-            write_str("        ");
-        } else if (info->wake_tick < 100u) {
-            write_str("       ");
-        } else if (info->wake_tick < 1000u) {
-            write_str("      ");
-        } else if (info->wake_tick < 10000u) {
-            write_str("     ");
-        } else {
-            write_str("    ");
+            dprintf(STDOUT_FILENO,
+                    "%u %u %s - %s\n",
+                    info->slot,
+                    info->pid,
+                    process_state_name_local(info->state),
+                    info->name[0] != '\0' ? info->name : "(unnamed)");
         }
     } else {
-        write_process_exit_status(info->exit_code);
-        write_str(" ");
-        write_process_kind(info->image_kind);
-        if (info->exit_code == 0) {
-            write_str("                    ");
+        const char *reason = process_exit_reason_local(info->exit_code);
+
+        if (reason != NULL) {
+            dprintf(STDOUT_FILENO,
+                    "%u %u %s %s (%d) %s %s\n",
+                    info->slot,
+                    info->pid,
+                    process_state_name_local(info->state),
+                    reason,
+                    info->exit_code,
+                    info->image_kind == NEX_PROC_IMAGE_ELF ? "elf" : "none",
+                    info->name[0] != '\0' ? info->name : "(unnamed)");
         } else {
-            write_str(" ");
+            dprintf(STDOUT_FILENO,
+                    "%u %u %s %d %s %s\n",
+                    info->slot,
+                    info->pid,
+                    process_state_name_local(info->state),
+                    info->exit_code,
+                    info->image_kind == NEX_PROC_IMAGE_ELF ? "elf" : "none",
+                    info->name[0] != '\0' ? info->name : "(unnamed)");
         }
     }
-    write_str(info->name[0] != '\0' ? info->name : "(unnamed)");
-    write_str("\n");
 }
 
 static int find_process_info_by_pid(uint32_t pid, struct syscall_process_info *out) {

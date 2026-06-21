@@ -117,6 +117,9 @@ int64_t vfs_write_to_fat32(struct vfs *vfs,
     if (fat32_write_file_range(fat32, &node->handle.fat32_file, *offset_io, buffer, size, &bytes_written) != 0) {
         return -1;
     }
+    if (blockdev_flush(fat32->bdev) != 0) {
+        return -1;
+    }
     *offset_io += bytes_written;
     return (int64_t)bytes_written;
 }
@@ -141,6 +144,9 @@ int64_t vfs_write_to_nxfs(struct vfs *vfs,
                               buffer,
                               size,
                               &bytes_written) != 0) {
+        return -1;
+    }
+    if (blockdev_flush(nxfs->bdev) != 0) {
         return -1;
     }
     *offset_io += bytes_written;

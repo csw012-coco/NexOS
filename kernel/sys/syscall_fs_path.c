@@ -267,6 +267,23 @@ uint64_t syscall_handle_remove(uint64_t user_path_addr) {
     return fs_service_remove(g_syscall_vfs, g_syscall_path_buffer);
 }
 
+uint64_t syscall_handle_mkfifo(uint64_t user_path_addr) {
+    struct process *proc = process_current_mut();
+
+    if (proc == 0 || g_syscall_vfs == 0) {
+        return (uint64_t)-1;
+    }
+    switch (syscall_copy_resolved_user_path(proc, user_path_addr, g_syscall_path_buffer, sizeof(g_syscall_path_buffer))) {
+        case -1:
+            return syscall_kill_bad_user_pointer();
+        case 0:
+            return (uint64_t)-1;
+        default:
+            break;
+    }
+    return fs_service_mkfifo(g_syscall_vfs, g_syscall_path_buffer);
+}
+
 uint64_t syscall_handle_mount(uint64_t user_source_addr, uint64_t user_target_addr, uint32_t syscall_kind) {
     int boot_source;
 

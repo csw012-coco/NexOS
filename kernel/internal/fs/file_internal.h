@@ -19,6 +19,12 @@ enum kernel_file_read_flags {
     KERNEL_FILE_READ_CHAR = 2u
 };
 
+enum kernel_file_io_result {
+    KERNEL_FILE_IO_ERROR = -1,
+    KERNEL_FILE_IO_WOULD_BLOCK = -2,
+    KERNEL_FILE_IO_BROKEN_PIPE = -3
+};
+
 struct file;
 struct vfs;
 
@@ -68,6 +74,12 @@ int file_table_open_pipe_pair(struct file *table,
                               uint32_t count,
                               uint32_t start_index,
                               uint32_t pair_out[2]);
+int file_table_open_named_pipe(struct file *table,
+                               uint32_t count,
+                               uint32_t start_index,
+                               const char *path,
+                               int writable,
+                               uint32_t *fd_out);
 int file_init_pipe_pair(struct file *read_file, struct file *write_file);
 int file_clone(struct file *dst, const struct file *src);
 void file_discard(struct file *file);

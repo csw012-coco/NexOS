@@ -400,7 +400,7 @@ static void ed_print_help_local(void) {
 
 enum {
     VI_KEY_ESC = 0x1b,
-    VI_KEY_UP = 0x101,
+    VI_KEY_UP = 0x110001,
     VI_KEY_DOWN,
     VI_KEY_RIGHT,
     VI_KEY_LEFT,
@@ -414,6 +414,154 @@ struct vi_screen {
     uint32_t text_rows;
     uint32_t status_row;
 };
+
+#define VI_TAB_WIDTH 8u
+
+static int vi_utf8_is_continuation_local(uint8_t ch) {
+    return (ch & 0xc0u) == 0x80u;
+}
+
+static uint32_t vi_utf8_decode_local(const char *text,
+                                     uint32_t len,
+                                     uint32_t offset,
+                                     uint32_t *codepoint_out) {
+    uint8_t first;
+    uint32_t needed;
+    uint32_t value;
+    uint32_t minimum;
+
+    if (text == NULL || codepoint_out == NULL || offset >= len) {
+        return 0u;
+    }
+    first = (uint8_t)text[offset];
+    if (first < 0x80u) {
+        *codepoint_out = first;
+        return 1u;
+    }
+    if ((first & 0xe0u) == 0xc0u) {
+        needed = 2u;
+        value = first & 0x1fu;
+        minimum = 0x80u;
+    } else if ((first & 0xf0u) == 0xe0u) {
+        needed = 3u;
+        value = first & 0x0fu;
+        minimum = 0x800u;
+    } else if ((first & 0xf8u) == 0xf0u) {
+        needed = 4u;
+        value = first & 0x07u;
+        minimum = 0x10000u;
+    } else {
+        *codepoint_out = 0xfffdu;
+        return 1u;
+    }
+    if (offset + needed > len) {
+        *codepoint_out = 0xfffdu;
+        return 1u;
+    }
+    for (uint32_t i = 1u; i < needed; i++) {
+        uint8_t next = (uint8_t)text[offset + i];
+
+        if (!vi_utf8_is_continuation_local(next)) {
+            *codepoint_out = 0xfffdu;
+            return 1u;
+        }
+        value = (value << 6) | (next & 0x3fu);
+    }
+    if (value < minimum || value > 0x10ffffu ||
+        (value >= 0xd800u && value <= 0xdfffu)) {
+        *codepoint_out = 0xfffdu;
+        return 1u;
+    }
+    *codepoint_out = value;
+    return needed;
+}
+
+static uint32_t vi_utf8_encode_local(uint32_t codepoint, char out[4]) {
+    if (codepoint <= 0x7fu) {
+        out[0] = (char)codepoint;
+        return 1u;
+    }
+    if (codepoint <= 0x7ffu) {
+        out[0] = (char)(0xc0u | (codepoint >> 6));
+        out[1] = (char)(0x80u | (codepoint & 0x3fu));
+        return 2u;
+    }
+    if (codepoint <= 0xffffu) {
+        out[0] = (char)(0xe0u | (codepoint >> 12));
+        out[1] = (char)(0x80u | ((codepoint >> 6) & 0x3fu));
+        out[2] = (char)(0x80u | (codepoint & 0x3fu));
+        return 3u;
+    }
+    out[0] = (char)(0xf0u | (codepoint >> 18));
+    out[1] = (char)(0x80u | ((codepoint >> 12) & 0x3fu));
+    out[2] = (char)(0x80u | ((codepoint >> 6) & 0x3fu));
+    out[3] = (char)(0x80u | (codepoint & 0x3fu));
+    return 4u;
+}
+
+static uint32_t vi_codepoint_width_local(uint32_t codepoint) {
+    if ((codepoint >= 0x0300u && codepoint <= 0x036fu) ||
+        (codepoint >= 0x1ab0u && codepoint <= 0x1affu) ||
+        (codepoint >= 0x1dc0u && codepoint <= 0x1dffu) ||
+        (codepoint >= 0x20d0u && codepoint <= 0x20ffu) ||
+        (codepoint >= 0xfe20u && codepoint <= 0xfe2fu)) {
+        return 0u;
+    }
+    return ((codepoint >= 0x1100u && codepoint <= 0x115fu) ||
+            (codepoint >= 0x2329u && codepoint <= 0x232au) ||
+            (codepoint >= 0x2e80u && codepoint <= 0xa4cfu) ||
+            (codepoint >= 0xac00u && codepoint <= 0xd7a3u) ||
+            (codepoint >= 0xf900u && codepoint <= 0xfaffu) ||
+            (codepoint >= 0xfe10u && codepoint <= 0xfe6fu) ||
+            (codepoint >= 0xff00u && codepoint <= 0xff60u) ||
+            (codepoint >= 0xffe0u && codepoint <= 0xffe6u)) ? 2u : 1u;
+}
+
+static uint32_t vi_utf8_previous_local(const char *text, uint32_t offset) {
+    if (text == NULL || offset == 0u) {
+        return 0u;
+    }
+    offset--;
+    while (offset != 0u && vi_utf8_is_continuation_local((uint8_t)text[offset])) {
+        offset--;
+    }
+    return offset;
+}
+
+static uint32_t vi_utf8_next_local(const char *text, uint32_t len, uint32_t offset) {
+    uint32_t codepoint;
+    uint32_t consumed;
+
+    if (text == NULL || offset >= len) {
+        return len;
+    }
+    consumed = vi_utf8_decode_local(text, len, offset, &codepoint);
+    return consumed != 0u ? offset + consumed : offset + 1u;
+}
+
+static uint32_t vi_visual_col_local(const char *text, uint32_t byte_limit) {
+    uint32_t len = str_len_local(text);
+    uint32_t offset = 0u;
+    uint32_t col = 0u;
+
+    if (byte_limit > len) {
+        byte_limit = len;
+    }
+    while (offset < byte_limit) {
+        uint32_t codepoint;
+        uint32_t consumed = vi_utf8_decode_local(text, len, offset, &codepoint);
+
+        if (consumed == 0u || offset + consumed > byte_limit) {
+            consumed = 1u;
+            codepoint = (uint8_t)text[offset];
+        }
+        col += codepoint == '\t'
+                   ? VI_TAB_WIDTH - (col % VI_TAB_WIDTH)
+                   : vi_codepoint_width_local(codepoint);
+        offset += consumed;
+    }
+    return col;
+}
 
 static void vi_query_screen_local(struct vi_screen *screen) {
     struct syscall_machine_info info;
@@ -447,11 +595,33 @@ static void vi_set_status_local(char *status, uint32_t size, const char *text) {
 }
 
 static uint32_t vi_write_limited_local(const char *text, uint32_t limit) {
+    uint32_t len = str_len_local(text);
+    uint32_t offset = 0u;
     uint32_t written = 0u;
 
-    while (text != NULL && text[written] != '\0' && written < limit) {
-        write_stdout(&text[written], 1u);
-        written++;
+    while (text != NULL && offset < len && written < limit) {
+        uint32_t codepoint;
+        uint32_t consumed = vi_utf8_decode_local(text, len, offset, &codepoint);
+        uint32_t width;
+
+        if (consumed == 0u) {
+            break;
+        }
+        width = codepoint == '\t'
+                    ? VI_TAB_WIDTH - (written % VI_TAB_WIDTH)
+                    : vi_codepoint_width_local(codepoint);
+        if (written + width > limit) {
+            break;
+        }
+        if (codepoint == '\t') {
+            for (uint32_t i = 0u; i < width; i++) {
+                write_stdout(" ", 1u);
+            }
+        } else {
+            write_stdout(text + offset, consumed);
+        }
+        written += width;
+        offset += consumed;
     }
     return written;
 }
@@ -460,12 +630,48 @@ static int vi_read_key_local(void) {
     char ch = 0;
     char seq1 = 0;
     char seq2 = 0;
+    uint8_t first;
+    uint32_t needed;
+    uint32_t value;
+    uint32_t minimum;
 
     if (nex_read(STDIN_FILENO, &ch, 1u, NEX_READ_BLOCKING | NEX_READ_CHAR) <= 0) {
         return 0;
     }
+    first = (uint8_t)ch;
+    if (first >= 0x80u) {
+        if ((first & 0xe0u) == 0xc0u) {
+            needed = 2u;
+            value = first & 0x1fu;
+            minimum = 0x80u;
+        } else if ((first & 0xf0u) == 0xe0u) {
+            needed = 3u;
+            value = first & 0x0fu;
+            minimum = 0x800u;
+        } else if ((first & 0xf8u) == 0xf0u) {
+            needed = 4u;
+            value = first & 0x07u;
+            minimum = 0x10000u;
+        } else {
+            return 0xfffd;
+        }
+        for (uint32_t i = 1u; i < needed; i++) {
+            char next;
+
+            if (nex_read(STDIN_FILENO, &next, 1u, NEX_READ_BLOCKING | NEX_READ_CHAR) <= 0 ||
+                !vi_utf8_is_continuation_local((uint8_t)next)) {
+                return 0xfffd;
+            }
+            value = (value << 6) | ((uint8_t)next & 0x3fu);
+        }
+        if (value < minimum || value > 0x10ffffu ||
+            (value >= 0xd800u && value <= 0xdfffu)) {
+            return 0xfffd;
+        }
+        return (int)value;
+    }
     if (ch != (char)VI_KEY_ESC) {
-        return (uint8_t)ch;
+        return first;
     }
     if (nex_read(STDIN_FILENO, &seq1, 1u, NEX_READ_NONBLOCK | NEX_READ_CHAR) <= 0) {
         return VI_KEY_ESC;
@@ -502,6 +708,11 @@ static void vi_clamp_cursor_local(struct ed_buffer *buffer, uint32_t *row_io, ui
     if (*col_io > len) {
         *col_io = len;
     }
+    while (*col_io != 0u &&
+           *col_io < len &&
+           vi_utf8_is_continuation_local((uint8_t)buffer->lines[*row_io][*col_io])) {
+        (*col_io)--;
+    }
 }
 
 static int vi_move_key_local(struct ed_buffer *buffer, int key, uint32_t *row_io, uint32_t *col_io) {
@@ -510,13 +721,15 @@ static int vi_move_key_local(struct ed_buffer *buffer, int key, uint32_t *row_io
     }
     if (key == VI_KEY_LEFT) {
         if (*col_io != 0u) {
-            (*col_io)--;
+            *col_io = vi_utf8_previous_local(buffer->lines[*row_io], *col_io);
         }
         return 1;
     }
     if (key == VI_KEY_RIGHT) {
-        if (*col_io < vi_line_len_local(buffer, *row_io)) {
-            (*col_io)++;
+        uint32_t len = vi_line_len_local(buffer, *row_io);
+
+        if (*col_io < len) {
+            *col_io = vi_utf8_next_local(buffer->lines[*row_io], len, *col_io);
         }
         return 1;
     }
@@ -585,12 +798,46 @@ static void vi_render_text_line_local(struct ed_buffer *buffer,
     if (buffer_row < buffer->count) {
         const char *line = buffer->lines[buffer_row];
         uint32_t len = str_len_local(line);
+        uint32_t offset = 0u;
+        uint32_t visual_col = 0u;
 
-        if (left_col < len) {
-            while (written < cols && line[left_col + written] != '\0') {
-                write_stdout(&line[left_col + written], 1u);
-                written++;
+        while (offset < len && written < cols) {
+            uint32_t codepoint;
+            uint32_t consumed = vi_utf8_decode_local(line, len, offset, &codepoint);
+            uint32_t width;
+
+            if (consumed == 0u) {
+                break;
             }
+            width = codepoint == '\t'
+                        ? VI_TAB_WIDTH - (visual_col % VI_TAB_WIDTH)
+                        : vi_codepoint_width_local(codepoint);
+            if (visual_col + width <= left_col) {
+                visual_col += width;
+                offset += consumed;
+                continue;
+            }
+            if (codepoint == '\t') {
+                uint32_t visible_start = visual_col < left_col ? left_col : visual_col;
+                uint32_t spaces = visual_col + width - visible_start;
+
+                while (spaces-- != 0u && written < cols) {
+                    write_stdout(" ", 1u);
+                    written++;
+                }
+            } else if (visual_col >= left_col && written + width <= cols) {
+                write_stdout(line + offset, consumed);
+                written += width;
+            } else if (visual_col < left_col && visual_col + width > left_col) {
+                uint32_t spaces = visual_col + width - left_col;
+
+                while (spaces-- != 0u && written < cols) {
+                    write_stdout(" ", 1u);
+                    written++;
+                }
+            }
+            visual_col += width;
+            offset += consumed;
         }
     } else {
         write_str("~");
@@ -651,13 +898,22 @@ static void vi_render_local(struct ed_buffer *buffer,
         vi_render_text_line_local(buffer, i + 1u, top_row + i, left_col, screen);
     }
     vi_render_status_local(buffer, screen, mode, status);
-    vi_move_cursor_local(cursor_row, cursor_col, top_row, left_col, screen);
+    vi_move_cursor_local(cursor_row,
+                         vi_visual_col_local(buffer->lines[cursor_row], cursor_col),
+                         top_row,
+                         left_col,
+                         screen);
 }
 
-static int vi_insert_char_local(struct ed_buffer *buffer, uint32_t row, uint32_t *col_io, char ch) {
+static int vi_insert_char_local(struct ed_buffer *buffer,
+                                uint32_t row,
+                                uint32_t *col_io,
+                                uint32_t codepoint) {
     char *line;
+    char encoded[4];
     uint32_t len;
     uint32_t col;
+    uint32_t encoded_len;
 
     if (buffer == NULL || col_io == NULL || row >= buffer->count) {
         return 0;
@@ -665,14 +921,17 @@ static int vi_insert_char_local(struct ed_buffer *buffer, uint32_t row, uint32_t
     line = buffer->lines[row];
     len = str_len_local(line);
     col = *col_io;
-    if (len + 1u >= ED_LINE_MAX || col > len) {
+    encoded_len = vi_utf8_encode_local(codepoint, encoded);
+    if (len + encoded_len >= ED_LINE_MAX || col > len) {
         return 0;
     }
     for (uint32_t i = len + 1u; i > col; i--) {
-        line[i] = line[i - 1u];
+        line[i + encoded_len - 1u] = line[i - 1u];
     }
-    line[col] = ch;
-    *col_io = col + 1u;
+    for (uint32_t i = 0u; i < encoded_len; i++) {
+        line[col + i] = encoded[i];
+    }
+    *col_io = col + encoded_len;
     buffer->dirty = 1u;
     return 1;
 }
@@ -689,8 +948,13 @@ static int vi_delete_char_local(struct ed_buffer *buffer, uint32_t row, uint32_t
     if (col >= len) {
         return 0;
     }
-    for (uint32_t i = col; i < len; i++) {
-        line[i] = line[i + 1u];
+    {
+        uint32_t next = vi_utf8_next_local(line, len, col);
+        uint32_t removed = next - col;
+
+        for (uint32_t i = next; i <= len; i++) {
+            line[i - removed] = line[i];
+        }
     }
     buffer->dirty = 1u;
     return 1;
@@ -814,14 +1078,25 @@ static int vi_read_command_local(char *out, uint32_t size, const struct vi_scree
         }
         if (key == '\b' || key == 0x7f) {
             if (len != 0u) {
-                len--;
-                write_str("\b \b");
+                len = vi_utf8_previous_local(out, len);
+                out[len] = '\0';
+                printf("\x1b[%u;1H\x1b[K:", row);
+                write_stdout(out, len);
             }
             continue;
         }
-        if (key >= 0x20 && key <= 0x7e && len + 1u < size) {
-            out[len++] = (char)key;
-            write_stdout(&out[len - 1u], 1u);
+        if (key >= 0x20 && key <= 0x10ffff) {
+            char encoded[4];
+            uint32_t encoded_len = vi_utf8_encode_local((uint32_t)key, encoded);
+
+            if (len + encoded_len < size) {
+                for (uint32_t i = 0u; i < encoded_len; i++) {
+                    out[len + i] = encoded[i];
+                }
+                len += encoded_len;
+                out[len] = '\0';
+                write_stdout(encoded, encoded_len);
+            }
         }
     }
 }
@@ -877,7 +1152,11 @@ int cmd_vi(int argc, char **argv) {
             full_repaint = 1;
         }
         vi_clamp_cursor_local(buffer, &row, &col);
-        if (vi_update_view_local(row, col, &screen, &top_row, &left_col)) {
+        if (vi_update_view_local(row,
+                                 vi_visual_col_local(buffer->lines[row], col),
+                                 &screen,
+                                 &top_row,
+                                 &left_col)) {
             full_repaint = 1;
         }
         if (full_repaint) {
@@ -892,7 +1171,11 @@ int cmd_vi(int argc, char **argv) {
                 dirty_cursor = 1;
             }
             if (dirty_cursor) {
-                vi_move_cursor_local(row, col, top_row, left_col, &screen);
+                vi_move_cursor_local(row,
+                                     vi_visual_col_local(buffer->lines[row], col),
+                                     top_row,
+                                     left_col,
+                                     &screen);
             }
         }
         full_repaint = 0;
@@ -925,7 +1208,7 @@ int cmd_vi(int argc, char **argv) {
             }
             if (key == '\b' || key == 0x7f) {
                 if (col != 0u) {
-                    col--;
+                    col = vi_utf8_previous_local(buffer->lines[row], col);
                     if (vi_delete_char_local(buffer, row, col)) {
                         dirty_line = 1;
                         dirty_row = row;
@@ -941,8 +1224,8 @@ int cmd_vi(int argc, char **argv) {
                 }
                 continue;
             }
-            if (key >= 0x20 && key <= 0x7e) {
-                if (!vi_insert_char_local(buffer, row, &col, (char)key)) {
+            if (key == '\t' || (key >= 0x20 && key <= 0x10ffff)) {
+                if (!vi_insert_char_local(buffer, row, &col, (uint32_t)key)) {
                     vi_set_status_local(status, sizeof(status), "line full");
                     dirty_status = 1;
                 } else {
@@ -967,7 +1250,9 @@ int cmd_vi(int argc, char **argv) {
         }
         if (key == 'a') {
             if (col < vi_line_len_local(buffer, row)) {
-                col++;
+                col = vi_utf8_next_local(buffer->lines[row],
+                                         vi_line_len_local(buffer, row),
+                                         col);
             }
             mode = VI_MODE_INSERT;
             dirty_status = 1;

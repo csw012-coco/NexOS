@@ -1,22 +1,12 @@
 #include "fs/nxfs_internal.h"
+#include "lib/string.h"
 
 void nxfs_mem_copy(void *dest, const void *src, uint32_t size) {
-    uint8_t *d = (uint8_t *)dest;
-    const uint8_t *s = (const uint8_t *)src;
-    uint32_t i;
-
-    for (i = 0; i < size; i++) {
-        d[i] = s[i];
-    }
+    memcpy(dest, src, size);
 }
 
 void nxfs_mem_set(void *dest, uint8_t value, uint32_t size) {
-    uint8_t *d = (uint8_t *)dest;
-    uint32_t i;
-
-    for (i = 0; i < size; i++) {
-        d[i] = value;
-    }
+    memset(dest, value, size);
 }
 
 uint8_t *nxfs_cache_get(struct nxfs_volume *vol, uint32_t block) {

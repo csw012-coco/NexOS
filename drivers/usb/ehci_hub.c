@@ -344,6 +344,7 @@ int ehci_finish_device_enumeration(struct ehci_msc_device *dev,
         dev->blockdev.block_count = dev->sector_count;
         dev->blockdev.read = ehci_msc_read_impl;
         dev->blockdev.write = ehci_msc_write_impl;
+        dev->blockdev.flush = ehci_msc_flush_impl;
         dev->blockdev.driver_data = dev;
         dev->present = 1u;
         if (blockdev_register(&dev->blockdev) != 0) {

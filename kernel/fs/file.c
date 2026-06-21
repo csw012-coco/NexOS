@@ -101,6 +101,20 @@ int file_table_open_pipe_pair(struct file *table,
     return 1;
 }
 
+int file_table_open_named_pipe(struct file *table,
+                               uint32_t count,
+                               uint32_t start_index,
+                               const char *path,
+                               int writable,
+                               uint32_t *fd_out) {
+    struct file *file = file_table_alloc(table, count, start_index, fd_out);
+
+    if (file == 0 || !file_pipe_backend_open_named(file, path, writable)) {
+        return 0;
+    }
+    return 1;
+}
+
 void file_set_offset(struct file *file, uint32_t offset) {
     if (file == 0) {
         return;

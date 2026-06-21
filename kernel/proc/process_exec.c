@@ -893,6 +893,7 @@ static int process_prepare_exec_replace_session_local(struct process_session *se
     session->process.wake_tick = 0;
     session->process.entry = 0;
     session->process.stack_top = 0;
+    session->fpu_state_valid = 0u;
     return 1;
 }
 
@@ -943,6 +944,7 @@ int process_exec_replace_from_user(struct vfs *vfs,
         session_finish(session, mappings);
         return 1;
     }
+    process_discard_non_stdio_files(&session->process);
     process_set_name(&session->process, resolved_image_name);
     g_process_exec_last_stage = 4;
     if (!process_load_elf_image(g_elf_file_buffer, bytes_read, &entry)) {

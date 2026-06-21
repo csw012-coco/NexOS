@@ -1,8 +1,11 @@
 #include "kernel/internal/sys/syscall_internal.h"
+#include "kernel/public/core/profile.h"
 #include "kernel/internal/fs/file_internal.h"
 #include "kernel/internal/fs/fs_service_fd_internal.h"
 #include "kernel/internal/proc/process_types_internal.h"
 #include "kernel/public/core/tty.h"
+
+static uint32_t g_sys_write_profile;
 
 static uint64_t syscall_maybe_abort_interrupted_process(uint64_t rc) {
     const struct process *proc = process_current();
@@ -44,6 +47,17 @@ static uint64_t syscall_handle_read(const struct syscall_user_buffer *buffer, ui
     }
 }
 
+static int syscall_fd_is_pipe_write(uint32_t fd) {
+    struct process *proc = process_current_mut();
+    struct file *file;
+
+    if (proc == 0) {
+        return 0;
+    }
+    file = file_table_active(proc->files, PROCESS_FILE_MAX, fd);
+    return file != 0 && file->kind == KERNEL_FILE_PIPE_WRITE;
+}
+
 static uint64_t syscall_handle_write_chunked(uint32_t fd, const struct syscall_user_buffer *buffer) {
     uint32_t remaining;
     uint32_t total;
@@ -81,8 +95,26 @@ uint64_t syscall_handle_write(const struct syscall_user_buffer *buffer) {
     return syscall_handle_write_chunked(SYS_FD_STDOUT, buffer);
 }
 
-uint64_t syscall_handle_fd_write(uint32_t fd, const struct syscall_user_buffer *buffer) {
-    return syscall_handle_write_chunked(fd, buffer);
+uint64_t syscall_handle_fd_write(uint32_t fd,
+                                 const struct syscall_user_buffer *buffer,
+                                 const struct syscall_frame *frame) {
+    uint64_t start;
+    uint64_t result;
+
+    if (g_sys_write_profile == 0u) {
+        g_sys_write_profile = kernel_profile_register("sys.write");
+    }
+    start = kernel_profile_clock();
+    result = syscall_handle_write_chunked(fd, buffer);
+    kernel_profile_record(g_sys_write_profile,
+                          kernel_profile_clock() - start,
+                          (int64_t)result > 0 ? result : 0u);
+
+    if ((int64_t)result > 0 && syscall_fd_is_pipe_write(fd)) {
+        sched_resume_current_syscall(process_current_session(), frame, result);
+        return SYSCALL_EXIT_TO_KERNEL;
+    }
+    return result;
 }
 
 uint64_t syscall_handle_clear(void) {
@@ -139,6 +171,10 @@ uint64_t syscall_handle_fd_read(uint32_t fd, const struct syscall_user_buffer *b
 
 uint64_t syscall_handle_close(uint32_t fd) {
     return fs_service_close(process_current_mut(), fd);
+}
+
+uint64_t syscall_handle_seek(uint32_t fd, int64_t offset, uint32_t whence) {
+    return (uint64_t)fs_service_seek(process_current_mut(), fd, offset, whence);
 }
 
 uint64_t syscall_handle_dup2(uint32_t src_fd, uint32_t dst_fd) {

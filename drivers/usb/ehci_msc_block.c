@@ -80,8 +80,8 @@ int ehci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count, 
             uint8_t ok = 0u;
             uint32_t chunk = count - done;
 
-            if (chunk > EHCI_PAGE_SIZE / EHCI_SECTOR_SIZE) {
-                chunk = EHCI_PAGE_SIZE / EHCI_SECTOR_SIZE;
+            if (chunk > EHCI_MSC_TRANSFER_SECTORS) {
+                chunk = EHCI_MSC_TRANSFER_SECTORS;
             }
             for (uint32_t attempt = 0; attempt < EHCI_MSC_RW_RETRIES; attempt++) {
                 memset(cmd, 0, sizeof(cmd));
@@ -129,7 +129,6 @@ int ehci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count, 
     }
     for (uint32_t i = 0; i < count; i++) {
         uint8_t ok = 0u;
-        uint8_t verify_failed = 0u;
 
         for (uint32_t attempt = 0; attempt < EHCI_MSC_RW_RETRIES; attempt++) {
             memset(cmd, 0, sizeof(cmd));
@@ -140,28 +139,12 @@ int ehci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count, 
             if (ehci_msc_command_recover(dev, cmd, 10u, out + i * EHCI_SECTOR_SIZE, EHCI_SECTOR_SIZE, 1u)) {
                 if (ehci_msc_buffer_has_transport_signature(out + i * EHCI_SECTOR_SIZE)) {
                     kprint("ehci: MSC read lba=%lx returned transport signature in data buffer\n", lba + i);
-                    verify_failed = 1u;
                     (void)ehci_msc_reset_recovery(dev);
                     ehci_msc_retry_delay(dev);
                     continue;
                 }
-                memset(cmd, 0, sizeof(cmd));
-                cmd[0] = SCSI_READ_10;
-                usb_write_u32be(cmd + 2, (uint32_t)(lba + i));
-                cmd[7] = 0u;
-                cmd[8] = 1u;
-                if (ehci_msc_command_recover(dev,
-                                             cmd,
-                                             10u,
-                                             dev->data,
-                                             EHCI_SECTOR_SIZE,
-                                             1u) &&
-                    !ehci_msc_buffer_has_transport_signature(dev->data) &&
-                    ehci_bytes_equal(out + i * EHCI_SECTOR_SIZE, dev->data, EHCI_SECTOR_SIZE)) {
-                    ok = 1u;
-                    break;
-                }
-                verify_failed = 1u;
+                ok = 1u;
+                break;
             }
             ehci_msc_retry_delay(dev);
         }
@@ -170,11 +153,10 @@ int ehci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count, 
             uint8_t failed_status = dev->last_msc_status;
 
             (void)ehci_msc_request_sense(dev, dev->data, 18u);
-            kprint("ehci: MSC read lba=%lx failed phase=%u status=%u verify=%u sense=%x/%x/%x\n",
+            kprint("ehci: MSC read lba=%lx failed phase=%u status=%u sense=%x/%x/%x\n",
                    lba + i,
                    (uint32_t)failed_phase,
                    (uint32_t)failed_status,
-                   (uint32_t)verify_failed,
                    (uint32_t)dev->last_sense_key,
                    (uint32_t)dev->last_sense_asc,
                    (uint32_t)dev->last_sense_ascq);
@@ -194,48 +176,34 @@ int ehci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t count,
     struct ehci_msc_device *dev = (struct ehci_msc_device *)bdev->driver_data;
     const uint8_t *in = (const uint8_t *)buffer;
     uint8_t cmd[10];
+    uint32_t done = 0u;
 
     if (dev == 0 || !dev->present || buffer == 0 || count == 0u ||
         lba >= dev->sector_count || (uint64_t)count > dev->sector_count - lba) {
         return -1;
     }
     dev->read_cache_valid = 0u;
-    for (uint32_t i = 0; i < count; i++) {
+    while (done < count) {
         uint8_t ok = 0u;
-        uint8_t verify_failed = 0u;
+        uint32_t chunk = count - done;
 
+        if (chunk > EHCI_MSC_TRANSFER_SECTORS) {
+            chunk = EHCI_MSC_TRANSFER_SECTORS;
+        }
         for (uint32_t attempt = 0; attempt < EHCI_MSC_RW_RETRIES; attempt++) {
             memset(cmd, 0, sizeof(cmd));
             cmd[0] = SCSI_WRITE_10;
-            usb_write_u32be(cmd + 2, (uint32_t)(lba + i));
-            cmd[7] = 0u;
-            cmd[8] = 1u;
-            if (ehci_msc_command_recover(dev, cmd, 10u, (void *)(in + i * EHCI_SECTOR_SIZE), EHCI_SECTOR_SIZE, 0u)) {
-                if (!ehci_msc_sync_cache(dev, lba + i, 1u)) {
-                    ehci_msc_retry_delay(dev);
-                    continue;
-                }
-                memset(cmd, 0, sizeof(cmd));
-                cmd[0] = SCSI_READ_10;
-                usb_write_u32be(cmd + 2, (uint32_t)(lba + i));
-                cmd[7] = 0u;
-                cmd[8] = 1u;
-                if (ehci_msc_command_recover(dev,
-                                             cmd,
-                                             10u,
-                                             dev->data,
-                                             EHCI_SECTOR_SIZE,
-                                             1u) &&
-                    !ehci_msc_buffer_has_transport_signature(dev->data) &&
-                    ehci_bytes_equal(dev->data, in + i * EHCI_SECTOR_SIZE, EHCI_SECTOR_SIZE)) {
-                    ok = 1u;
-                    break;
-                }
-                if (ehci_msc_buffer_has_transport_signature(dev->data)) {
-                    kprint("ehci: MSC write verify lba=%lx returned transport signature in data buffer\n", lba + i);
-                    (void)ehci_msc_reset_recovery(dev);
-                }
-                verify_failed = 1u;
+            usb_write_u32be(cmd + 2, (uint32_t)(lba + done));
+            cmd[7] = (uint8_t)((chunk >> 8) & 0xffu);
+            cmd[8] = (uint8_t)(chunk & 0xffu);
+            if (ehci_msc_command_recover(dev,
+                                         cmd,
+                                         10u,
+                                         (void *)(in + done * EHCI_SECTOR_SIZE),
+                                         chunk * EHCI_SECTOR_SIZE,
+                                         0u)) {
+                ok = 1u;
+                break;
             }
             ehci_msc_retry_delay(dev);
         }
@@ -244,16 +212,28 @@ int ehci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t count,
             uint8_t failed_status = dev->last_msc_status;
 
             (void)ehci_msc_request_sense(dev, dev->data, 18u);
-            kprint("ehci: MSC write lba=%lx failed phase=%u status=%u verify=%u sense=%x/%x/%x\n",
-                   lba + i,
+            kprint("ehci: MSC write lba=%lx count=%u failed phase=%u status=%u sense=%x/%x/%x\n",
+                   lba + done,
+                   chunk,
                    (uint32_t)failed_phase,
                    (uint32_t)failed_status,
-                   (uint32_t)verify_failed,
                    (uint32_t)dev->last_sense_key,
                    (uint32_t)dev->last_sense_asc,
                    (uint32_t)dev->last_sense_ascq);
             return -1;
         }
+        done += chunk;
     }
     return 0;
+}
+
+int ehci_msc_flush_impl(struct block_device *bdev) {
+    struct ehci_msc_device *dev = bdev != 0
+        ? (struct ehci_msc_device *)bdev->driver_data
+        : 0;
+
+    if (dev == 0 || !dev->present) {
+        return -1;
+    }
+    return ehci_msc_sync_cache(dev, 0u, 0u) ? 0 : -1;
 }

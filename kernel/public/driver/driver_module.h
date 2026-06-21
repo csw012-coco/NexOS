@@ -148,3 +148,8 @@ void driver_pci_write32(const struct driver_pci_device *dev, uint8_t offset, uin
 
 uint32_t driver_timer_current_ticks(void);
 uint32_t driver_timer_hz(void);
+void driver_cpu_wait_for_event(void);
+void driver_cpu_relax(void);
+uint32_t driver_profile_register(const char *name);
+uint64_t driver_profile_clock(void);
+void driver_profile_record(uint32_t handle, uint64_t cycles, uint64_t units);

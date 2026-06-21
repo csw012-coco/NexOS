@@ -1,6 +1,6 @@
 #include "kernel/internal/fs/fs_service_fd_internal.h"
-#include "kernel/public/core/kprint.h"
 #include "kernel/internal/fs/file_internal.h"
+#include "kernel/internal/fs/file_pipe_backend.h"
 #include "kernel/internal/proc/process_internal_base.h"
 #include "kernel/internal/proc/process_types_internal.h"
 #include "kernel/public/mem/vmm.h"
@@ -61,10 +61,15 @@ static uint32_t fs_service_map_read_flags(uint32_t syscall_flags) {
     return flags;
 }
 
-static uint32_t fs_service_stdin_copied_size(uint32_t size, uint32_t flags, int64_t bytes) {
+static uint32_t fs_service_stdin_copied_size(const struct file *file,
+                                             uint32_t size,
+                                             uint32_t flags,
+                                             int64_t bytes) {
     uint32_t copy_size = (uint32_t)bytes;
 
-    if ((flags & KERNEL_FILE_READ_CHAR) == 0 && copy_size < size) {
+    if (file_tty_private_handle(file) != 0 &&
+        (flags & KERNEL_FILE_READ_CHAR) == 0 &&
+        copy_size < size) {
         copy_size++;
     }
     return copy_size;
@@ -75,6 +80,16 @@ static int fs_service_read_interrupted_local(const struct process *proc) {
         return 0;
     }
     return proc->state == PROCESS_STATE_EXITED || proc->state == PROCESS_STATE_STOPPED;
+}
+
+static int fs_service_read_would_block_local(const struct file *file, int64_t bytes) {
+    return bytes == KERNEL_FILE_IO_WOULD_BLOCK ||
+           (bytes == 0 && file_read_would_block(file));
+}
+
+static int fs_service_write_would_block_local(const struct file *file, int64_t written) {
+    return written == KERNEL_FILE_IO_WOULD_BLOCK ||
+           (written == 0 && file_write_would_block(file));
 }
 
 static void fs_service_restore_process_session_local(struct process_session *session,
@@ -92,6 +107,29 @@ static void fs_service_restore_process_session_local(struct process_session *ses
 }
 
 static int fs_service_wait_for_read_local(struct process *proc) {
+    struct process_session *session;
+    struct user_page_mapping *mappings;
+    enum process_state previous_state;
+
+    if (proc == 0 || fs_service_read_interrupted_local(proc)) {
+        return 0;
+    }
+    session = process_current_session();
+    mappings = process_current_mappings();
+    previous_state = proc->state;
+    proc->state = PROCESS_STATE_WAITING;
+    sched_tick_excluding_pid(proc->pid);
+    fs_service_restore_process_session_local(session, mappings);
+    if (fs_service_read_interrupted_local(proc)) {
+        return 0;
+    }
+    if (proc->state == PROCESS_STATE_WAITING || proc->state == PROCESS_STATE_READY) {
+        proc->state = previous_state == PROCESS_STATE_RUNNING ? PROCESS_STATE_RUNNING : previous_state;
+    }
+    return 1;
+}
+
+static int fs_service_wait_for_write_local(struct process *proc) {
     struct process_session *session;
     struct user_page_mapping *mappings;
     enum process_state previous_state;
@@ -140,10 +178,13 @@ uint64_t fs_service_read(struct process *proc,
         if ((file_flags & KERNEL_FILE_READ_NONBLOCK) != 0) {
             int64_t bytes = file_read(file, vfs, buffer, size, file_flags);
 
-            if (bytes <= 0) {
+            if (bytes == KERNEL_FILE_IO_WOULD_BLOCK || bytes == 0) {
                 return 0;
             }
-            copy_size = fs_service_stdin_copied_size(size, file_flags, bytes);
+            if (bytes < 0) {
+                return (uint64_t)-1;
+            }
+            copy_size = fs_service_stdin_copied_size(file, size, file_flags, bytes);
             fs_service_set_copied(copied_out, copy_size);
             return (uint64_t)bytes;
         }
@@ -151,32 +192,30 @@ uint64_t fs_service_read(struct process *proc,
             int64_t bytes = file_read(file, vfs, buffer, size, file_flags);
 
             if (bytes > 0) {
-                copy_size = fs_service_stdin_copied_size(size, file_flags, bytes);
+                copy_size = fs_service_stdin_copied_size(file, size, file_flags, bytes);
                 fs_service_set_copied(copied_out, copy_size);
                 return (uint64_t)bytes;
+            }
+            if (fs_service_read_would_block_local(file, bytes)) {
+                if (fs_service_read_interrupted_local(proc)) {
+                    return 0;
+                }
+                if (!fs_service_wait_for_read_local(proc)) {
+                    return 0;
+                }
+                continue;
             }
             if (bytes < 0) {
                 return (uint64_t)-1;
             }
-            if (!file_read_would_block(file)) {
-                return 0;
-            }
-            if (fs_service_read_interrupted_local(proc)) {
-                return 0;
-            }
-            if (!fs_service_wait_for_read_local(proc)) {
-                return 0;
-            }
+            return 0;
         }
     }
     for (;;) {
         int64_t bytes = file_read(file, vfs, buffer, size, file_flags);
 
-        if (bytes < 0) {
-            return (uint64_t)-1;
-        }
-        if (bytes == 0) {
-            if ((file_flags & KERNEL_FILE_READ_NONBLOCK) != 0 || !file_read_would_block(file)) {
+        if (fs_service_read_would_block_local(file, bytes)) {
+            if ((file_flags & KERNEL_FILE_READ_NONBLOCK) != 0) {
                 return 0;
             }
             if (fs_service_read_interrupted_local(proc)) {
@@ -186,6 +225,12 @@ uint64_t fs_service_read(struct process *proc,
                 return 0;
             }
             continue;
+        }
+        if (bytes < 0) {
+            return (uint64_t)-1;
+        }
+        if (bytes == 0) {
+            return 0;
         }
         fs_service_set_copied(copied_out, (uint32_t)bytes);
         return (uint64_t)bytes;
@@ -212,12 +257,23 @@ uint64_t fs_service_write(struct process *proc,
     while (remaining != 0) {
         int64_t written = file_write(file, vfs, (const uint8_t *)buffer + total, remaining);
 
-        if (written < 0) {
-            return (uint64_t)-1;
+        if (written == KERNEL_FILE_IO_BROKEN_PIPE) {
+            return total != 0 ? total : (uint64_t)-1;
         }
-        if (written == 0 && file_write_would_block(file)) {
-            hal_cpu_halt();
+        if (fs_service_write_would_block_local(file, written)) {
+            if (!file_pipe_backend_has_readers(file)) {
+                return total != 0 ? total : (uint64_t)-1;
+            }
+            if (!fs_service_wait_for_write_local(proc)) {
+                return total;
+            }
+            if (!file_pipe_backend_has_readers(file)) {
+                return total != 0 ? total : (uint64_t)-1;
+            }
             continue;
+        }
+        if (written < 0) {
+            return total != 0 ? total : (uint64_t)-1;
         }
         total += (uint32_t)written;
         if ((uint32_t)written >= remaining) {
@@ -225,12 +281,45 @@ uint64_t fs_service_write(struct process *proc,
         }
         remaining -= (uint32_t)written;
         if (file_write_would_block(file)) {
-            hal_cpu_halt();
+            if (!file_pipe_backend_has_readers(file)) {
+                return total;
+            }
+            if (!fs_service_wait_for_write_local(proc)) {
+                return total;
+            }
+            if (!file_pipe_backend_has_readers(file)) {
+                return total;
+            }
             continue;
         }
         break;
     }
     return total;
+}
+
+int64_t fs_service_seek(struct process *proc, uint32_t fd, int64_t offset, uint32_t whence) {
+    struct file *file = fs_service_active_file(proc, fd);
+    int64_t base;
+    int64_t next;
+
+    if (file == 0 || file->kind != KERNEL_FILE_VFS || file->vfs_node.kind != VFS_NODE_FILE) {
+        return -1;
+    }
+    if (whence == SYS_SEEK_SET) {
+        base = 0;
+    } else if (whence == SYS_SEEK_CUR) {
+        base = file->offset;
+    } else if (whence == SYS_SEEK_END) {
+        base = vfs_node_file_size(&file->vfs_node);
+    } else {
+        return -1;
+    }
+    next = base + offset;
+    if (next < 0 || next > 0xffffffffll) {
+        return -1;
+    }
+    file_set_offset(file, (uint32_t)next);
+    return next;
 }
 
 uint64_t fs_service_close(struct process *proc, uint32_t fd) {

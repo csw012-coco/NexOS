@@ -4,6 +4,7 @@
 #include "kernel/internal/proc/process_internal_base.h"
 #include "fs/vfs_internal.h"
 #include "kernel/public/core/tty.h"
+#include "kernel/public/core/profile.h"
 
 static void syscall_copy_name(char *dst, uint32_t dst_size, const char *src) {
     uint32_t i = 0;
@@ -218,6 +219,23 @@ uint64_t syscall_handle_tty_query(uint32_t fd, uint64_t user_info_addr) {
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }
 
+uint64_t syscall_handle_profile_query(uint32_t index,
+                                      uint32_t flags,
+                                      uint64_t user_info_addr) {
+    struct syscall_profile_info info;
+
+    if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
+        return syscall_kill_bad_user_pointer();
+    }
+    if ((flags & SYS_PROFILE_QUERY_RESET) != 0u) {
+        kernel_profile_reset();
+    }
+    if (!kernel_profile_query(index, &info)) {
+        return 0;
+    }
+    return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
+}
+
 uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint64_t user_info_addr) {
     switch (kind) {
         case SYS_QUERY_BOOT_INFO:
@@ -260,6 +278,10 @@ uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint6
             return syscall_handle_rtc_query(user_info_addr);
         case SYS_QUERY_TTY:
             return syscall_handle_tty_query((uint32_t)arg0, user_info_addr);
+        case SYS_QUERY_PROFILE:
+            return syscall_handle_profile_query((uint32_t)arg0,
+                                                (uint32_t)arg1,
+                                                user_info_addr);
         default:
             return 0;
     }

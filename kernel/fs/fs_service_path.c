@@ -1,5 +1,6 @@
 #include "kernel/internal/fs/fs_service_path_internal.h"
 #include "kernel/internal/fs/file_internal.h"
+#include "kernel/internal/fs/file_pipe_backend.h"
 #include "kernel/internal/proc/process_types_internal.h"
 #include "fs/vfs.h"
 #include "fs/vfs_internal.h"
@@ -243,7 +244,21 @@ uint64_t fs_service_remove(struct vfs *vfs, const char *path) {
     if (!fs_service_valid_path_request(vfs, path)) {
         return (uint64_t)-1;
     }
+    if (file_pipe_backend_unlink_named(path)) {
+        return 0;
+    }
     return vfs_unlink(vfs, path) == 0 ? 0u : (uint64_t)-1;
+}
+
+uint64_t fs_service_mkfifo(struct vfs *vfs, const char *path) {
+    struct vfs_node existing;
+
+    if (!fs_service_valid_path_request(vfs, path) ||
+        file_pipe_backend_named_exists(path) ||
+        vfs_open(vfs, path, 0, &existing) == 0) {
+        return (uint64_t)-1;
+    }
+    return file_pipe_backend_create_named(path) ? 0u : (uint64_t)-1;
 }
 
 uint64_t fs_service_mount(struct vfs *vfs, const char *source, const char *target, uint32_t syscall_kind) {
@@ -317,6 +332,23 @@ uint64_t fs_service_open(struct process *proc, struct vfs *vfs, const char *path
 
     if (proc == 0 || !fs_service_valid_path_request(vfs, path)) {
         return (uint64_t)-1;
+    }
+    if (file_pipe_backend_named_exists(path)) {
+        uint32_t access = flags & (SYS_OPEN_READ | SYS_OPEN_WRITE);
+        uint32_t named_fd;
+
+        if (access != SYS_OPEN_READ && access != SYS_OPEN_WRITE) {
+            return (uint64_t)-1;
+        }
+        if (!file_table_open_named_pipe(proc->files,
+                                        PROCESS_FILE_MAX,
+                                        3u,
+                                        path,
+                                        access == SYS_OPEN_WRITE,
+                                        &named_fd)) {
+            return (uint64_t)-1;
+        }
+        return named_fd;
     }
     vfs_flags = fs_service_map_open_flags(flags);
     if (vfs_open(vfs, path, vfs_flags, &node) != 0 || node.kind != VFS_NODE_FILE) {

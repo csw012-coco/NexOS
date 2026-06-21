@@ -20,7 +20,8 @@ struct surface;
 
 enum {
     HAL_TEXT_WIDTH = 240,
-    HAL_TEXT_HEIGHT = 80
+    HAL_TEXT_HEIGHT = 80,
+    HAL_FPU_STATE_SIZE = 512
 };
 
 #define HAL_DISPLAY_CELL_CODEPOINT_MASK 0x001fffffu
@@ -35,10 +36,13 @@ void hal_display_init(const struct bootx_console_info *console);
 int hal_display_enable_backbuffer(void);
 void hal_display_begin_update(void);
 void hal_display_end_update(void);
+void hal_display_service_pending(void);
 void hal_platform_init(const struct hal_interrupt_handlers *handlers);
 uint64_t hal_paging_current_root(void);
 void hal_paging_switch_root(uint64_t cr3);
 uint64_t hal_paging_create_user_root(void);
+uint64_t hal_paging_clone_root_cow(uint64_t source_cr3);
+int hal_paging_resolve_cow_fault(uint64_t root_cr3, uint64_t fault_addr, uint64_t error_code);
 void hal_paging_destroy_user_root(uint64_t cr3);
 void hal_paging_allow_user_page(uint64_t addr);
 void hal_paging_allow_user_range(uint64_t start, uint64_t end);
@@ -49,6 +53,7 @@ int hal_paging_map_page_with_exec(uint64_t virt_addr,
                                   int user_accessible,
                                   int writable,
                                   int executable);
+int hal_paging_set_write_combining(uint64_t virt_addr, uint64_t size);
 int hal_paging_unmap_page(uint64_t virt_addr, uint64_t *phys_addr);
 int hal_paging_get_mapping(uint64_t virt_addr, uint64_t *phys_addr);
 int hal_paging_get_mapping_info(uint64_t virt_addr, uint64_t *phys_addr, uint64_t *flags);
@@ -84,6 +89,12 @@ void hal_display_blit_surface(const struct surface *surface,
                               uint32_t height,
                               int32_t dst_x,
                               int32_t dst_y);
+void hal_display_blit_xrgb8888(const uint32_t *pixels,
+                               uint32_t pitch,
+                               uint32_t width,
+                               uint32_t height,
+                               int32_t dst_x,
+                               int32_t dst_y);
 void hal_display_draw_pixel(int32_t x, int32_t y, uint32_t rgb);
 void hal_display_draw_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb);
 void hal_display_draw_rect(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb);
@@ -115,6 +126,13 @@ void hal_io_out16(uint16_t port, uint16_t value);
 void hal_cpu_cli(void);
 void hal_cpu_sti(void);
 void hal_cpu_halt(void);
+void hal_cpu_wait_for_interrupt(void);
+void hal_cpu_wait_for_event(void);
+void hal_cpu_relax(void);
+void hal_cpu_enable_sse(void);
+void hal_fpu_state_init(void *state);
+void hal_fpu_state_save(void *state);
+void hal_fpu_state_restore(const void *state);
 uint64_t hal_cpu_current_sp(void);
 uint64_t hal_cpu_read_tsc(void);
 void hal_cpu_cpuid(uint32_t leaf,

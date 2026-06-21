@@ -27,4 +27,10 @@ int gfx_fill_triangle(int32_t x0,
                       uint32_t rgb);
 int gfx_draw_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb);
 int gfx_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb);
+int gfx_blit(const uint32_t *pixels,
+             uint32_t pitch,
+             int32_t dst_x,
+             int32_t dst_y,
+             uint32_t width,
+             uint32_t height);
 int gfx_present(void);

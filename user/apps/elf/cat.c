@@ -66,9 +66,8 @@ int main(int argc, char **argv) {
         bytes = (uint32_t)read_rc;
         write_rc = cat_write_all(buf, bytes);
         if (write_rc < 0) {
-            eprintf("write failed\n");
-            close((uint32_t)fd);
-            return 1;
+            output_closed = 1;
+            break;
         }
         if (write_rc == 0) {
             output_closed = 1;

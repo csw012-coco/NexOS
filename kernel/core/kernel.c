@@ -8,9 +8,11 @@
 #include "kernel/internal/core/kernel_panic_internal.h"
 #include "kernel/internal/proc/process_internal_base.h"
 #include "kernel/internal/proc/process_types_internal.h"
+#include "kernel/internal/proc/process_elf_internal.h"
 #include "kernel/internal/core/tty_internal.h"
 #include "kernel/public/core/console.h"
 #include "kernel/public/driver/driver.h"
+#include "kernel/public/input/input_focus.h"
 #include "kernel/public/mem/pmm.h"
 #include "kernel/public/mem/address_space.h"
 #include "kernel/public/proc/job_control.h"
@@ -30,6 +32,7 @@ extern uint64_t g_current_user_raw_entry;
 
 enum {
     IRQ_DISPATCH_CONTINUE = 0,
+    IRQ_DISPATCH_RESUME_FAULT = 1,
     IRQ_DISPATCH_RESUME_KERNEL = 0xfffffffffffffff0ull,
     IRQ_VECTOR_BASE = 32u,
     IRQ_VECTOR_TIMER = 32u,
@@ -43,6 +46,7 @@ static void kernel_boot_trace(const char *text);
 
 static void kernel_halt_forever(void) {
     for (;;) {
+        hal_display_service_pending();
         hal_cpu_halt();
     }
 }
@@ -112,6 +116,18 @@ static uint64_t kernel_handle_user_exception(uint32_t vector, const struct excep
 
     if (vector == 14u) {
         __asm__ __volatile__("mov %%cr2, %0" : "=r"(fault_addr));
+        if (session->address_space.user_cr3 != 0 &&
+            vmm_resolve_cow_fault(session->address_space.user_cr3,
+                                  fault_addr,
+                                  frame->error_code)) {
+            return IRQ_DISPATCH_RESUME_FAULT;
+        }
+        if (process_handle_demand_page_fault(session,
+                                             mappings,
+                                             fault_addr,
+                                             frame->error_code)) {
+            return IRQ_DISPATCH_RESUME_FAULT;
+        }
         kprint("proc: fatal user exception pid=%u vec=%u rip=%lx err=%lx cr2=%lx name=%s\n",
                proc->pid,
                vector,
@@ -186,6 +202,7 @@ static int kernel_feed_keyboard_event(const struct keyboard_event *event, const 
             tty_index = 2u;
         }
         if (tty_index < TTY_VIRTUAL_COUNT && tty_switch_active(tty_index)) {
+            input_focus_clear();
             target_tty = tty_active();
             if (target_tty != 0) {
                 device_poll_set_mouse_selection_console(&target_tty->console);
@@ -203,9 +220,13 @@ static int kernel_feed_keyboard_event(const struct keyboard_event *event, const 
     sigint = ctrl_c && job_tty_sigint(target_tty);
     sigtstp = ctrl_z && job_tty_sigtstp(target_tty, frame);
     if (sigint) {
+        input_focus_clear();
         tty_write_str(target_tty, "^C\n", 0x0f);
     } else if (sigtstp) {
+        input_focus_clear();
         tty_write_str(target_tty, "^Z\n", 0x0f);
+    } else if (input_focus_owner_pid() != 0u) {
+        return 0;
     } else if (ctrl_c) {
         tty_feed_key_event(target_tty, event);
     } else if (!ctrl_z) {
@@ -296,7 +317,7 @@ uint64_t kernel_prepare_user_frame_return(const struct syscall_frame *frame) {
 uint64_t kernel_panic_dispatch_exception(uint32_t vector, const struct exception_frame *frame) {
     uint64_t rc = kernel_handle_user_exception(vector, frame);
 
-    if (rc == IRQ_DISPATCH_RESUME_KERNEL) {
+    if (rc == IRQ_DISPATCH_RESUME_KERNEL || rc == IRQ_DISPATCH_RESUME_FAULT) {
         return rc;
     }
     kernel_panic_handle_exception(&shell_tty, g_current_user_raw_entry, vector, frame);
@@ -310,6 +331,8 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     int init_started;
 
     hal_cpu_cli();
+    hal_cpu_enable_sse();
+    string_runtime_init();
     if (boot_info != 0 && boot_info->hdr.magic == BOOTX_MAGIC) {
         hal_display_load_font(boot_info);
         hal_display_init(&boot_info->console);
@@ -322,6 +345,7 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     g_kernel_boot_trace_row = 1;
     tty_set_cursor(&shell_tty, g_kernel_boot_trace_row, 0);
     kernel_boot_trace("kernel: entered");
+    string_memory_benchmark();
     if (!kernel_boot_info_valid(boot_info)) {
         kernel_boot_trace("kernel: bad boot info");
         kernel_halt_forever();
@@ -337,6 +361,18 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     kernel_boot_trace("kernel: pmm init");
     pmm_init(memmap, boot_info->memmap_count, kernel_phys_base, boot_info->kernel_phys_size);
     kernel_reserve_boot_modules(boot_info);
+    if (boot_info->console.type == BOOTX_CONSOLE_FRAMEBUFFER) {
+        uint64_t framebuffer_size =
+            (uint64_t)boot_info->console.pitch * boot_info->console.height;
+        int framebuffer_wc =
+            hal_paging_set_write_combining(boot_info->console.framebuffer_addr,
+                                           framebuffer_size);
+
+        kprint("paging: framebuffer=%lx size=%lx write_combining=%u\n",
+               boot_info->console.framebuffer_addr,
+               framebuffer_size,
+               (uint32_t)framebuffer_wc);
+    }
     (void)hal_display_enable_backbuffer();
     kernel_log_pmm_info();
 
@@ -368,6 +404,8 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     kernel_boot_trace("kernel: init missing");
 
     for (;;) {
+        hal_display_service_pending();
         hal_cpu_halt();
     }
 }
+

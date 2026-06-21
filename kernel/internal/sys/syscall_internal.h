@@ -17,6 +17,20 @@ enum {
     SYSCALL_PATH_MAX = NOS_PATH_MAX
 };
 
+struct syscall_trace {
+    uint64_t number;
+    uint64_t arg0;
+    uint64_t arg1;
+    uint64_t arg2;
+    uint64_t arg3;
+    uint64_t rip;
+    uint64_t rsp;
+    uint64_t result;
+    uint32_t pid;
+    uint8_t valid;
+    uint8_t returned;
+};
+
 struct syscall_user_buffer {
     uint64_t user_addr;
     uint32_t size;
@@ -33,6 +47,7 @@ extern uint8_t g_syscall_copy_buffer[SYSCALL_COPY_CHUNK];
 extern char g_syscall_path_buffer[SYSCALL_PATH_MAX + 1];
 extern char g_syscall_path_buffer2[SYSCALL_PATH_MAX + 1];
 extern char g_syscall_name_buffer[NOS_TTY_LINE_MAX + 1];
+extern struct syscall_trace g_last_syscall_trace;
 
 uint64_t syscall_kill_bad_user_pointer(void);
 int syscall_user_readable(uint64_t user_addr, uint32_t size);
@@ -42,12 +57,25 @@ int syscall_copy_from_user(void *dest, uint64_t user_addr, uint32_t size);
 int syscall_copy_user_cstr(char *dest, uint64_t user_addr, uint32_t max_len);
 int syscall_copy_to_user(uint64_t user_addr, const void *src, uint32_t size);
 uint64_t syscall_handle_page_free(uint64_t user_page_addr);
+uint64_t syscall_handle_mmap(uint64_t user_request_addr);
+uint64_t syscall_handle_munmap(uint64_t addr, uint64_t length);
+uint64_t syscall_handle_shm_open(uint64_t user_name_addr, uint64_t size, uint32_t flags);
+uint64_t syscall_handle_shm_unlink(uint64_t user_name_addr);
+uint64_t syscall_handle_mq_open(uint64_t user_name_addr, uint32_t flags);
+uint64_t syscall_handle_mq_unlink(uint64_t user_name_addr);
+uint64_t syscall_handle_mq_send(uint32_t handle, uint64_t user_buffer_addr);
+uint64_t syscall_handle_mq_receive(uint32_t handle, uint64_t user_buffer_addr);
+uint64_t syscall_handle_sem_open(uint64_t user_name_addr, uint32_t initial_value, uint32_t flags);
+uint64_t syscall_handle_sem_unlink(uint64_t user_name_addr);
+uint64_t syscall_handle_sem_trywait(uint32_t handle);
+uint64_t syscall_handle_sem_post(uint32_t handle);
 uint64_t syscall_handle_exec(uint64_t user_name_addr, uint64_t user_envp_addr);
 uint64_t syscall_handle_exec_replace(uint64_t user_name_addr, uint64_t user_envp_addr);
 uint64_t syscall_handle_spawn(uint64_t user_name_addr,
                               uint32_t syscall_mode,
                               uint32_t flags,
                               uint64_t user_envp_addr);
+uint64_t syscall_handle_fork(const struct syscall_frame *frame);
 uint64_t syscall_handle_getpid(void);
 uint64_t syscall_handle_proc_query(uint32_t kind, uint32_t index, uint64_t user_info_addr);
 uint64_t syscall_handle_wait(uint32_t pid, uint64_t user_info_addr);
@@ -57,16 +85,20 @@ uint64_t syscall_handle_bg(uint32_t pid);
 uint64_t syscall_handle_mkdir(uint64_t user_path_addr);
 uint64_t syscall_handle_rmdir(uint64_t user_path_addr);
 uint64_t syscall_handle_remove(uint64_t user_path_addr);
+uint64_t syscall_handle_mkfifo(uint64_t user_path_addr);
 uint64_t syscall_handle_mount(uint64_t user_source_addr, uint64_t user_target_addr, uint32_t syscall_kind);
 uint64_t syscall_handle_umount(uint64_t user_target_addr);
 uint64_t syscall_handle_switch_root(uint64_t user_target_addr);
 uint64_t syscall_handle_write(const struct syscall_user_buffer *buffer);
-uint64_t syscall_handle_fd_write(uint32_t fd, const struct syscall_user_buffer *buffer);
+uint64_t syscall_handle_fd_write(uint32_t fd,
+                                 const struct syscall_user_buffer *buffer,
+                                 const struct syscall_frame *frame);
 uint64_t syscall_handle_clear(void);
 uint64_t syscall_handle_open(uint64_t user_name_addr, uint32_t flags);
 uint64_t syscall_handle_opendir(uint64_t user_path_addr);
 uint64_t syscall_handle_fd_read(uint32_t fd, const struct syscall_user_buffer *buffer, uint32_t flags);
 uint64_t syscall_handle_close(uint32_t fd);
+uint64_t syscall_handle_seek(uint32_t fd, int64_t offset, uint32_t whence);
 uint64_t syscall_handle_dup2(uint32_t src_fd, uint32_t dst_fd);
 uint64_t syscall_handle_pipe(uint64_t user_pair_addr);
 uint64_t syscall_handle_readdir(uint32_t fd, uint64_t user_entry_addr);
@@ -103,6 +135,9 @@ uint64_t syscall_handle_clipboard(uint32_t op, uint64_t user_info_addr);
 uint64_t syscall_handle_machine_info_query(uint64_t user_info_addr);
 uint64_t syscall_handle_rtc_query(uint64_t user_info_addr);
 uint64_t syscall_handle_tty_query(uint32_t fd, uint64_t user_info_addr);
+uint64_t syscall_handle_profile_query(uint32_t index,
+                                      uint32_t flags,
+                                      uint64_t user_info_addr);
 uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint64_t user_info_addr);
 uint64_t syscall_handle_chdir(uint64_t user_path_addr);
 uint64_t syscall_handle_getcwd(uint64_t user_path_addr, uint32_t size);

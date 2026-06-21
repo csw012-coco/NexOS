@@ -6,7 +6,7 @@
 #include "fs/nxfs.h"
 
 enum {
-    NXFS_HOST_TOTAL_BLOCKS = 131072
+    NXFS_HOST_TOTAL_BLOCKS = 147456
 };
 
 static FILE *g_disk = NULL;

@@ -7,6 +7,9 @@ extern char **environ;
 unsigned long strtoul(const char *text, char **endptr, int base);
 unsigned long long strtoull(const char *text, char **endptr, int base);
 int atoi(const char *text);
+double atof(const char *text);
+int abs(int value);
+__attribute__((noreturn)) void exit(int status);
 
 void *malloc(size_t size);
 void free(void *ptr);

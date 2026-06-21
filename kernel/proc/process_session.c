@@ -1,11 +1,52 @@
 #include "kernel/internal/proc/process_session_internal.h"
 #include "kernel/public/mem/vmm.h"
 #include "kernel/public/core/tty.h"
+#include "kernel/public/input/input_focus.h"
 #include "kernel/public/proc/scheduler.h"
 
 static void session_restore_kernel_root(struct address_space *address_space) {
     if (address_space != 0 && address_space->user_cr3 != 0 && address_space->kernel_cr3 != 0) {
         (void)vmm_switch_root_or_fail(address_space->kernel_cr3);
+    }
+}
+
+static void session_enter_fpu_context(struct process_session *session, uint32_t parent_depth) {
+    struct cpu_user_state *cpu_state = current_cpu_user_state();
+
+    if (parent_depth == 0u) {
+        hal_fpu_state_save(cpu_state->kernel_fpu_state);
+    } else {
+        struct process_session *parent = cpu_state->active_sessions[parent_depth - 1u];
+
+        if (parent != 0) {
+            hal_fpu_state_save(parent->fpu_state);
+            parent->fpu_state_valid = 1u;
+        }
+    }
+    if (!session->fpu_state_valid) {
+        hal_fpu_state_init(session->fpu_state);
+        session->fpu_state_valid = 1u;
+    }
+    hal_fpu_state_restore(session->fpu_state);
+}
+
+static void session_leave_fpu_context(struct process_session *session, uint32_t parent_depth) {
+    struct cpu_user_state *cpu_state = current_cpu_user_state();
+
+    if (session->fpu_state_valid) {
+        hal_fpu_state_save(session->fpu_state);
+    } else {
+        hal_fpu_state_init(session->fpu_state);
+        session->fpu_state_valid = 1u;
+    }
+    if (parent_depth == 0u) {
+        hal_fpu_state_restore(cpu_state->kernel_fpu_state);
+    } else {
+        struct process_session *parent = cpu_state->active_sessions[parent_depth - 1u];
+
+        if (parent != 0 && parent->fpu_state_valid) {
+            hal_fpu_state_restore(parent->fpu_state);
+        }
     }
 }
 
@@ -165,7 +206,17 @@ static void session_complete_active_slice(struct address_space *address_space, u
 }
 
 static int session_should_continue(const struct process *proc) {
-    return proc->state == PROCESS_STATE_READY || proc->state == PROCESS_STATE_STOPPED;
+    return proc->state == PROCESS_STATE_READY ||
+           proc->state == PROCESS_STATE_SLEEPING ||
+           proc->state == PROCESS_STATE_STOPPED ||
+           proc->state == PROCESS_STATE_WAITING;
+}
+
+static int session_process_runnable(const struct process *proc) {
+    return proc != 0 &&
+           proc->image_kind != PROCESS_IMAGE_NONE &&
+           proc->state != PROCESS_STATE_FREE &&
+           proc->state != PROCESS_STATE_EXITED;
 }
 
 void session_finish(struct process_session *session, struct user_page_mapping *mappings) {
@@ -194,6 +245,7 @@ void session_finish(struct process_session *session, struct user_page_mapping *m
     }
 
     g_current_user_raw_entry = 0;
+    (void)input_focus_release(proc->pid);
     job_clear_process_foreground_pid(proc);
     process_mark_exited(proc->address_space != 0 ? proc : 0, proc->exit_code);
     process_clear_current(session);
@@ -236,7 +288,8 @@ int session_enter_ring3(struct process_session *session,
         }
         if (proc->state == PROCESS_STATE_SLEEPING) {
             while (proc->state == PROCESS_STATE_SLEEPING) {
-                hal_cpu_halt();
+                hal_display_service_pending();
+                hal_cpu_wait_for_interrupt();
             }
             continue;
         }
@@ -257,17 +310,23 @@ int session_run_active_slice(struct process_session *session,
     struct process *proc;
     struct address_space *address_space;
     uint64_t saved_kernel_rsp0;
+    uint32_t parent_depth;
 
     if (session == 0) {
         return 0;
     }
     proc = &session->process;
+    if (!session_process_runnable(proc)) {
+        return 0;
+    }
     address_space = proc->address_space;
+    parent_depth = current_cpu_user_state()->nested_kernel_stack_depth;
 
     if (!session_prepare_active_slice(session, mappings, proc, address_space, entry, stack_top, &saved_kernel_rsp0)) {
         return 0;
     }
 
+    session_enter_fpu_context(session, parent_depth);
     if (proc->has_saved_frame) {
         proc->state = PROCESS_STATE_RUNNING;
         hal_usermode_resume(&proc->saved_frame);
@@ -275,6 +334,7 @@ int session_run_active_slice(struct process_session *session,
         proc->state = PROCESS_STATE_RUNNING;
         hal_usermode_enter(entry, stack_top);
     }
+    session_leave_fpu_context(session, parent_depth);
     session_complete_active_slice(address_space, saved_kernel_rsp0);
 
     if (proc->state == PROCESS_STATE_RUNNING) {

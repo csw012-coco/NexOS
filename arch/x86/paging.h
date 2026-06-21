@@ -55,6 +55,8 @@ void paging_set_current_cr3(uint64_t cr3);
 uint64_t paging_create_kernel_root(void);
 uint64_t paging_clone_root_deep(uint64_t source_cr3);
 uint64_t paging_clone_current_root_deep(void);
+uint64_t paging_clone_root_cow(uint64_t source_cr3);
+int paging_resolve_cow_fault(uint64_t root_cr3, uint64_t fault_addr, uint64_t error_code);
 uint64_t paging_create_user_root(void);
 void paging_destroy_root_deep(uint64_t root_cr3);
 void paging_make_page_user_accessible(uint64_t addr);
@@ -66,6 +68,7 @@ int paging_map_page_with_exec(uint64_t virt_addr,
                               int user_accessible,
                               int writable,
                               int executable);
+int paging_set_write_combining(uint64_t virt_addr, uint64_t size);
 int paging_unmap_page(uint64_t virt_addr, uint64_t *phys_addr);
 int paging_get_mapping(uint64_t virt_addr, uint64_t *phys_addr);
 int paging_get_mapping_info(uint64_t virt_addr, uint64_t *phys_addr, uint64_t *flags);

@@ -90,6 +90,7 @@ void job_reset_runtime(struct job_runtime *runtime) {
     runtime->used = 0;
     runtime->entry = 0;
     runtime->stack_top = 0;
+    runtime->session.fpu_state_valid = 0u;
     addrspace_reset(&runtime->session.address_space);
     process_clear_slot_state(&runtime->session.process);
     for (uint32_t i = 0; i < USER_DYNAMIC_PAGE_LIMIT; i++) {
@@ -97,6 +98,9 @@ void job_reset_runtime(struct job_runtime *runtime) {
         runtime->mappings[i].virt_addr = 0;
         runtime->mappings[i].phys_addr = 0;
         runtime->mappings[i].reserved_pool = 0;
+        runtime->mappings[i].shared = 0;
+        runtime->mappings[i].writable = 0;
+        runtime->mappings[i].shm_slot = 0;
     }
 }
 

@@ -25,6 +25,7 @@ void framebuffer_display_put_at(uint16_t row, uint16_t col, uint8_t color, char 
 void framebuffer_display_enable_cursor(uint8_t start, uint8_t end);
 void framebuffer_display_set_cursor(uint16_t row, uint16_t col);
 void framebuffer_display_tick(uint32_t ticks);
+void framebuffer_display_service_pending(void);
 uint16_t framebuffer_display_columns(void);
 uint16_t framebuffer_display_rows(void);
 uint32_t framebuffer_display_cell_height(void);
@@ -42,6 +43,12 @@ void framebuffer_display_blit_surface(const struct surface *surface,
                                       uint32_t height,
                                       int32_t dst_x,
                                       int32_t dst_y);
+void framebuffer_display_blit_xrgb8888(const uint32_t *pixels,
+                                       uint32_t pitch,
+                                       uint32_t width,
+                                       uint32_t height,
+                                       int32_t dst_x,
+                                       int32_t dst_y);
 void framebuffer_display_draw_pixel(int32_t x, int32_t y, uint32_t rgb);
 void framebuffer_display_draw_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb);
 void framebuffer_display_draw_rect(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb);

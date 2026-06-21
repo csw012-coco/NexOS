@@ -307,6 +307,9 @@ static int64_t vfs_blockdev_transfer_bytes(struct vfs *vfs,
         total += chunk;
     }
 
+    if (write_mode != 0 && total != 0u && blockdev_flush(dev) != 0) {
+        return -1;
+    }
     *offset_io += total;
     return (int64_t)total;
 }

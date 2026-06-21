@@ -1,4 +1,8 @@
 #include "fs/nxfs_internal.h"
+
+enum {
+    NXFS_READ_RUN_MAX_BLOCKS = 128u
+};
 #include "kernel/public/sys/system_limits.h"
 #include "lib/string.h"
 
@@ -47,12 +51,28 @@ static int nxfs_logical_to_physical(const struct nxfs_inode *inode, uint32_t log
 }
 
 static int nxfs_append_extent(struct nxfs_inode *inode, uint32_t start, uint32_t len) {
+    int32_t last = -1;
+    int32_t free_slot = -1;
+
+    if (inode == 0 || len == 0u) {
+        return -1;
+    }
     for (uint32_t i = 0; i < NXFS_EXTENTS; i++) {
-        if (inode->extents[i].len == 0) {
-            inode->extents[i].start = start;
-            inode->extents[i].len = len;
-            return 0;
+        if (inode->extents[i].len != 0u) {
+            last = (int32_t)i;
+        } else if (free_slot < 0) {
+            free_slot = (int32_t)i;
         }
+    }
+    if (last >= 0 &&
+        inode->extents[last].start + inode->extents[last].len == start) {
+        inode->extents[last].len += len;
+        return 0;
+    }
+    if (free_slot >= 0) {
+        inode->extents[free_slot].start = start;
+        inode->extents[free_slot].len = len;
+        return 0;
     }
     return -1;
 }
@@ -865,6 +885,9 @@ int nxfs_read_file_range(struct nxfs_volume *vol,
     uint8_t *out = (uint8_t *)buffer;
     uint32_t done = 0;
     uint32_t blocks;
+    uint32_t first_block;
+    uint32_t request_end;
+    uint32_t last_block;
 
     if (vol == 0 || !vol->mounted || inode == 0 || buffer == 0 || bytes_read == 0) {
         return -1;
@@ -878,7 +901,13 @@ int nxfs_read_file_range(struct nxfs_volume *vol,
     }
 
     blocks = nxfs_inode_block_count(inode);
-    for (uint32_t block_idx = 0; block_idx < blocks && done < buffer_size; block_idx++) {
+    first_block = offset / NXFS_BLOCK_SIZE;
+    request_end = buffer_size > inode->size - offset ? inode->size : offset + buffer_size;
+    last_block = (request_end + NXFS_BLOCK_SIZE - 1u) / NXFS_BLOCK_SIZE;
+    if (last_block > blocks) {
+        last_block = blocks;
+    }
+    for (uint32_t block_idx = first_block; block_idx < last_block && done < buffer_size;) {
         uint8_t block[NXFS_BLOCK_SIZE];
         uint32_t block_start = block_idx * NXFS_BLOCK_SIZE;
         uint32_t block_end = block_start + NXFS_BLOCK_SIZE;
@@ -889,20 +918,43 @@ int nxfs_read_file_range(struct nxfs_volume *vol,
         if (phys < 0) {
             return -1;
         }
-        if (nxfs_read_block(vol, (uint32_t)phys, block) != 0) {
-            return -1;
-        }
         if (!nxfs_calc_block_window(block_start,
                                     block_end,
                                     inode->size,
                                     offset,
-                                    offset + buffer_size,
+                                    request_end,
                                     &copy_start,
                                     &chunk)) {
+            block_idx++;
             continue;
+        }
+        if (copy_start == block_start && chunk == NXFS_BLOCK_SIZE) {
+            uint32_t run = 1u;
+
+            while (run < NXFS_READ_RUN_MAX_BLOCKS && block_idx + run < last_block) {
+                uint32_t next_start = (block_idx + run) * NXFS_BLOCK_SIZE;
+                int next_phys = nxfs_logical_to_physical(inode, block_idx + run);
+
+                if (next_start < offset ||
+                    next_start + NXFS_BLOCK_SIZE > request_end ||
+                    next_phys != phys + (int)run) {
+                    break;
+                }
+                run++;
+            }
+            if (nxfs_read_blocks(vol, (uint32_t)phys, run, out + done) != 0) {
+                return -1;
+            }
+            done += run * NXFS_BLOCK_SIZE;
+            block_idx += run;
+            continue;
+        }
+        if (nxfs_read_block(vol, (uint32_t)phys, block) != 0) {
+            return -1;
         }
         nxfs_mem_copy(out + done, block + (copy_start - block_start), chunk);
         done += chunk;
+        block_idx++;
     }
 
     *bytes_read = done;

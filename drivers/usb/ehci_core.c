@@ -209,8 +209,8 @@ int ehci_alloc_msc_memory(struct ehci_msc_device *dev) {
     dev->qh_phys = pmm_alloc_page();
     dev->qtd_phys = pmm_alloc_page();
     dev->setup_phys = pmm_alloc_page();
-    dev->data_phys = pmm_alloc_page();
-    dev->read_cache_phys = pmm_alloc_page();
+    dev->data_phys = pmm_alloc_contiguous_below(EHCI_MSC_TRANSFER_PAGES, 0x100000000ull);
+    dev->read_cache_phys = pmm_alloc_contiguous_below(EHCI_MSC_TRANSFER_PAGES, 0x100000000ull);
     dev->cbw_phys = pmm_alloc_page();
     dev->csw_phys = pmm_alloc_page();
     if (dev->qh_phys == 0u || dev->qtd_phys == 0u || dev->setup_phys == 0u ||
@@ -236,8 +236,8 @@ int ehci_alloc_msc_memory(struct ehci_msc_device *dev) {
     memset(dev->qh, 0, EHCI_PAGE_SIZE);
     memset(dev->qtd, 0, EHCI_PAGE_SIZE);
     memset(dev->setup, 0, EHCI_PAGE_SIZE);
-    memset(dev->data, 0, EHCI_PAGE_SIZE);
-    memset(dev->read_cache, 0, EHCI_PAGE_SIZE);
+    memset(dev->data, 0, EHCI_MSC_TRANSFER_BYTES);
+    memset(dev->read_cache, 0, EHCI_MSC_TRANSFER_BYTES);
     memset(dev->cbw, 0, EHCI_PAGE_SIZE);
     memset(dev->csw, 0, EHCI_PAGE_SIZE);
     dev->read_cache_valid = 0u;
@@ -375,6 +375,11 @@ int ehci_run_async_transfer(struct ehci_msc_device *dev,
             (void)ehci_wait_op_clear(0x04u, EHCI_USBSTS_ASS);
             return !halted;
         }
+        if ((spin & 0xfffu) == 0xfffu) {
+            hal_cpu_wait_for_event();
+        } else {
+            hal_cpu_relax();
+        }
     }
     ehci_write_op(0x00u, ehci_read_op(0x00u) & ~EHCI_USBCMD_ASE);
     (void)ehci_wait_op_clear(0x04u, EHCI_USBSTS_ASS);
@@ -492,7 +497,7 @@ int ehci_bulk_transfer(struct ehci_msc_device *dev,
     uint32_t q0 = (uint32_t)dev->qtd_phys;
     uint32_t token;
 
-    if (dev == 0 || toggle == 0 || bytes > EHCI_PAGE_SIZE || mps == 0u) {
+    if (dev == 0 || toggle == 0 || bytes > EHCI_MSC_TRANSFER_BYTES || mps == 0u) {
         return 0;
     }
     if (token_out != 0) {

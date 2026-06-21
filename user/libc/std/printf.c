@@ -20,29 +20,56 @@ static void buf_write(char *dst, uint32_t size, uint32_t *pos, const char *text)
     }
 }
 
-static void buf_write_uint(char *dst,
-                           uint32_t size,
-                           uint32_t *pos,
-                           uint64_t value,
-                           uint32_t base,
-                           int uppercase) {
+static uint32_t buf_uint_digits(uint64_t value, uint32_t base) {
+    uint32_t count = 1u;
+
+    while (value >= base) {
+        value /= base;
+        count++;
+    }
+    return count;
+}
+
+static void buf_write_uint_formatted(char *dst,
+                                     uint32_t size,
+                                     uint32_t *pos,
+                                     uint64_t value,
+                                     uint32_t base,
+                                     int uppercase,
+                                     int negative,
+                                     uint32_t width,
+                                     int precision,
+                                     int zero_pad) {
     char tmp[32];
     const char *digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
-    uint32_t count = 0;
+    uint32_t count = buf_uint_digits(value, base);
+    uint32_t zeroes = precision > (int)count ? (uint32_t)precision - count : 0u;
+    uint32_t content = count + zeroes + (negative ? 1u : 0u);
+    uint32_t spaces = width > content ? width - content : 0u;
+    uint32_t out = count;
 
     if (base < 2u || base > 16u) {
         return;
     }
-    if (value == 0) {
+    if (zero_pad && precision < 0) {
+        zeroes += spaces;
+        spaces = 0u;
+    }
+    while (spaces-- != 0u) {
+        buf_putc(dst, size, pos, ' ');
+    }
+    if (negative) {
+        buf_putc(dst, size, pos, '-');
+    }
+    while (zeroes-- != 0u) {
         buf_putc(dst, size, pos, '0');
-        return;
     }
-    while (value != 0) {
-        tmp[count++] = digits[value % (uint64_t)base];
+    do {
+        tmp[--out] = digits[value % (uint64_t)base];
         value /= (uint64_t)base;
-    }
-    while (count != 0) {
-        buf_putc(dst, size, pos, tmp[--count]);
+    } while (out != 0u);
+    for (uint32_t i = 0; i < count; i++) {
+        buf_putc(dst, size, pos, tmp[i]);
     }
 }
 
@@ -57,6 +84,9 @@ int vsnprintf(char *dst, uint32_t size, const char *fmt, va_list ap) {
     }
     while (*fmt != '\0') {
         int long_count = 0;
+        int zero_pad = 0;
+        uint32_t width = 0u;
+        int precision = -1;
 
         if (*fmt != '%') {
             buf_putc(dst, size, &pos, *fmt++);
@@ -66,6 +96,22 @@ int vsnprintf(char *dst, uint32_t size, const char *fmt, va_list ap) {
         if (*fmt == '%') {
             buf_putc(dst, size, &pos, *fmt++);
             continue;
+        }
+        if (*fmt == '0') {
+            zero_pad = 1;
+            fmt++;
+        }
+        while (*fmt >= '0' && *fmt <= '9') {
+            width = width * 10u + (uint32_t)(*fmt - '0');
+            fmt++;
+        }
+        if (*fmt == '.') {
+            precision = 0;
+            fmt++;
+            while (*fmt >= '0' && *fmt <= '9') {
+                precision = precision * 10 + (*fmt - '0');
+                fmt++;
+            }
         }
         while (*fmt == 'l') {
             long_count++;
@@ -80,8 +126,22 @@ int vsnprintf(char *dst, uint32_t size, const char *fmt, va_list ap) {
             }
             case 's': {
                 const char *text = va_arg(ap, const char *);
+                uint32_t length = 0u;
 
-                buf_write(dst, size, &pos, text);
+                if (text == 0) {
+                    text = "(null)";
+                }
+                while (text[length] != '\0' &&
+                       (precision < 0 || length < (uint32_t)precision)) {
+                    length++;
+                }
+                while (width > length) {
+                    buf_putc(dst, size, &pos, ' ');
+                    width--;
+                }
+                for (uint32_t i = 0; i < length; i++) {
+                    buf_putc(dst, size, &pos, text[i]);
+                }
                 break;
             }
             case 'd':
@@ -97,12 +157,20 @@ int vsnprintf(char *dst, uint32_t size, const char *fmt, va_list ap) {
                     value = va_arg(ap, int);
                 }
                 if (value < 0) {
-                    buf_putc(dst, size, &pos, '-');
                     magnitude = (uint64_t)(-(value + 1)) + 1u;
                 } else {
                     magnitude = (uint64_t)value;
                 }
-                buf_write_uint(dst, size, &pos, magnitude, 10u, 0);
+                buf_write_uint_formatted(dst,
+                                         size,
+                                         &pos,
+                                         magnitude,
+                                         10u,
+                                         0,
+                                         value < 0,
+                                         width,
+                                         precision,
+                                         zero_pad);
                 break;
             }
             case 'u': {
@@ -115,12 +183,14 @@ int vsnprintf(char *dst, uint32_t size, const char *fmt, va_list ap) {
                 } else {
                     value = va_arg(ap, unsigned int);
                 }
-                buf_write_uint(dst, size, &pos, value, 10u, 0);
+                buf_write_uint_formatted(dst, size, &pos, value, 10u, 0, 0, width, precision, zero_pad);
                 break;
             }
+            case 'o':
             case 'x':
             case 'X': {
                 uint64_t value;
+                uint32_t base = *fmt == 'o' ? 8u : 16u;
 
                 if (long_count >= 2) {
                     value = va_arg(ap, unsigned long long);
@@ -129,14 +199,23 @@ int vsnprintf(char *dst, uint32_t size, const char *fmt, va_list ap) {
                 } else {
                     value = va_arg(ap, unsigned int);
                 }
-                buf_write_uint(dst, size, &pos, value, 16u, *fmt == 'X');
+                buf_write_uint_formatted(dst,
+                                         size,
+                                         &pos,
+                                         value,
+                                         base,
+                                         *fmt == 'X',
+                                         0,
+                                         width,
+                                         precision,
+                                         zero_pad);
                 break;
             }
             case 'p': {
                 uint64_t value = (uint64_t)(uintptr_t)va_arg(ap, void *);
 
                 buf_write(dst, size, &pos, "0x");
-                buf_write_uint(dst, size, &pos, value, 16u, 0);
+                buf_write_uint_formatted(dst, size, &pos, value, 16u, 0, 0, width, precision, zero_pad);
                 break;
             }
             default:
@@ -220,6 +299,20 @@ int printf(const char *fmt, ...) {
 
     va_start(ap, fmt);
     written = vprintf(fmt, ap);
+    va_end(ap);
+    return written;
+}
+
+int vfprintf(FILE *stream, const char *fmt, va_list ap) {
+    return stream != 0 ? vdprintf(stream->fd, fmt, ap) : -1;
+}
+
+int fprintf(FILE *stream, const char *fmt, ...) {
+    va_list ap;
+    int written;
+
+    va_start(ap, fmt);
+    written = vfprintf(stream, fmt, ap);
     va_end(ap);
     return written;
 }

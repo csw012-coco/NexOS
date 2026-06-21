@@ -7,6 +7,7 @@
 #include "drivers/usb/xhci.h"
 #include "hal/hal.h"
 #include "kernel/public/core/console.h"
+#include "kernel/public/input/input_focus.h"
 #include "lib/string.h"
 
 static uint8_t g_device_poll_mouse_cursor_enabled;
@@ -16,6 +17,31 @@ static uint8_t g_device_poll_mouse_cell_valid;
 static uint16_t g_device_poll_mouse_row;
 static uint16_t g_device_poll_mouse_col;
 static struct console *g_device_poll_mouse_selection_console;
+static uint32_t g_input_focus_owner_pid;
+
+int input_focus_grab(uint32_t pid) {
+    if (pid == 0u || (g_input_focus_owner_pid != 0u && g_input_focus_owner_pid != pid)) {
+        return 0;
+    }
+    g_input_focus_owner_pid = pid;
+    return 1;
+}
+
+int input_focus_release(uint32_t pid) {
+    if (pid == 0u || g_input_focus_owner_pid != pid) {
+        return 0;
+    }
+    g_input_focus_owner_pid = 0u;
+    return 1;
+}
+
+void input_focus_clear(void) {
+    g_input_focus_owner_pid = 0u;
+}
+
+uint32_t input_focus_owner_pid(void) {
+    return g_input_focus_owner_pid;
+}
 
 static void device_poll_mouse_cursor_event(const struct mouse_event_record *event) {
     uint16_t row;
@@ -43,7 +69,7 @@ static void device_poll_mouse_cursor_event(const struct mouse_event_record *even
     } else {
         return;
     }
-    if (g_device_poll_mouse_selection_console == 0) {
+    if (g_device_poll_mouse_selection_console == 0 || input_focus_owner_pid() != 0u) {
         return;
     }
     if ((event->buttons & 0x02u) != 0u && (old_buttons & 0x02u) == 0u) {

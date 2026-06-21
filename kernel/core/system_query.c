@@ -482,6 +482,9 @@ int kernel_block_write(uint32_t disk_index, uint64_t lba, struct syscall_block_w
     if (blockdev_write(dev, lba, 1, info->data) != 0) {
         return 0;
     }
+    if (blockdev_flush(dev) != 0) {
+        return 0;
+    }
 
     info->disk_index = disk_index;
     info->block_size = dev->block_size;

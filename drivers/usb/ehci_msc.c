@@ -102,7 +102,8 @@ int ehci_msc_command(struct ehci_msc_device *dev,
     uint32_t csw_token;
     uint8_t csw_retry = 0u;
 
-    if (dev == 0 || cmd == 0 || cmd_len == 0u || cmd_len > 16u || data_len > EHCI_PAGE_SIZE) {
+    if (dev == 0 || cmd == 0 || cmd_len == 0u || cmd_len > 16u ||
+        data_len > EHCI_MSC_TRANSFER_BYTES) {
         return 0;
     }
     dev->last_msc_phase = 0u;
@@ -356,7 +357,7 @@ int ehci_msc_command_recover(struct ehci_msc_device *dev,
     failed_phase = dev != 0 ? dev->last_msc_phase : 0u;
     if (dev != 0 && cmd != 0 && data != 0 &&
         failed_phase == 3u &&
-        data_in && data_len != 0u && data_len <= EHCI_PAGE_SIZE &&
+        data_in && data_len != 0u && data_len <= EHCI_MSC_TRANSFER_BYTES &&
         cmd_len != 0u && cmd[0] == SCSI_READ_10 &&
         !ehci_msc_buffer_has_transport_signature((const uint8_t *)data)) {
         read10_csw_data_ok = 1u;
@@ -447,18 +448,6 @@ int ehci_msc_request_sense(struct ehci_msc_device *dev, uint8_t *sense, uint32_t
     return ok;
 }
 
-int ehci_bytes_equal(const uint8_t *lhs, const uint8_t *rhs, uint32_t size) {
-    if (lhs == 0 || rhs == 0) {
-        return 0;
-    }
-    for (uint32_t i = 0; i < size; i++) {
-        if (lhs[i] != rhs[i]) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 int ehci_msc_buffer_has_transport_signature(const uint8_t *data) {
     uint32_t signature;
 
@@ -478,8 +467,10 @@ int ehci_msc_sync_cache(struct ehci_msc_device *dev, uint64_t lba, uint32_t coun
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = SCSI_SYNCHRONIZE_CACHE_10;
     usb_write_u32be(cmd + 2, (uint32_t)lba);
-    cmd[7] = (uint8_t)((count >> 8) & 0xffu);
-    cmd[8] = (uint8_t)(count & 0xffu);
+    if (count <= 0xffffu) {
+        cmd[7] = (uint8_t)((count >> 8) & 0xffu);
+        cmd[8] = (uint8_t)(count & 0xffu);
+    }
     if (ehci_msc_command_recover(dev, cmd, 10u, 0, 0u, 0u)) {
         return 1;
     }

@@ -1,6 +1,136 @@
 #include "kernel/internal/proc/process_elf_internal.h"
+#include "kernel/public/mem/pmm.h"
 #include "kernel/public/mem/vmm.h"
+#include "hal/hal.h"
 #include "lib/string.h"
+
+enum {
+    PROCESS_ELF_BACKING_MAX = USER_PROCESS_LIMIT + 1u,
+    PROCESS_ELF_BACKING_PAGE_MAX = NOS_ELF_FILE_BUFFER_SIZE / USER_PAGE_SIZE,
+    PROCESS_ELF_BACKING_NONE = 0xffu
+};
+
+struct process_elf_backing {
+    uint8_t used;
+    uint16_t refs;
+    uint32_t size;
+    uint64_t pages[PROCESS_ELF_BACKING_PAGE_MAX];
+};
+
+static struct process_elf_backing g_process_elf_backings[PROCESS_ELF_BACKING_MAX];
+
+static struct process_elf_backing *process_elf_backing_get(uint8_t slot) {
+    if (slot >= PROCESS_ELF_BACKING_MAX || !g_process_elf_backings[slot].used) {
+        return 0;
+    }
+    return &g_process_elf_backings[slot];
+}
+
+void process_release_elf_backing(struct process_session *session) {
+    struct process_elf_backing *backing;
+
+    if (session == 0) {
+        return;
+    }
+    backing = process_elf_backing_get(session->elf_backing_slot);
+    if (backing != 0 && backing->refs != 0 && --backing->refs == 0) {
+        uint32_t page_count = (backing->size + USER_PAGE_SIZE - 1u) / USER_PAGE_SIZE;
+
+        for (uint32_t i = 0; i < page_count; i++) {
+            (void)pmm_release_page(backing->pages[i]);
+            backing->pages[i] = 0;
+        }
+        backing->used = 0;
+        backing->size = 0;
+    }
+    session->elf_backing_slot = PROCESS_ELF_BACKING_NONE;
+    session->elf_image_size = 0;
+    session->elf_segment_count = 0;
+}
+
+int process_retain_elf_backing(struct process_session *session) {
+    struct process_elf_backing *backing;
+
+    if (session == 0) {
+        return 0;
+    }
+    backing = process_elf_backing_get(session->elf_backing_slot);
+    if (backing == 0 || backing->refs == 0xffffu) {
+        return 0;
+    }
+    backing->refs++;
+    return 1;
+}
+
+static int process_create_elf_backing(struct process_session *session,
+                                      const uint8_t *image,
+                                      uint32_t image_size) {
+    struct process_elf_backing *backing = 0;
+    uint32_t page_count = (image_size + USER_PAGE_SIZE - 1u) / USER_PAGE_SIZE;
+
+    process_release_elf_backing(session);
+    for (uint32_t i = 0; i < PROCESS_ELF_BACKING_MAX; i++) {
+        if (!g_process_elf_backings[i].used) {
+            backing = &g_process_elf_backings[i];
+            session->elf_backing_slot = (uint8_t)i;
+            break;
+        }
+    }
+    if (backing == 0) {
+        return 0;
+    }
+    backing->used = 1u;
+    backing->refs = 1u;
+    backing->size = image_size;
+    for (uint32_t i = 0; i < page_count; i++) {
+        uint32_t offset = i * USER_PAGE_SIZE;
+        uint32_t chunk = image_size - offset;
+        uint8_t *dest;
+
+        if (chunk > USER_PAGE_SIZE) {
+            chunk = USER_PAGE_SIZE;
+        }
+        backing->pages[i] = pmm_alloc_page();
+        if (backing->pages[i] == 0) {
+            process_release_elf_backing(session);
+            return 0;
+        }
+        dest = (uint8_t *)hal_phys_direct_map(backing->pages[i]);
+        memset(dest, 0, USER_PAGE_SIZE);
+        memcpy(dest, image + offset, chunk);
+    }
+    session->elf_image_size = image_size;
+    return 1;
+}
+
+static int process_copy_from_elf_backing(const struct process_session *session,
+                                         uint64_t image_offset,
+                                         uint64_t user_addr,
+                                         uint64_t size) {
+    struct process_elf_backing *backing = process_elf_backing_get(session->elf_backing_slot);
+
+    if (backing == 0 || image_offset + size > backing->size) {
+        return 0;
+    }
+    while (size != 0) {
+        uint32_t page_index = (uint32_t)(image_offset / USER_PAGE_SIZE);
+        uint32_t page_offset = (uint32_t)(image_offset & (USER_PAGE_SIZE - 1u));
+        uint32_t chunk = USER_PAGE_SIZE - page_offset;
+        const uint8_t *src;
+
+        if (chunk > size) {
+            chunk = (uint32_t)size;
+        }
+        src = (const uint8_t *)hal_phys_direct_map(backing->pages[page_index]);
+        if (!addrspace_copy_to_range(user_addr, src + page_offset, chunk)) {
+            return 0;
+        }
+        image_offset += chunk;
+        user_addr += chunk;
+        size -= chunk;
+    }
+    return 1;
+}
 
 static int process_arg_is_space(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
@@ -272,8 +402,10 @@ int process_prepare_arguments(const char *command_line, const char *const *envp,
     return 1;
 }
 
-static void process_init_bound_elf_process(const struct process *proc) {
+static void process_init_bound_elf_process(struct process *proc) {
     g_bound_session->process = *proc;
+    process_forget_files(proc);
+    process_discard_non_stdio_files(&g_bound_session->process);
     g_bound_session->process.image_kind = PROCESS_IMAGE_ELF;
     g_bound_session->process.address_space = &g_bound_session->address_space;
     g_bound_session->process.state = PROCESS_STATE_RUNNING;
@@ -307,13 +439,10 @@ static int process_prepare_elf_address_space(void) {
     return process_bound_user_root_active();
 }
 
-static int process_load_elf_segment(const uint8_t *image,
-                                    uint32_t image_size,
-                                    const struct elf64_phdr *phdr) {
-    if (!process_bound_user_root_active()) {
-        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
-        return 0;
-    }
+static int process_register_elf_segment(uint32_t image_size,
+                                        const struct elf64_phdr *phdr) {
+    struct process_elf_segment *segment;
+
     if (phdr->p_offset + phdr->p_filesz > image_size || phdr->p_filesz > phdr->p_memsz) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_BOUNDS;
         return 0;
@@ -322,16 +451,68 @@ static int process_load_elf_segment(const uint8_t *image,
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_ADDR;
         return 0;
     }
-    if (!addrspace_map_range_with_perms(phdr->p_vaddr,
-                                        phdr->p_vaddr + phdr->p_memsz,
-                                        ((phdr->p_flags & ELF_PF_W) != 0 ? VMM_PERM_WRITE : VMM_PERM_NONE) |
-                                            ((phdr->p_flags & ELF_PF_X) != 0 ? VMM_PERM_EXEC : VMM_PERM_NONE)) ||
-        !addrspace_zero_range(phdr->p_vaddr, phdr->p_memsz) ||
-        !addrspace_copy_to_range(phdr->p_vaddr, image + phdr->p_offset, phdr->p_filesz)) {
-        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
+    if (g_bound_session->elf_segment_count >= PROCESS_ELF_SEGMENT_MAX) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_BOUNDS;
         return 0;
     }
+    segment = &g_bound_session->elf_segments[g_bound_session->elf_segment_count++];
+    segment->vaddr = phdr->p_vaddr;
+    segment->memsz = phdr->p_memsz;
+    segment->filesz = phdr->p_filesz;
+    segment->offset = phdr->p_offset;
+    segment->perms =
+        ((phdr->p_flags & ELF_PF_W) != 0 ? VMM_PERM_WRITE : VMM_PERM_NONE) |
+        ((phdr->p_flags & ELF_PF_X) != 0 ? VMM_PERM_EXEC : VMM_PERM_NONE);
     return 1;
+}
+
+int process_handle_demand_page_fault(struct process_session *session,
+                                     struct user_page_mapping *mappings,
+                                     uint64_t fault_addr,
+                                     uint64_t error_code) {
+    uint64_t page = fault_addr & ~(uint64_t)(USER_PAGE_SIZE - 1u);
+
+    if (session == 0 || mappings == 0 || (error_code & 0x1u) != 0 ||
+        session->elf_image_size == 0) {
+        return 0;
+    }
+    for (uint16_t i = 0; i < session->elf_segment_count; i++) {
+        const struct process_elf_segment *segment = &session->elf_segments[i];
+        uint64_t segment_end = segment->vaddr + segment->memsz;
+        uint64_t page_end = page + USER_PAGE_SIZE;
+        uint64_t copy_start;
+        uint64_t copy_end;
+
+        if (page >= segment_end || page_end <= segment->vaddr) {
+            continue;
+        }
+        process_bind_session(session, mappings);
+        if (!vmm_root_is_current(session->address_space.user_cr3) &&
+            !vmm_switch_root_or_fail(session->address_space.user_cr3)) {
+            return 0;
+        }
+        if (!addrspace_map_page_at(page, segment->perms)) {
+            return 0;
+        }
+        copy_start = page > segment->vaddr ? page : segment->vaddr;
+        copy_end = page_end < segment->vaddr + segment->filesz
+            ? page_end
+            : segment->vaddr + segment->filesz;
+        if (copy_end > copy_start) {
+            uint64_t image_offset = segment->offset + (copy_start - segment->vaddr);
+
+            if (image_offset + (copy_end - copy_start) > session->elf_image_size ||
+                !process_copy_from_elf_backing(session,
+                                               image_offset,
+                                               copy_start,
+                                               copy_end - copy_start)) {
+                (void)addrspace_free_page(page);
+                return 0;
+            }
+        }
+        return 1;
+    }
+    return 0;
 }
 
 int process_begin_elf_session(void) {
@@ -343,6 +524,7 @@ int process_begin_elf_session(void) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ENTER;
         return 0;
     }
+    g_user_session.fpu_state_valid = 0u;
     addrspace_release_dynamic_pages();
 
     if (!process_create_elf_address_space()) {
@@ -389,6 +571,15 @@ int process_load_elf_image(const uint8_t *image, uint32_t image_size, uint64_t *
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_HEADER;
         return 0;
     }
+    if (image_size > NOS_ELF_FILE_BUFFER_SIZE) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_TOO_LARGE;
+        return 0;
+    }
+    if (!process_create_elf_backing(g_bound_session, image, image_size)) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
+        return 0;
+    }
+    g_bound_session->elf_segment_count = 0;
 
     for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
         const struct elf64_phdr *phdr = &phdrs[i];
@@ -396,11 +587,18 @@ int process_load_elf_image(const uint8_t *image, uint32_t image_size, uint64_t *
         if (phdr->p_type != ELF_PT_LOAD || phdr->p_memsz == 0) {
             continue;
         }
-        if (!process_load_elf_segment(image, image_size, phdr)) {
+        if (!process_register_elf_segment(image_size, phdr)) {
             return 0;
         }
     }
 
     *entry_out = ehdr->e_entry;
+    if (!process_handle_demand_page_fault(g_bound_session,
+                                          g_bound_mappings,
+                                          ehdr->e_entry,
+                                          0x4u)) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
+        return 0;
+    }
     return 1;
 }

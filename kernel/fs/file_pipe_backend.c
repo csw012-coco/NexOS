@@ -1,4 +1,6 @@
 #include "kernel/internal/fs/file_pipe_backend.h"
+#include "kernel/internal/proc/process_lifecycle_internal.h"
+#include "lib/string.h"
 
 enum {
     FILE_PIPE_MAX = 4,
@@ -7,15 +9,20 @@ enum {
 
 struct file_pipe {
     uint8_t used;
+    uint8_t named;
+    uint8_t linked;
     uint8_t readers;
     uint8_t writers;
     uint32_t read_pos;
     uint32_t write_pos;
     uint32_t count;
+    char name[NOS_PATH_BUFFER_SIZE];
     uint8_t buffer[FILE_PIPE_BUFFER_SIZE];
 };
 
 static struct file_pipe g_file_pipes[FILE_PIPE_MAX];
+static const struct file_ops g_file_ops_pipe_read;
+static const struct file_ops g_file_ops_pipe_write;
 
 static void file_pipe_init_with_ops(struct file *file, uint8_t kind, const struct file_ops *ops) {
     if (file == 0) {
@@ -31,11 +38,36 @@ static void file_pipe_reset(struct file_pipe *pipe) {
         return;
     }
     pipe->used = 0;
+    pipe->named = 0;
+    pipe->linked = 0;
     pipe->readers = 0;
     pipe->writers = 0;
     pipe->read_pos = 0;
     pipe->write_pos = 0;
     pipe->count = 0;
+    pipe->name[0] = '\0';
+}
+
+static void file_pipe_clear_data(struct file_pipe *pipe) {
+    if (pipe == 0) {
+        return;
+    }
+    pipe->read_pos = 0;
+    pipe->write_pos = 0;
+    pipe->count = 0;
+}
+
+static struct file_pipe *file_pipe_find_named(const char *path) {
+    if (path == 0) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < FILE_PIPE_MAX; i++) {
+        if (g_file_pipes[i].used && g_file_pipes[i].named &&
+            g_file_pipes[i].linked && streq(g_file_pipes[i].name, path)) {
+            return &g_file_pipes[i];
+        }
+    }
+    return 0;
 }
 
 static void file_pipe_init_end(struct file *file,
@@ -108,12 +140,15 @@ static int64_t file_pipe_read(struct file *file,
         return 0;
     }
     if (pipe->count == 0) {
-        return 0;
+        return pipe->writers == 0 ? 0 : KERNEL_FILE_IO_WOULD_BLOCK;
     }
     while (total < size && pipe->count != 0) {
         out[total++] = pipe->buffer[pipe->read_pos];
         pipe->read_pos = (pipe->read_pos + 1u) % FILE_PIPE_BUFFER_SIZE;
         pipe->count--;
+    }
+    if (total != 0) {
+        process_wake_file_waiters(pipe, KERNEL_FILE_PIPE_WRITE);
     }
     return (int64_t)total;
 }
@@ -131,26 +166,99 @@ static int64_t file_pipe_write(struct file *file,
         return 0;
     }
     if (pipe->readers == 0) {
-        return -1;
+        return KERNEL_FILE_IO_BROKEN_PIPE;
+    }
+    if (pipe->count >= FILE_PIPE_BUFFER_SIZE) {
+        return KERNEL_FILE_IO_WOULD_BLOCK;
     }
     while (total < size && pipe->count < FILE_PIPE_BUFFER_SIZE) {
         pipe->buffer[pipe->write_pos] = in[total++];
         pipe->write_pos = (pipe->write_pos + 1u) % FILE_PIPE_BUFFER_SIZE;
         pipe->count++;
     }
+    if (total != 0) {
+        process_wake_file_waiters(pipe, KERNEL_FILE_PIPE_READ);
+    }
     return (int64_t)total;
 }
 
 static int64_t file_pipe_close(struct file *file) {
     struct file_pipe *pipe = file_pipe_from_file(file);
+    uint8_t kind = file != 0 ? file->kind : KERNEL_FILE_NONE;
 
     if (pipe != 0) {
-        file_pipe_release_end(pipe, file->kind);
+        file_pipe_release_end(pipe, kind);
+        if (kind == KERNEL_FILE_PIPE_READ && pipe->readers == 0) {
+            process_wake_file_waiters(pipe, KERNEL_FILE_PIPE_WRITE);
+        } else if (kind == KERNEL_FILE_PIPE_WRITE && pipe->writers == 0) {
+            process_wake_file_waiters(pipe, KERNEL_FILE_PIPE_READ);
+        }
         if (pipe->readers == 0 && pipe->writers == 0) {
-            file_pipe_reset(pipe);
+            if (pipe->linked) {
+                file_pipe_clear_data(pipe);
+            } else {
+                file_pipe_reset(pipe);
+            }
         }
     }
     return file_pipe_reset_and_ok(file);
+}
+
+int file_pipe_backend_create_named(const char *path) {
+    struct file_pipe *pipe = 0;
+
+    if (path == 0 || path[0] == '\0' || file_pipe_find_named(path) != 0) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < FILE_PIPE_MAX; i++) {
+        if (!g_file_pipes[i].used) {
+            pipe = &g_file_pipes[i];
+            break;
+        }
+    }
+    if (pipe == 0) {
+        return 0;
+    }
+    file_pipe_reset(pipe);
+    pipe->used = 1u;
+    pipe->named = 1u;
+    pipe->linked = 1u;
+    for (uint32_t i = 0; i + 1u < sizeof(pipe->name) && path[i] != '\0'; i++) {
+        pipe->name[i] = path[i];
+        pipe->name[i + 1u] = '\0';
+    }
+    return 1;
+}
+
+int file_pipe_backend_unlink_named(const char *path) {
+    struct file_pipe *pipe = file_pipe_find_named(path);
+
+    if (pipe == 0) {
+        return 0;
+    }
+    pipe->linked = 0;
+    pipe->name[0] = '\0';
+    if (pipe->readers == 0 && pipe->writers == 0) {
+        file_pipe_reset(pipe);
+    }
+    return 1;
+}
+
+int file_pipe_backend_named_exists(const char *path) {
+    return file_pipe_find_named(path) != 0;
+}
+
+int file_pipe_backend_open_named(struct file *file, const char *path, int writable) {
+    struct file_pipe *pipe = file_pipe_find_named(path);
+    uint8_t kind = writable ? KERNEL_FILE_PIPE_WRITE : KERNEL_FILE_PIPE_READ;
+    const struct file_ops *ops = writable ? &g_file_ops_pipe_write : &g_file_ops_pipe_read;
+
+    if (file == 0 || pipe == 0) {
+        return 0;
+    }
+    file_pipe_init_end(file, kind, pipe, ops);
+    file_pipe_acquire_end(pipe, kind);
+    return 1;
 }
 
 static const struct file_ops g_file_ops_pipe_read = {
@@ -236,4 +344,14 @@ int file_pipe_backend_write_would_block(const struct file *file) {
     }
     pipe = (const struct file_pipe *)file->private_data;
     return pipe != 0 && pipe->count >= FILE_PIPE_BUFFER_SIZE && pipe->readers != 0;
+}
+
+int file_pipe_backend_has_readers(const struct file *file) {
+    const struct file_pipe *pipe;
+
+    if (file == 0 || file->kind != KERNEL_FILE_PIPE_WRITE) {
+        return 1;
+    }
+    pipe = (const struct file_pipe *)file->private_data;
+    return pipe != 0 && pipe->readers != 0;
 }

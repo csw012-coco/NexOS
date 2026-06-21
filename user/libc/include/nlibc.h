@@ -6,6 +6,8 @@
 #include "stdlib.h"
 #include "string.h"
 #include "strings.h"
+#include "sys/mman.h"
+#include "sys/ipc.h"
 #include "nexos/audio.h"
 #include "nexos/file.h"
 #include "nexos/fs.h"

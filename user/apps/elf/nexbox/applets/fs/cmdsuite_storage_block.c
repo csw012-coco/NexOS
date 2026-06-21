@@ -1,20 +1,56 @@
 #include "user/apps/elf/nexbox/applets/fs/cmdsuite_storage_common.h"
 
-static void write_mountpoints_for_source(uint32_t disk_index, uint32_t part_index) {
+static void format_human_size_local(uint64_t bytes, char *out, uint32_t out_size) {
+    static const char *const units[] = {"B", "K", "M", "G", "T"};
+    uint64_t whole = bytes;
+    uint64_t rem = 0u;
+    uint32_t unit = 0u;
+
+    while (whole >= 1024u && unit + 1u < sizeof(units) / sizeof(units[0])) {
+        rem = whole % 1024u;
+        whole /= 1024u;
+        unit++;
+    }
+    if (unit != 0u && whole < 10u && rem != 0u) {
+        (void)snprintf(out,
+                       out_size,
+                       "%llu.%u%s",
+                       (unsigned long long)whole,
+                       (uint32_t)((rem * 10u) / 1024u),
+                       units[unit]);
+    } else {
+        (void)snprintf(out, out_size, "%llu%s", (unsigned long long)whole, units[unit]);
+    }
+}
+
+static void format_mountpoints_for_source(uint32_t disk_index,
+                                          uint32_t part_index,
+                                          char *out,
+                                          uint32_t out_size) {
     struct syscall_mount_info info;
-    int printed = 0;
+    uint32_t used = 0u;
     uint32_t i;
 
+    if (out == NULL || out_size == 0u) {
+        return;
+    }
+    out[0] = '\0';
     for (i = 0; mount_query(i, &info) > 0; i++) {
+        int written;
+
         if (!info.source_known || info.disk_index != disk_index || info.part_index != part_index) {
             continue;
         }
-        if (printed) {
-            write_stdout(",", 1);
+        written = snprintf(out + used,
+                           out_size - used,
+                           "%s/%s",
+                           used != 0u ? "," : "",
+                           info.target);
+        if (written <= 0 || (uint32_t)written >= out_size - used) {
+            out[out_size - 1u] = '\0';
+            return;
         }
-        write_stdout("/", 1);
-        write_str(info.target);
-        printed = 1;
+        used += (uint32_t)written;
     }
 }
 
@@ -51,40 +87,35 @@ int cmd_parts(int argc, char **argv) {
 int cmd_blk(void) {
     struct syscall_block_info info;
     struct syscall_partition_info part;
+    char size[24];
+    char mounts[128];
     uint32_t i;
 
     write_str("NAME         MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS\n");
     for (i = 0; block_query(i, &info) > 0; i++) {
         uint32_t p;
 
-        write_str("disk");
-        write_dec(info.index);
-        write_str(info.index < 10u ? "       " : "      ");
-        write_dec(8u);
-        write_str(":");
-        write_dec(info.index * 16u);
-        write_str(" 0 ");
-        write_human_size(info.block_count * (uint64_t)info.block_size);
-        write_str("  ");
-        write_str(info.writable ? "0 " : "1 ");
-        write_text_padded("disk", 4);
-        write_str("\n");
+        format_human_size_local(info.block_count * (uint64_t)info.block_size, size, sizeof(size));
+        dprintf(STDOUT_FILENO,
+                "disk%u       8:%u 0 %s  %u disk\n",
+                info.index,
+                info.index * 16u,
+                size,
+                info.writable ? 0u : 1u);
         for (p = 0; part_query(i, p, &part) > 0; p++) {
-            write_str((p + 1u == info.partition_count) ? "`-disk" : "|-disk");
-            write_dec(info.index);
-            write_str("p");
-            write_dec(part.part_index + 1u);
-            write_str((info.index < 10u && part.part_index < 9u) ? "    " : "   ");
-            write_dec(8u);
-            write_str(":");
-            write_dec(info.index * 16u + part.part_index + 1u);
-            write_str(" 0 ");
-            write_human_size((uint64_t)part.sector_count * (uint64_t)info.block_size);
-            write_str("  ");
-            write_str(info.writable ? "0 " : "1 ");
-            write_text_padded("part", 4);
-            write_mountpoints_for_source(i, p);
-            write_str("\n");
+            format_human_size_local((uint64_t)part.sector_count * (uint64_t)info.block_size,
+                                    size,
+                                    sizeof(size));
+            format_mountpoints_for_source(i, p, mounts, sizeof(mounts));
+            dprintf(STDOUT_FILENO,
+                    "%sdisk%up%u    8:%u 0 %s  %u part%s\n",
+                    p + 1u == info.partition_count ? "`-" : "|-",
+                    info.index,
+                    part.part_index + 1u,
+                    info.index * 16u + part.part_index + 1u,
+                    size,
+                    info.writable ? 0u : 1u,
+                    mounts);
         }
     }
     return 0;

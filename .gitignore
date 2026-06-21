@@ -1,6 +1,6 @@
 # Build outputs
 /build/
-/bootx/bootx/build/
+/bootloader/bootx/build/
 /NXFS/nxfs
 
 # Generated disk images

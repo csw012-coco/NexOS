@@ -54,27 +54,23 @@ enum {
     HDA_BUFFER_BYTES = 32768u,
     HDA_PAGE_BYTES = 4096u,
     HDA_BUFFER_PAGES = HDA_BUFFER_BYTES / HDA_PAGE_BYTES,
-    HDA_BDL_ENTRIES = 32u,
+    HDA_BDL_ENTRIES = 64u,
     HDA_BUFFER_BLOCK_COUNT = 8u,
     HDA_BUFFER_BLOCK_ENTRIES = HDA_BDL_ENTRIES / HDA_BUFFER_BLOCK_COUNT,
     HDA_BUFFER_BLOCK_PAGES = HDA_BUFFER_PAGES * HDA_BUFFER_BLOCK_ENTRIES,
     HDA_BUFFER_FRAMES = HDA_BUFFER_BYTES / 4u,
     HDA_DMA_POS_PAGES = 1u,
-    HDA_DMA_POS_ENTRY_DWORDS = 2u,
-    HDA_PCM_PREBUFFER_DESCRIPTORS = 24u,
-    HDA_PCM_HW_GUARD_DESCRIPTORS = 6u,
-    HDA_PCM_BCIS_CATCHUP_DESCRIPTORS = HDA_PCM_HW_GUARD_DESCRIPTORS,
-    HDA_PCM_RECOVERY_GUARD_DESCRIPTORS =
-        HDA_PCM_HW_GUARD_DESCRIPTORS + HDA_PCM_BCIS_CATCHUP_DESCRIPTORS,
-    HDA_PCM_MAX_QUEUED_DESCRIPTORS = HDA_BDL_ENTRIES - HDA_PCM_HW_GUARD_DESCRIPTORS - 1u,
-    HDA_STREAM_READ_PAGES = 64u,
-    HDA_STREAM_READ_CHUNK_BYTES = HDA_BUFFER_BYTES * 8u,
+    HDA_PCM_POSITION_TOLERANCE_DESCRIPTORS = 2u,
+    HDA_PCM_LPIB_GUARD_TRACE = 0u,
+    HDA_PCM_MAX_POSITION_DELTA_BYTES = HDA_BUFFER_BYTES,
+    HDA_STREAM_READ_PAGES = 128u,
     HDA_PCM_TRACE = 0u,
     HDA_PCM_LOW_TRACE = 0u,
     HDA_PCM_UNDERRUN_TRACE = 0u,
     HDA_PCM_EMPTY_TRACE = 0u,
     HDA_PCM_RING_HAZARD_TRACE = 0u,
     HDA_STREAM_SLOW_READ_TRACE = 0u,
+    HDA_LOG_RATE_LIMIT_SECONDS = 1u,
     HDA_DMA_POSITION_BUFFER_ENABLE = 1u,
     HDA_CODEC_REALTEK_ALC887 = 0x10ec0887u,
     HDA_STREAM_FORMAT_48K_16B_2CH = 0x0011u,
@@ -114,6 +110,59 @@ enum {
     HDA_AMP_SET_GAIN_MASK = 0x007fu,
     HDA_DEFAULT_AMP_GAIN = 0x7fu,
     HDA_INVALID_CONN_INDEX = 0xffu
+};
+
+enum hda_pos_mode {
+    HDA_POS_MODE_LPIB = 0u,
+    HDA_POS_MODE_DMA_POSBUF = 1u,
+    HDA_POS_MODE_TIMER = 2u,
+    HDA_POS_MODE_TIMER_LPIB_GUARD = 3u
+};
+
+struct hda_pcm_policy {
+    uint8_t pos_mode;
+    uint8_t dma_posbuf_enable;
+    uint8_t prebuffer_desc;
+    uint8_t safe_margin_desc;
+    uint8_t lpib_guard_desc;
+    uint8_t lpib_guard_start_desc;
+    uint8_t xrun_survive_desc;
+    uint8_t read_chunk_desc;
+    uint8_t write_quantum_desc;
+};
+
+struct hda_codec_quirk {
+    uint32_t codec_id;
+    struct hda_pcm_policy policy;
+};
+
+static const struct hda_pcm_policy hda_common_pcm_policy = {
+    HDA_POS_MODE_LPIB,
+    HDA_DMA_POSITION_BUFFER_ENABLE,
+    48u,
+    8u,
+    2u,
+    8u,
+    1u,
+    8u,
+    1u
+};
+
+static const struct hda_codec_quirk hda_quirks[] = {
+    {
+        HDA_CODEC_REALTEK_ALC887,
+        {
+            HDA_POS_MODE_TIMER_LPIB_GUARD,
+            0u,
+            56u,
+            8u,
+            2u,
+            16u,
+            1u,
+            16u,
+            1u
+        }
+    }
 };
 
 #define HDA_DMA32_MAX_PHYS 0x100000000ull
@@ -171,6 +220,15 @@ struct hda_mod_status {
     uint8_t dma_pos_enabled;
     uint8_t dma_pos_trusted;
     uint8_t dma_pos_logged;
+    uint8_t q_pos_mode;
+    uint8_t q_dma_posbuf_enable;
+    uint8_t q_prebuffer_desc;
+    uint8_t q_safe_margin_desc;
+    uint8_t q_lpib_guard_desc;
+    uint8_t q_lpib_guard_start_desc;
+    uint8_t q_xrun_survive_desc;
+    uint8_t q_read_chunk_desc;
+    uint8_t q_write_quantum_desc;
     uint8_t pcm_active;
     uint8_t pcm_started;
     uint8_t pcm_write_index;
@@ -179,7 +237,12 @@ struct hda_mod_status {
     uint32_t pcm_partial_frames;
     uint32_t pcm_cbl_bytes;
     uint32_t pcm_last_lpib;
+    uint32_t pcm_last_hw_offset;
+    uint32_t pcm_last_lpib_delta;
     uint32_t pcm_last_lpib_tick;
+    enum hda_pos_mode position_mode;
+    uint32_t pcm_start_tick;
+    uint64_t pcm_start_hw_pos_bytes;
     uint32_t pcm_last_dma_pos;
     uint32_t pcm_position_lpib;
     uint32_t pcm_position_tick;
@@ -188,6 +251,8 @@ struct hda_mod_status {
     uint32_t pcm_reclaim_tick;
     uint32_t pcm_reclaim_bytes;
     uint32_t pcm_reclaim_budget_bytes;
+    uint64_t pcm_app_pos_bytes;
+    uint64_t pcm_hw_pos_bytes;
     uint32_t pcm_input_sample_rate;
     uint32_t pcm_input_channels;
     uint32_t pcm_input_bits;
@@ -205,6 +270,15 @@ struct hda_mod_status {
     uint32_t pcm_hw_jump_count;
     uint32_t pcm_empty_count;
     uint32_t pcm_underrun_count;
+    uint32_t pcm_fake_xrun_count;
+    uint32_t pcm_log_xrun_tick;
+    uint32_t pcm_log_xrun_suppressed;
+    uint32_t pcm_log_fake_xrun_tick;
+    uint32_t pcm_log_fake_xrun_suppressed;
+    uint32_t pcm_log_recover_tick;
+    uint32_t pcm_log_recover_suppressed;
+    uint32_t pcm_log_slow_read_tick;
+    uint32_t pcm_log_slow_read_suppressed;
     uint32_t pcm_desc_call[HDA_BDL_ENTRIES];
     uint32_t pcm_desc_submit[HDA_BDL_ENTRIES];
     uint32_t pcm_desc_src_first[HDA_BDL_ENTRIES];
@@ -217,6 +291,13 @@ struct hda_mod_status {
 };
 
 static struct hda_mod_status g_hda_mod;
+static uint32_t g_hda_profile_spin;
+static uint32_t g_hda_profile_flush;
+static uint32_t g_hda_profile_codec_cmd;
+static uint32_t g_hda_profile_pcm_convert;
+static uint32_t g_hda_profile_stream_read;
+static uint32_t g_hda_profile_pcm_wait;
+static uint32_t g_hda_profile_pcm_drain;
 
 static void (*volatile hda_mod_log)(const char *fmt, ...) = driver_log;
 
@@ -228,6 +309,44 @@ static int hda_mod_restore_log_and_return_local(void (*saved_log)(const char *fm
                                                 int result) {
     hda_mod_log = saved_log;
     return result;
+}
+
+static uint32_t hda_mod_log_rate_interval_ticks_local(void) {
+    uint32_t timer_hz = driver_timer_hz();
+
+    if (timer_hz == 0u) {
+        timer_hz = 100u;
+    }
+    return timer_hz * HDA_LOG_RATE_LIMIT_SECONDS;
+}
+
+static int hda_mod_log_ratelimit_local(uint32_t *last_tick,
+                                       uint32_t *suppressed) {
+    uint32_t now;
+    uint32_t interval;
+
+    if (last_tick == NULL || suppressed == NULL) {
+        return 1;
+    }
+    now = driver_timer_current_ticks();
+    interval = hda_mod_log_rate_interval_ticks_local();
+    if (*last_tick == 0u || (uint32_t)(now - *last_tick) >= interval) {
+        *last_tick = now;
+        return 1;
+    }
+    *suppressed = *suppressed + 1u;
+    return 0;
+}
+
+static uint32_t hda_mod_log_take_suppressed_local(uint32_t *suppressed) {
+    uint32_t value;
+
+    if (suppressed == NULL) {
+        return 0u;
+    }
+    value = *suppressed;
+    *suppressed = 0u;
+    return value;
 }
 
 static int hda_mod_pcm_cancelled_local(void) {
@@ -274,19 +393,34 @@ static void hda_mod_write32_local(uint32_t offset, uint32_t value) {
 
 static void hda_mod_delay_local(uint32_t spins) {
     volatile uint32_t i;
+    uint64_t start = driver_profile_clock();
 
     for (i = 0; i < spins; i++) {
         __asm__ __volatile__("" ::: "memory");
     }
+    driver_profile_record(g_hda_profile_spin,
+                          driver_profile_clock() - start,
+                          spins);
+}
+
+static void hda_mod_wait_for_event_profiled_local(uint32_t profile_handle) {
+    uint64_t start = driver_profile_clock();
+
+    driver_cpu_wait_for_event();
+    driver_profile_record(profile_handle,
+                          driver_profile_clock() - start,
+                          1u);
 }
 
 static void hda_mod_flush_range_local(const void *ptr, uint32_t bytes) {
     uintptr_t addr;
     uintptr_t end;
+    uint64_t start;
 
     if (ptr == NULL || bytes == 0u) {
         return;
     }
+    start = driver_profile_clock();
     addr = (uintptr_t)ptr & ~(uintptr_t)(HDA_CACHE_LINE_BYTES - 1u);
     end = ((uintptr_t)ptr + bytes + HDA_CACHE_LINE_BYTES - 1u) &
           ~(uintptr_t)(HDA_CACHE_LINE_BYTES - 1u);
@@ -295,10 +429,9 @@ static void hda_mod_flush_range_local(const void *ptr, uint32_t bytes) {
         addr += HDA_CACHE_LINE_BYTES;
     }
     __asm__ __volatile__("mfence" ::: "memory");
-}
-
-static void hda_mod_invalidate_range_local(const void *ptr, uint32_t bytes) {
-    hda_mod_flush_range_local(ptr, bytes);
+    driver_profile_record(g_hda_profile_flush,
+                          driver_profile_clock() - start,
+                          bytes);
 }
 
 static void hda_mod_flush_descriptor_local(uint32_t index) {
@@ -371,8 +504,12 @@ static int hda_mod_send_cmd20_local(uint8_t cad,
                                     uint32_t *out_resp) {
     uint32_t cmd;
     uint32_t spins;
+    uint64_t start = driver_profile_clock();
 
     if (cad >= 15u) {
+        driver_profile_record(g_hda_profile_codec_cmd,
+                              driver_profile_clock() - start,
+                              0u);
         return 0;
     }
     cmd = ((uint32_t)cad << 28) | ((uint32_t)nid << 20) | (cmd20 & 0xfffffu);
@@ -382,6 +519,9 @@ static int hda_mod_send_cmd20_local(uint8_t cad,
         }
     }
     if ((hda_mod_read16_local(HDA_REG_ICIS) & HDA_ICIS_ICB) != 0u) {
+        driver_profile_record(g_hda_profile_codec_cmd,
+                              driver_profile_clock() - start,
+                              0u);
         return 0;
     }
     hda_mod_write16_local(HDA_REG_ICIS, (uint16_t)(HDA_ICIS_IRV | HDA_ICIS_ICES));
@@ -395,9 +535,15 @@ static int hda_mod_send_cmd20_local(uint8_t cad,
         }
         if ((status & HDA_ICIS_ICES) != 0u) {
             hda_mod_write16_local(HDA_REG_ICIS, HDA_ICIS_ICES);
+            driver_profile_record(g_hda_profile_codec_cmd,
+                                  driver_profile_clock() - start,
+                                  0u);
             return 0;
         }
         if ((status & HDA_ICIS_IRV) == 0u) {
+            driver_profile_record(g_hda_profile_codec_cmd,
+                                  driver_profile_clock() - start,
+                                  0u);
             return 0;
         }
         if (out_resp != NULL) {
@@ -406,8 +552,14 @@ static int hda_mod_send_cmd20_local(uint8_t cad,
             (void)hda_mod_read32_local(HDA_REG_ICII);
         }
         hda_mod_write16_local(HDA_REG_ICIS, HDA_ICIS_IRV);
+        driver_profile_record(g_hda_profile_codec_cmd,
+                              driver_profile_clock() - start,
+                              1u);
         return 1;
     }
+    driver_profile_record(g_hda_profile_codec_cmd,
+                          driver_profile_clock() - start,
+                          0u);
     return 0;
 }
 
@@ -971,17 +1123,71 @@ static uint32_t hda_mod_output_stream_index_local(void) {
     return (g_hda_mod.output_stream_offset - HDA_REG_SD_BASE) / HDA_REG_SD_SIZE;
 }
 
-static int hda_mod_dma_position_allowed_local(void) {
-    uint32_t codec_id;
+static void hda_mod_apply_codec_quirk_local(void) {
+    const struct hda_pcm_policy *policy = &hda_common_pcm_policy;
+    uint32_t index;
 
-    if (HDA_DMA_POSITION_BUFFER_ENABLE == 0u) {
-        return 0;
+    for (index = 0u; index < sizeof(hda_quirks) / sizeof(hda_quirks[0]); index++) {
+        if (hda_quirks[index].codec_id == g_hda_mod.codec_vendor) {
+            policy = &hda_quirks[index].policy;
+            break;
+        }
     }
-    codec_id = g_hda_mod.codec_vendor;
-    if (codec_id == HDA_CODEC_REALTEK_ALC887) {
-        return 0;
+
+    g_hda_mod.q_pos_mode = policy->pos_mode;
+    g_hda_mod.q_dma_posbuf_enable = policy->dma_posbuf_enable;
+    g_hda_mod.q_prebuffer_desc = policy->prebuffer_desc;
+    g_hda_mod.q_safe_margin_desc = policy->safe_margin_desc;
+    g_hda_mod.q_lpib_guard_desc = policy->lpib_guard_desc;
+    g_hda_mod.q_lpib_guard_start_desc = policy->lpib_guard_start_desc;
+    g_hda_mod.q_xrun_survive_desc = policy->xrun_survive_desc;
+    g_hda_mod.q_read_chunk_desc = policy->read_chunk_desc;
+    g_hda_mod.q_write_quantum_desc = policy->write_quantum_desc;
+
+    if (g_hda_mod.q_pos_mode > HDA_POS_MODE_TIMER_LPIB_GUARD) {
+        g_hda_mod.q_pos_mode = HDA_POS_MODE_LPIB;
     }
-    return 1;
+    if (g_hda_mod.q_prebuffer_desc == 0u ||
+        g_hda_mod.q_prebuffer_desc >= HDA_BDL_ENTRIES) {
+        g_hda_mod.q_prebuffer_desc = 1u;
+    }
+    if (g_hda_mod.q_safe_margin_desc == 0u ||
+        g_hda_mod.q_safe_margin_desc >= HDA_BDL_ENTRIES) {
+        g_hda_mod.q_safe_margin_desc = 1u;
+    }
+    if (g_hda_mod.q_lpib_guard_desc >= HDA_BDL_ENTRIES) {
+        g_hda_mod.q_lpib_guard_desc = 1u;
+    }
+    if (g_hda_mod.q_lpib_guard_start_desc >= HDA_BDL_ENTRIES) {
+        g_hda_mod.q_lpib_guard_start_desc = g_hda_mod.q_safe_margin_desc;
+    }
+    if (g_hda_mod.q_xrun_survive_desc == 0u ||
+        g_hda_mod.q_xrun_survive_desc >= HDA_BDL_ENTRIES) {
+        g_hda_mod.q_xrun_survive_desc = 1u;
+    }
+    if (g_hda_mod.q_read_chunk_desc == 0u) {
+        g_hda_mod.q_read_chunk_desc = 1u;
+    }
+    if (g_hda_mod.q_write_quantum_desc == 0u) {
+        g_hda_mod.q_write_quantum_desc = 1u;
+    }
+    g_hda_mod.position_mode = g_hda_mod.q_pos_mode;
+
+    driver_log("driver: HDAMOD policy codec=%x mode=%u dma_pos=%u prebuf=%u margin=%u guard=%u guard_start=%u xrun=%u read=%u write=%u\n",
+               g_hda_mod.codec_vendor,
+               (uint32_t)g_hda_mod.q_pos_mode,
+               (uint32_t)g_hda_mod.q_dma_posbuf_enable,
+               (uint32_t)g_hda_mod.q_prebuffer_desc,
+               (uint32_t)g_hda_mod.q_safe_margin_desc,
+               (uint32_t)g_hda_mod.q_lpib_guard_desc,
+               (uint32_t)g_hda_mod.q_lpib_guard_start_desc,
+               (uint32_t)g_hda_mod.q_xrun_survive_desc,
+               (uint32_t)g_hda_mod.q_read_chunk_desc,
+               (uint32_t)g_hda_mod.q_write_quantum_desc);
+}
+
+static int hda_mod_dma_position_allowed_local(void) {
+    return g_hda_mod.q_dma_posbuf_enable != 0u;
 }
 
 static void hda_mod_enable_dma_position_buffer_local(void) {
@@ -997,10 +1203,9 @@ static void hda_mod_enable_dma_position_buffer_local(void) {
         g_hda_mod.dma_pos_logged = 0u;
         hda_mod_write32_local(HDA_REG_DPLBASE, 0u);
         hda_mod_write32_local(HDA_REG_DPUBASE, 0u);
-        if (g_hda_mod.codec_vendor == HDA_CODEC_REALTEK_ALC887) {
-            driver_log("driver: HDAMOD dma position buffer disabled for alc887 codec=%x\n",
-                       g_hda_mod.codec_vendor);
-        }
+        driver_log("driver: HDAMOD dma position buffer disabled by policy codec=%x mode=%u\n",
+                   g_hda_mod.codec_vendor,
+                   (uint32_t)g_hda_mod.q_pos_mode);
         return;
     }
     driver_memset((void *)g_hda_mod.dma_pos, 0, HDA_DMA_POS_PAGES * HDA_PAGE_BYTES);
@@ -1028,8 +1233,13 @@ static void hda_mod_reset_pcm_state_local(void) {
     g_hda_mod.pcm_partial_frames = 0u;
     g_hda_mod.pcm_cbl_bytes = 0u;
     g_hda_mod.pcm_last_lpib = 0u;
+    g_hda_mod.pcm_last_lpib_delta = 0u;
     g_hda_mod.pcm_last_lpib_tick = 0u;
+    g_hda_mod.position_mode = g_hda_mod.q_pos_mode;
+    g_hda_mod.pcm_start_tick = 0u;
+    g_hda_mod.pcm_start_hw_pos_bytes = 0u;
     g_hda_mod.pcm_last_dma_pos = 0u;
+    g_hda_mod.pcm_last_hw_offset = 0u;
     g_hda_mod.pcm_position_lpib = 0u;
     g_hda_mod.pcm_position_tick = 0u;
     g_hda_mod.pcm_position_reject_count = 0u;
@@ -1037,6 +1247,8 @@ static void hda_mod_reset_pcm_state_local(void) {
     g_hda_mod.pcm_reclaim_tick = 0u;
     g_hda_mod.pcm_reclaim_bytes = 0u;
     g_hda_mod.pcm_reclaim_budget_bytes = 0u;
+    g_hda_mod.pcm_app_pos_bytes = 0u;
+    g_hda_mod.pcm_hw_pos_bytes = 0u;
     g_hda_mod.pcm_input_sample_rate = 0u;
     g_hda_mod.pcm_input_channels = 0u;
     g_hda_mod.pcm_input_bits = 0u;
@@ -1053,6 +1265,15 @@ static void hda_mod_reset_pcm_state_local(void) {
     g_hda_mod.pcm_hw_jump_count = 0u;
     g_hda_mod.pcm_empty_count = 0u;
     g_hda_mod.pcm_underrun_count = 0u;
+    g_hda_mod.pcm_fake_xrun_count = 0u;
+    g_hda_mod.pcm_log_xrun_tick = 0u;
+    g_hda_mod.pcm_log_xrun_suppressed = 0u;
+    g_hda_mod.pcm_log_fake_xrun_tick = 0u;
+    g_hda_mod.pcm_log_fake_xrun_suppressed = 0u;
+    g_hda_mod.pcm_log_recover_tick = 0u;
+    g_hda_mod.pcm_log_recover_suppressed = 0u;
+    g_hda_mod.pcm_log_slow_read_tick = 0u;
+    g_hda_mod.pcm_log_slow_read_suppressed = 0u;
     g_hda_mod.dma_pos_trusted = 0u;
     g_hda_mod.dma_pos_logged = 0u;
     driver_memset(g_hda_mod.pcm_desc_call, 0, sizeof(g_hda_mod.pcm_desc_call));
@@ -1074,16 +1295,6 @@ static int16_t hda_mod_decode_le16_sample_local(const uint8_t *src) {
     return (int16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
 }
 
-static void hda_mod_write_stereo_frame_local(uint32_t buffer_index,
-                                             uint32_t frame,
-                                             int16_t left,
-                                             int16_t right) {
-    int16_t *out = (int16_t *)g_hda_mod.buffers[buffer_index];
-
-    out[frame * 2u] = left;
-    out[frame * 2u + 1u] = right;
-}
-
 static void hda_mod_zero_buffer_local(uint32_t buffer_index) {
     if (buffer_index >= HDA_BDL_ENTRIES || g_hda_mod.buffers[buffer_index] == NULL) {
         return;
@@ -1095,6 +1306,78 @@ static void hda_mod_zero_buffer_local(uint32_t buffer_index) {
 static void hda_mod_zero_dma_buffer_local(uint32_t buffer_index) {
     hda_mod_zero_buffer_local(buffer_index);
     hda_mod_flush_buffer_local(buffer_index);
+}
+
+static void hda_mod_pcm_fill_silence_ahead_local(uint64_t from_pos,
+                                                 uint32_t bytes) {
+    uint32_t ring_bytes = g_hda_mod.pcm_cbl_bytes;
+    uint32_t ring_offset;
+    uint32_t left;
+
+    if (ring_bytes == 0u || bytes == 0u) {
+        return;
+    }
+
+    ring_offset = (uint32_t)(from_pos % ring_bytes);
+    left = bytes;
+
+    while (left != 0u) {
+        uint32_t desc = ring_offset / HDA_BUFFER_BYTES;
+        uint32_t offset = ring_offset % HDA_BUFFER_BYTES;
+        uint32_t chunk = HDA_BUFFER_BYTES - offset;
+
+        if (desc >= HDA_BDL_ENTRIES || g_hda_mod.buffers[desc] == NULL) {
+            return;
+        }
+
+        if (chunk > left) {
+            chunk = left;
+        }
+
+        driver_memset(g_hda_mod.buffers[desc] + offset, 0, chunk);
+        g_hda_mod.pcm_buffer_silent[desc] = 1u;
+        hda_mod_flush_range_local(g_hda_mod.buffers[desc] + offset, chunk);
+
+        left -= chunk;
+        ring_offset += chunk;
+        if (ring_offset >= ring_bytes) {
+            ring_offset = 0u;
+        }
+    }
+}
+
+static int hda_mod_pcm_delta_plausible_local(uint32_t delta,
+                                             uint32_t elapsed_ticks,
+                                             uint32_t timer_hz,
+                                             uint32_t *out_plausible) {
+    uint64_t expected64;
+    uint64_t tolerance64;
+    uint64_t plausible64;
+
+    if (timer_hz == 0u) {
+        timer_hz = 100u;
+    }
+
+    expected64 =
+        ((uint64_t)HDA_OUTPUT_BYTES_PER_SECOND *
+         (uint64_t)elapsed_ticks) / (uint64_t)timer_hz;
+    tolerance64 =
+        (uint64_t)HDA_BUFFER_BYTES *
+        (uint64_t)HDA_PCM_POSITION_TOLERANCE_DESCRIPTORS;
+    plausible64 = expected64 + tolerance64;
+
+    if (g_hda_mod.pcm_cbl_bytes != 0u &&
+        plausible64 > (uint64_t)g_hda_mod.pcm_cbl_bytes / 2u) {
+        plausible64 = (uint64_t)g_hda_mod.pcm_cbl_bytes / 2u;
+    }
+    if (plausible64 < 4096u) {
+        plausible64 = 4096u;
+    }
+
+    if (out_plausible != NULL) {
+        *out_plausible = (uint32_t)plausible64;
+    }
+    return delta <= (uint32_t)plausible64;
 }
 
 static uint32_t hda_mod_read_u32_unaligned_local(const uint8_t *src, uint32_t offset) {
@@ -1123,90 +1406,6 @@ static uint32_t hda_mod_sample_bytes_local(const uint8_t *src,
         offset = bytes - 4u;
     }
     return hda_mod_read_u32_unaligned_local(src, offset);
-}
-
-static void hda_mod_pcm_buffer_fingerprint_local(uint32_t buffer_index,
-                                                 uint32_t *out_a,
-                                                 uint32_t *out_b,
-                                                 uint32_t *out_c) {
-    const uint8_t *buffer;
-
-    if (out_a != NULL) {
-        *out_a = 0u;
-    }
-    if (out_b != NULL) {
-        *out_b = 0u;
-    }
-    if (out_c != NULL) {
-        *out_c = 0u;
-    }
-    if (buffer_index >= HDA_BDL_ENTRIES || g_hda_mod.buffers[buffer_index] == NULL) {
-        return;
-    }
-    buffer = g_hda_mod.buffers[buffer_index];
-    if (out_a != NULL) {
-        *out_a = hda_mod_sample_bytes_local(buffer, HDA_BUFFER_BYTES, 0u);
-    }
-    if (out_b != NULL) {
-        *out_b = hda_mod_sample_bytes_local(buffer,
-                                            HDA_BUFFER_BYTES,
-                                            HDA_BUFFER_BYTES / 2u);
-    }
-    if (out_c != NULL) {
-        *out_c = hda_mod_sample_bytes_local(buffer,
-                                            HDA_BUFFER_BYTES,
-                                            HDA_BUFFER_BYTES - 4u);
-    }
-}
-
-static uint32_t hda_mod_fill_pcm_frames_local(uint32_t buffer_index,
-                                              uint32_t start_frame,
-                                              const uint8_t *src,
-                                              uint32_t input_frames,
-                                              uint64_t *src_pos,
-                                              uint64_t src_step,
-                                              uint32_t channels,
-                                              uint32_t bits_per_sample) {
-    uint32_t src_stride = channels * (bits_per_sample / 8u);
-    uint32_t frame;
-    uint32_t frames_written = 0u;
-
-    if (buffer_index >= HDA_BDL_ENTRIES ||
-        start_frame >= HDA_BUFFER_FRAMES ||
-        src == NULL ||
-        src_pos == NULL ||
-        src_stride == 0u ||
-        input_frames == 0u ||
-        g_hda_mod.buffers[buffer_index] == NULL) {
-        return 0u;
-    }
-    for (frame = start_frame; frame < HDA_BUFFER_FRAMES; frame++) {
-        uint32_t src_frame = (uint32_t)(*src_pos >> 32);
-        uint32_t src_offset;
-        int16_t left;
-        int16_t right;
-
-        if (src_frame >= input_frames) {
-            break;
-        }
-        src_offset = src_frame * src_stride;
-        if (bits_per_sample == 8u) {
-            left = hda_mod_decode_u8_sample_local(src[src_offset]);
-            right = channels == 1u ? left :
-                hda_mod_decode_u8_sample_local(src[src_offset + 1u]);
-        } else {
-            left = hda_mod_decode_le16_sample_local(src + src_offset);
-            right = channels == 1u ? left :
-                hda_mod_decode_le16_sample_local(src + src_offset + 2u);
-        }
-        hda_mod_write_stereo_frame_local(buffer_index, frame, left, right);
-        *src_pos += src_step;
-        frames_written++;
-    }
-    if (frames_written != 0u) {
-        g_hda_mod.pcm_buffer_silent[buffer_index] = 0u;
-    }
-    return frames_written;
 }
 
 static void hda_mod_set_bdl_descriptor_local(uint32_t index,
@@ -1411,14 +1610,6 @@ static int hda_mod_sd_start_local(uint32_t sd_off,
     return (hda_mod_read8_local(sd_off + HDA_SD_CTL0) & HDA_SD_CTL_RUN) != 0u;
 }
 
-static void hda_mod_zero_pcm_tail_local(uint32_t buffer_index, uint32_t first_frame) {
-    uint32_t frame;
-
-    for (frame = first_frame; frame < HDA_BUFFER_FRAMES; frame++) {
-        hda_mod_write_stereo_frame_local(buffer_index, frame, 0, 0);
-    }
-}
-
 static void hda_mod_zero_all_pcm_buffers_local(void) {
     uint32_t index;
 
@@ -1430,11 +1621,7 @@ static void hda_mod_zero_all_pcm_buffers_local(void) {
     hda_mod_flush_bdl_local();
 }
 
-static uint8_t hda_mod_pcm_buffer_from_lpib_local(uint32_t lpib) {
-    return (uint8_t)((lpib / HDA_BUFFER_BYTES) % HDA_BDL_ENTRIES);
-}
-
-static uint32_t hda_mod_pcm_read_lpib_register_local(void) {
+static uint64_t hda_mod_pos_get_lpib_bytes_local(void) {
     uint32_t sd_off = g_hda_mod.output_stream_offset;
     uint32_t lpib;
     uint32_t verify;
@@ -1451,222 +1638,34 @@ static uint32_t hda_mod_pcm_read_lpib_register_local(void) {
     return lpib % g_hda_mod.pcm_cbl_bytes;
 }
 
-static int hda_mod_pcm_read_dma_position_local(uint32_t *out_position) {
+static uint64_t hda_mod_pos_get_dma_posbuf_bytes_local(void) {
     uint32_t stream_index;
-    uint32_t entry_dword;
+    uint32_t dword_index;
     uint32_t position;
     uint32_t verify;
 
-    if (out_position == NULL ||
-        g_hda_mod.dma_pos_enabled == 0u ||
+    if (g_hda_mod.dma_pos_enabled == 0u ||
         g_hda_mod.dma_pos == NULL ||
         g_hda_mod.pcm_cbl_bytes == 0u) {
-        return 0;
+        return hda_mod_pos_get_lpib_bytes_local();
     }
+
     stream_index = hda_mod_output_stream_index_local();
-    entry_dword = stream_index * HDA_DMA_POS_ENTRY_DWORDS;
-    if (entry_dword + 1u >= (HDA_DMA_POS_PAGES * HDA_PAGE_BYTES) / sizeof(uint32_t)) {
-        return 0;
+    dword_index = stream_index * 2u;
+    if (dword_index >= HDA_PAGE_BYTES / sizeof(uint32_t)) {
+        return hda_mod_pos_get_lpib_bytes_local();
     }
-    hda_mod_invalidate_range_local((const void *)&g_hda_mod.dma_pos[entry_dword],
-                                   HDA_DMA_POS_ENTRY_DWORDS * sizeof(uint32_t));
-    position = g_hda_mod.dma_pos[entry_dword];
-    hda_mod_delay_local(100u);
-    hda_mod_invalidate_range_local((const void *)&g_hda_mod.dma_pos[entry_dword],
-                                   HDA_DMA_POS_ENTRY_DWORDS * sizeof(uint32_t));
-    verify = g_hda_mod.dma_pos[entry_dword];
+
+    hda_mod_flush_range_local((const void *)&g_hda_mod.dma_pos[dword_index],
+                              sizeof(uint64_t));
+    position = g_hda_mod.dma_pos[dword_index];
+    __asm__ __volatile__("lfence" ::: "memory");
+    verify = g_hda_mod.dma_pos[dword_index];
     if (verify != position) {
         position = verify;
     }
-    *out_position = position % g_hda_mod.pcm_cbl_bytes;
-    return 1;
-}
-
-static uint32_t hda_mod_pcm_filter_position_local(uint32_t raw_position) {
-    uint32_t now;
-    uint32_t timer_hz;
-    uint32_t elapsed_ticks;
-    uint32_t forward_delta;
-    uint32_t plausible_delta;
-    uint32_t max_delta;
-    uint32_t half_ring;
-
-    if (g_hda_mod.pcm_cbl_bytes == 0u) {
-        return 0u;
-    }
-    raw_position %= g_hda_mod.pcm_cbl_bytes;
-    now = driver_timer_current_ticks();
-    if (g_hda_mod.pcm_position_valid == 0u) {
-        g_hda_mod.pcm_position_lpib = raw_position;
-        g_hda_mod.pcm_position_tick = now;
-        g_hda_mod.pcm_position_valid = 1u;
-        return raw_position;
-    }
-    if (raw_position == g_hda_mod.pcm_position_lpib) {
-        return g_hda_mod.pcm_position_lpib;
-    }
-    if (raw_position >= g_hda_mod.pcm_position_lpib) {
-        forward_delta = raw_position - g_hda_mod.pcm_position_lpib;
-    } else {
-        forward_delta = g_hda_mod.pcm_cbl_bytes - g_hda_mod.pcm_position_lpib +
-            raw_position;
-    }
-    timer_hz = driver_timer_hz();
-    if (timer_hz == 0u) {
-        timer_hz = 100u;
-    }
-    half_ring = g_hda_mod.pcm_cbl_bytes / 2u;
-    elapsed_ticks = now - g_hda_mod.pcm_position_tick;
-    plausible_delta = (uint32_t)(((uint64_t)HDA_OUTPUT_BYTES_PER_SECOND *
-                                  (uint64_t)elapsed_ticks) / (uint64_t)timer_hz);
-    max_delta = plausible_delta + HDA_BUFFER_BYTES;
-    if (max_delta < plausible_delta) {
-        max_delta = g_hda_mod.pcm_cbl_bytes;
-    }
-    plausible_delta = max_delta + HDA_BUFFER_BYTES;
-    if (plausible_delta < max_delta || plausible_delta > g_hda_mod.pcm_cbl_bytes) {
-        plausible_delta = g_hda_mod.pcm_cbl_bytes;
-    }
-    if (max_delta < HDA_BUFFER_BYTES) {
-        max_delta = HDA_BUFFER_BYTES;
-    }
-    if (max_delta > half_ring) {
-        max_delta = half_ring;
-    }
-    if (forward_delta > half_ring) {
-        if (forward_delta <= plausible_delta) {
-            g_hda_mod.pcm_position_reject_count++;
-            if (g_hda_mod.pcm_position_reject_count <= 8u ||
-                (g_hda_mod.pcm_position_reject_count & 31u) == 0u) {
-                driver_log("driver: HDAMOD pcm pos long accept count=%u raw=%u last=%u delta=%u max=%u plausible=%u ticks=%u lpib=%u fill=%u play=%u write=%u\n",
-                           g_hda_mod.pcm_position_reject_count,
-                           raw_position,
-                           g_hda_mod.pcm_position_lpib,
-                           forward_delta,
-                           max_delta,
-                           plausible_delta,
-                           elapsed_ticks,
-                           g_hda_mod.pcm_last_lpib,
-                           (uint32_t)g_hda_mod.pcm_fill_count,
-                           (uint32_t)g_hda_mod.pcm_play_index,
-                           (uint32_t)g_hda_mod.pcm_write_index);
-            }
-            g_hda_mod.pcm_position_lpib = raw_position;
-            g_hda_mod.pcm_position_tick = now;
-            return raw_position;
-        }
-        g_hda_mod.pcm_position_reject_count++;
-        if (g_hda_mod.pcm_position_reject_count <= 8u ||
-            (g_hda_mod.pcm_position_reject_count & 31u) == 0u) {
-            driver_log("driver: HDAMOD pcm pos back ignore count=%u raw=%u last=%u delta=%u max=%u plausible=%u ticks=%u lpib=%u fill=%u play=%u write=%u\n",
-                       g_hda_mod.pcm_position_reject_count,
-                       raw_position,
-                       g_hda_mod.pcm_position_lpib,
-                       forward_delta,
-                       max_delta,
-                       plausible_delta,
-                       elapsed_ticks,
-                       g_hda_mod.pcm_last_lpib,
-                       (uint32_t)g_hda_mod.pcm_fill_count,
-                       (uint32_t)g_hda_mod.pcm_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index);
-        }
-        return g_hda_mod.pcm_position_lpib;
-    }
-    if (forward_delta > max_delta) {
-        g_hda_mod.pcm_position_reject_count++;
-        if (g_hda_mod.pcm_position_reject_count <= 8u ||
-            (g_hda_mod.pcm_position_reject_count & 31u) == 0u) {
-            driver_log("driver: HDAMOD pcm pos wide accept count=%u raw=%u last=%u delta=%u max=%u plausible=%u ticks=%u lpib=%u fill=%u play=%u write=%u\n",
-                       g_hda_mod.pcm_position_reject_count,
-                       raw_position,
-                       g_hda_mod.pcm_position_lpib,
-                       forward_delta,
-                       max_delta,
-                       plausible_delta,
-                       elapsed_ticks,
-                       g_hda_mod.pcm_last_lpib,
-                       (uint32_t)g_hda_mod.pcm_fill_count,
-                       (uint32_t)g_hda_mod.pcm_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index);
-        }
-    }
-    g_hda_mod.pcm_position_lpib = raw_position;
-    g_hda_mod.pcm_position_tick = now;
-    return raw_position;
-}
-
-static uint32_t hda_mod_pcm_read_lpib_local(void) {
-    uint32_t position;
-    uint32_t lpib;
-
-    if (g_hda_mod.pcm_cbl_bytes == 0u) {
-        return 0u;
-    }
-    lpib = hda_mod_pcm_read_lpib_register_local();
-    if (hda_mod_pcm_read_dma_position_local(&position)) {
-        if (position != g_hda_mod.pcm_last_dma_pos) {
-            if (position != 0u) {
-                g_hda_mod.dma_pos_trusted = 1u;
-            }
-            g_hda_mod.pcm_last_dma_pos = position;
-        }
-        if (g_hda_mod.dma_pos_trusted != 0u &&
-            (position != g_hda_mod.pcm_last_lpib || lpib == position || lpib == 0u)) {
-            if (g_hda_mod.dma_pos_logged == 0u) {
-                driver_log("driver: HDAMOD dma position active pos=%u lpib=%u\n",
-                           position,
-                           lpib);
-                g_hda_mod.dma_pos_logged = 1u;
-            }
-            return hda_mod_pcm_filter_position_local(position);
-        }
-        return hda_mod_pcm_filter_position_local(lpib);
-    }
-    return hda_mod_pcm_filter_position_local(lpib);
-}
-
-static int hda_mod_pcm_index_is_guarded_local(uint8_t index,
-                                              uint8_t hw_buffer,
-                                              uint32_t guard_count) {
-    uint32_t guard;
-
-    if (guard_count == 0u) {
-        guard_count = 1u;
-    }
-    if (guard_count > HDA_BDL_ENTRIES) {
-        guard_count = HDA_BDL_ENTRIES;
-    }
-    for (guard = 0u; guard < guard_count; guard++) {
-        if (index == (uint8_t)((hw_buffer + guard) % HDA_BDL_ENTRIES)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int hda_mod_pcm_index_is_hw_guarded_local(uint8_t index, uint8_t hw_buffer) {
-    return hda_mod_pcm_index_is_guarded_local(index,
-                                              hw_buffer,
-                                              HDA_PCM_HW_GUARD_DESCRIPTORS);
-}
-
-static int hda_mod_pcm_write_is_hw_guarded_local(uint8_t *out_hw_buffer) {
-    uint8_t hw_buffer;
-
-    if (g_hda_mod.pcm_started == 0u || g_hda_mod.pcm_cbl_bytes == 0u) {
-        return 0;
-    }
-    hw_buffer = hda_mod_pcm_buffer_from_lpib_local(hda_mod_pcm_read_lpib_local());
-    if (g_hda_mod.pcm_fill_count == 0u && g_hda_mod.pcm_partial_frames == 0u) {
-        g_hda_mod.pcm_write_index =
-            (uint8_t)((hw_buffer + HDA_PCM_RECOVERY_GUARD_DESCRIPTORS) %
-                      HDA_BDL_ENTRIES);
-    }
-    if (out_hw_buffer != NULL) {
-        *out_hw_buffer = hw_buffer;
-    }
-    return hda_mod_pcm_index_is_hw_guarded_local(g_hda_mod.pcm_write_index, hw_buffer);
+    g_hda_mod.pcm_last_dma_pos = position;
+    return position % g_hda_mod.pcm_cbl_bytes;
 }
 
 static int hda_mod_pcm_input_matches_local(uint32_t sample_rate,
@@ -1688,722 +1687,637 @@ static uint16_t hda_mod_pcm_format_for_rate_local(uint32_t sample_rate,
     return HDA_STREAM_FORMAT_48K_16B_2CH;
 }
 
-static void hda_mod_pcm_trace_hw_source_local(uint32_t lpib, uint32_t hw_buffer) {
-    uint32_t offset_frames;
-    uint32_t hw_src;
-
-    if (hw_buffer >= HDA_BDL_ENTRIES ||
-        g_hda_mod.pcm_desc_frames[hw_buffer] == 0u) {
-        return;
-    }
-    offset_frames = (lpib % HDA_BUFFER_BYTES) / 4u;
-    if (offset_frames >= g_hda_mod.pcm_desc_frames[hw_buffer]) {
-        offset_frames = g_hda_mod.pcm_desc_frames[hw_buffer] - 1u;
-    }
-    hw_src = g_hda_mod.pcm_desc_src_first[hw_buffer] + offset_frames;
-    if (g_hda_mod.pcm_last_hw_src_frame != 0u) {
-        if (hw_src + HDA_BUFFER_FRAMES < g_hda_mod.pcm_last_hw_src_frame) {
-            g_hda_mod.pcm_hw_jump_count++;
-            hda_mod_log("driver: HDAMOD pcm hw-back jump=%u lpib=%u hw=%u src=%u last=%u desc=%u..%u sub=%u call=%u fill=%u play=%u write=%u\n",
-                        g_hda_mod.pcm_hw_jump_count,
-                        lpib,
-                        (uint32_t)hw_buffer,
-                        hw_src,
-                        g_hda_mod.pcm_last_hw_src_frame,
-                        g_hda_mod.pcm_desc_src_first[hw_buffer],
-                        g_hda_mod.pcm_desc_src_last[hw_buffer],
-                        g_hda_mod.pcm_desc_submit[hw_buffer],
-                        g_hda_mod.pcm_desc_call[hw_buffer],
-                        (uint32_t)g_hda_mod.pcm_fill_count,
-                        (uint32_t)g_hda_mod.pcm_play_index,
-                        (uint32_t)g_hda_mod.pcm_write_index);
-        } else if (hw_src > g_hda_mod.pcm_last_hw_src_frame + HDA_BUFFER_FRAMES * 4u) {
-            g_hda_mod.pcm_hw_jump_count++;
-            hda_mod_log("driver: HDAMOD pcm hw-gap jump=%u lpib=%u hw=%u src=%u last=%u desc=%u..%u sub=%u call=%u fill=%u play=%u write=%u\n",
-                        g_hda_mod.pcm_hw_jump_count,
-                        lpib,
-                        (uint32_t)hw_buffer,
-                        hw_src,
-                        g_hda_mod.pcm_last_hw_src_frame,
-                        g_hda_mod.pcm_desc_src_first[hw_buffer],
-                        g_hda_mod.pcm_desc_src_last[hw_buffer],
-                        g_hda_mod.pcm_desc_submit[hw_buffer],
-                        g_hda_mod.pcm_desc_call[hw_buffer],
-                        (uint32_t)g_hda_mod.pcm_fill_count,
-                        (uint32_t)g_hda_mod.pcm_play_index,
-                        (uint32_t)g_hda_mod.pcm_write_index);
-        }
-    }
-    g_hda_mod.pcm_last_hw_src_frame = hw_src;
+static uint32_t hda_mod_pcm_ring_bytes_local(void) {
+    return HDA_BUFFER_BYTES * HDA_BDL_ENTRIES;
 }
 
-static void hda_mod_pcm_drop_stream_local(void) {
-    hda_mod_log("driver: HDAMOD pcm drop st=%u act=%u fill=%u play=%u write=%u part=%u lpib=%u rem=%u curcall=%u total=%u\n",
-                (uint32_t)g_hda_mod.pcm_started,
-                (uint32_t)g_hda_mod.pcm_active,
-                (uint32_t)g_hda_mod.pcm_fill_count,
-                (uint32_t)g_hda_mod.pcm_play_index,
-                (uint32_t)g_hda_mod.pcm_write_index,
-                g_hda_mod.pcm_partial_frames,
-                g_hda_mod.pcm_last_lpib,
-                g_hda_mod.pcm_reclaim_bytes,
-                g_hda_mod.pcm_current_call_seq,
-                g_hda_mod.pcm_total_input_frames);
-    hda_mod_sd_halt_local(g_hda_mod.output_stream_offset);
-    g_hda_mod.pcm_active = 0u;
-    g_hda_mod.pcm_started = 0u;
-    g_hda_mod.pcm_write_index = 0u;
-    g_hda_mod.pcm_play_index = 0u;
-    g_hda_mod.pcm_fill_count = 0u;
-    g_hda_mod.pcm_partial_frames = 0u;
-    g_hda_mod.pcm_cbl_bytes = 0u;
-    g_hda_mod.pcm_last_lpib = 0u;
-    g_hda_mod.pcm_last_lpib_tick = 0u;
-    g_hda_mod.pcm_last_dma_pos = 0u;
-    g_hda_mod.pcm_position_lpib = 0u;
-    g_hda_mod.pcm_position_tick = 0u;
-    g_hda_mod.pcm_position_reject_count = 0u;
-    g_hda_mod.pcm_position_valid = 0u;
-    g_hda_mod.pcm_reclaim_tick = 0u;
-    g_hda_mod.pcm_reclaim_bytes = 0u;
-    g_hda_mod.pcm_reclaim_budget_bytes = 0u;
-    g_hda_mod.pcm_last_debug_tick = 0u;
-    g_hda_mod.pcm_current_call_seq = 0u;
-    g_hda_mod.pcm_current_call_base_frame = 0u;
-    g_hda_mod.pcm_last_submit_src_last = 0u;
-    g_hda_mod.pcm_last_reclaim_src_last = 0u;
-    g_hda_mod.pcm_last_hw_src_frame = 0u;
-    g_hda_mod.dma_pos_trusted = 0u;
-    g_hda_mod.dma_pos_logged = 0u;
-    hda_mod_zero_all_pcm_buffers_local();
+static uint32_t hda_mod_pcm_safe_margin_bytes_local(void) {
+    return HDA_BUFFER_BYTES * g_hda_mod.q_safe_margin_desc;
 }
 
-static int hda_mod_pcm_debug_due_local(void) {
-    uint32_t timer_hz = driver_timer_hz();
-    uint32_t now = driver_timer_current_ticks();
-    uint32_t interval;
-
-    if (timer_hz == 0u) {
-        timer_hz = 100u;
-    }
-    interval = timer_hz / 4u;
-    if (interval == 0u) {
-        interval = 1u;
-    }
-    if (g_hda_mod.pcm_last_debug_tick != 0u &&
-        (uint32_t)(now - g_hda_mod.pcm_last_debug_tick) < interval) {
-        return 0;
-    }
-    g_hda_mod.pcm_last_debug_tick = now;
-    return 1;
+static uint32_t hda_mod_pcm_lpib_guard_bytes_local(void) {
+    return HDA_BUFFER_BYTES * g_hda_mod.q_lpib_guard_desc;
 }
 
-static int hda_mod_pcm_index_in_window_local(uint8_t index,
-                                             uint8_t start,
-                                             uint32_t count) {
-    uint32_t offset;
-
-    if (count > HDA_BDL_ENTRIES) {
-        count = HDA_BDL_ENTRIES;
-    }
-    for (offset = 0u; offset < count; offset++) {
-        if (index == (uint8_t)((start + offset) % HDA_BDL_ENTRIES)) {
-            return 1;
-        }
-    }
-    return 0;
+static uint32_t hda_mod_pcm_write_quantum_bytes_local(void) {
+    return HDA_BUFFER_BYTES * g_hda_mod.q_write_quantum_desc;
 }
 
-static int hda_mod_pcm_index_is_queued_or_partial_local(uint8_t index) {
-    if (hda_mod_pcm_index_in_window_local(index,
-                                          g_hda_mod.pcm_play_index,
-                                          g_hda_mod.pcm_fill_count)) {
-        return 1;
-    }
-    return g_hda_mod.pcm_partial_frames != 0u &&
-           index == g_hda_mod.pcm_write_index;
+static uint32_t hda_mod_stream_read_chunk_bytes_local(void) {
+    return HDA_BUFFER_BYTES * g_hda_mod.q_read_chunk_desc;
 }
 
-static void hda_mod_pcm_scrub_unqueued_local(void) {
-    uint32_t index;
-
-    for (index = 0u; index < HDA_BDL_ENTRIES; index++) {
-        uint8_t slot = (uint8_t)index;
-
-        if (hda_mod_pcm_index_is_queued_or_partial_local(slot)) {
-            continue;
-        }
-        if (g_hda_mod.pcm_desc_frames[slot] == 0u) {
-            continue;
-        }
-        hda_mod_pcm_reset_desc_meta_local(slot);
-        hda_mod_set_bdl_descriptor_local(slot, HDA_BUFFER_BYTES, 0u);
-        hda_mod_flush_descriptor_local(slot);
-    }
+static uint32_t hda_mod_pcm_xrun_survive_bytes_local(void) {
+    return HDA_BUFFER_BYTES * g_hda_mod.q_xrun_survive_desc;
 }
 
-static void hda_mod_pcm_silence_unqueued_ahead_local(uint8_t hw_buffer) {
+static uint32_t hda_mod_pcm_ring_forward_distance_local(uint32_t from,
+                                                        uint32_t to,
+                                                        uint32_t ring_bytes) {
+    if (ring_bytes == 0u) {
+        return 0u;
+    }
+    from %= ring_bytes;
+    to %= ring_bytes;
+    if (to >= from) {
+        return to - from;
+    }
+    return ring_bytes - from + to;
+}
+
+static int hda_mod_pos_mode_uses_timer_local(void) {
+    return g_hda_mod.position_mode == HDA_POS_MODE_TIMER ||
+           g_hda_mod.position_mode == HDA_POS_MODE_TIMER_LPIB_GUARD;
+}
+
+static int hda_mod_pos_mode_uses_lpib_guard_local(void) {
+    return g_hda_mod.position_mode == HDA_POS_MODE_TIMER_LPIB_GUARD;
+}
+
+static uint32_t hda_mod_pcm_guarded_write_bytes_local(uint32_t write_offset,
+                                                      uint32_t wanted_bytes) {
+    uint32_t ring_bytes = g_hda_mod.pcm_cbl_bytes;
+    uint32_t lpib;
     uint32_t guard;
-    uint32_t guard_count = HDA_PCM_RECOVERY_GUARD_DESCRIPTORS;
+    uint32_t start_dist;
+    uint32_t distance_to_guard;
+    uint32_t safe_bytes;
+    uint64_t queued;
 
-    if (guard_count > HDA_BDL_ENTRIES) {
-        guard_count = HDA_BDL_ENTRIES;
+    if (wanted_bytes == 0u ||
+        g_hda_mod.pcm_started == 0u ||
+        g_hda_mod.pcm_active == 0u ||
+        !hda_mod_pos_mode_uses_lpib_guard_local()) {
+        return wanted_bytes;
     }
-    for (guard = 0u; guard < guard_count; guard++) {
-        uint8_t slot = (uint8_t)((hw_buffer + guard) % HDA_BDL_ENTRIES);
+    queued = g_hda_mod.pcm_app_pos_bytes > g_hda_mod.pcm_hw_pos_bytes ?
+        g_hda_mod.pcm_app_pos_bytes - g_hda_mod.pcm_hw_pos_bytes : 0u;
+    if (queued <=
+        (uint64_t)HDA_BUFFER_BYTES * g_hda_mod.q_lpib_guard_start_desc) {
+        return wanted_bytes;
+    }
+    if (ring_bytes == 0u) {
+        return wanted_bytes;
+    }
 
-        if (hda_mod_pcm_index_is_queued_or_partial_local(slot) ||
-            g_hda_mod.pcm_buffer_silent[slot] != 0u) {
-            continue;
-        }
-        hda_mod_zero_dma_buffer_local(slot);
-        hda_mod_pcm_reset_desc_meta_local(slot);
-        hda_mod_set_bdl_descriptor_local(slot, HDA_BUFFER_BYTES, 0u);
-        hda_mod_flush_descriptor_local(slot);
+    lpib = (uint32_t)hda_mod_pos_get_lpib_bytes_local();
+    guard = hda_mod_pcm_lpib_guard_bytes_local();
+    if (guard == 0u) {
+        return wanted_bytes;
     }
-}
-
-static void hda_mod_pcm_update_reclaim_budget_local(void) {
-    uint32_t timer_hz = driver_timer_hz();
-    uint32_t now = driver_timer_current_ticks();
-    uint32_t elapsed_ticks;
-    uint32_t max_budget;
-    uint64_t budget;
-
-    if (timer_hz == 0u) {
-        timer_hz = 100u;
+    write_offset %= ring_bytes;
+    if (wanted_bytes >= ring_bytes) {
+        wanted_bytes = ring_bytes - 4u;
     }
-    if (g_hda_mod.pcm_reclaim_tick == 0u) {
-        g_hda_mod.pcm_reclaim_tick = now;
-        return;
-    }
-    elapsed_ticks = now - g_hda_mod.pcm_reclaim_tick;
-    if (elapsed_ticks == 0u) {
-        return;
-    }
-    budget = (uint64_t)g_hda_mod.pcm_reclaim_budget_bytes +
-        ((uint64_t)HDA_OUTPUT_BYTES_PER_SECOND * (uint64_t)elapsed_ticks) /
-            (uint64_t)timer_hz;
-    max_budget = g_hda_mod.pcm_cbl_bytes != 0u ?
-        g_hda_mod.pcm_cbl_bytes : HDA_BUFFER_BYTES * HDA_BDL_ENTRIES;
-    if (budget > max_budget) {
-        budget = max_budget;
-    }
-    g_hda_mod.pcm_reclaim_budget_bytes = (uint32_t)budget;
-    g_hda_mod.pcm_reclaim_tick = now;
-}
-
-static uint32_t hda_mod_pcm_reclaim_budget_descriptors_local(void) {
-    uint32_t descriptors = g_hda_mod.pcm_reclaim_budget_bytes / HDA_BUFFER_BYTES;
-
-    if (descriptors == 0u) {
-        descriptors = 1u;
-    }
-    if (descriptors > HDA_BDL_ENTRIES) {
-        descriptors = HDA_BDL_ENTRIES;
-    }
-    return descriptors;
-}
-
-static uint32_t hda_mod_pcm_reclaim_ready_descriptors_local(void) {
-    uint32_t descriptors = g_hda_mod.pcm_reclaim_budget_bytes / HDA_BUFFER_BYTES;
-
-    if (descriptors > HDA_BDL_ENTRIES) {
-        descriptors = HDA_BDL_ENTRIES;
-    }
-    return descriptors;
-}
-
-static void hda_mod_pcm_consume_reclaim_budget_local(uint32_t descriptors) {
-    uint32_t bytes;
-
-    if (descriptors == 0u) {
-        return;
-    }
-    bytes = descriptors * HDA_BUFFER_BYTES;
-    if (g_hda_mod.pcm_reclaim_budget_bytes > bytes) {
-        g_hda_mod.pcm_reclaim_budget_bytes -= bytes;
+    start_dist = hda_mod_pcm_ring_forward_distance_local(lpib, write_offset, ring_bytes);
+    if (start_dist < guard) {
+        safe_bytes = 0u;
     } else {
-        g_hda_mod.pcm_reclaim_budget_bytes = 0u;
-    }
-}
-
-static void hda_mod_pcm_consume_position_bytes_local(uint32_t descriptors) {
-    uint32_t bytes;
-
-    if (descriptors == 0u) {
-        return;
-    }
-    bytes = descriptors * HDA_BUFFER_BYTES;
-    if (g_hda_mod.pcm_reclaim_bytes > bytes) {
-        g_hda_mod.pcm_reclaim_bytes -= bytes;
-    } else {
-        g_hda_mod.pcm_reclaim_bytes = 0u;
-    }
-}
-
-static void hda_mod_pcm_stop_empty_local(uint32_t sd_off,
-                                         uint32_t current_lpib,
-                                         uint8_t hw_buffer) {
-    driver_log("driver: HDAMOD pcm empty stop lpib=%u hwbuf=%u play=%u write=%u curcall=%u total=%u rem=%u\n",
-               current_lpib,
-               (uint32_t)hw_buffer,
-               (uint32_t)g_hda_mod.pcm_play_index,
-               (uint32_t)g_hda_mod.pcm_write_index,
-               g_hda_mod.pcm_current_call_seq,
-               g_hda_mod.pcm_total_input_frames,
-               g_hda_mod.pcm_reclaim_bytes);
-    hda_mod_sd_halt_local(sd_off);
-    g_hda_mod.pcm_active = 0u;
-    g_hda_mod.pcm_started = 0u;
-    g_hda_mod.pcm_write_index = 0u;
-    g_hda_mod.pcm_play_index = 0u;
-    g_hda_mod.pcm_fill_count = 0u;
-    g_hda_mod.pcm_partial_frames = 0u;
-    g_hda_mod.pcm_cbl_bytes = 0u;
-    g_hda_mod.pcm_last_lpib = 0u;
-    g_hda_mod.pcm_last_lpib_tick = 0u;
-    g_hda_mod.pcm_last_dma_pos = 0u;
-    g_hda_mod.pcm_position_lpib = 0u;
-    g_hda_mod.pcm_position_tick = 0u;
-    g_hda_mod.pcm_position_reject_count = 0u;
-    g_hda_mod.pcm_position_valid = 0u;
-    g_hda_mod.pcm_reclaim_tick = 0u;
-    g_hda_mod.pcm_reclaim_bytes = 0u;
-    g_hda_mod.pcm_reclaim_budget_bytes = 0u;
-    g_hda_mod.pcm_last_debug_tick = 0u;
-    g_hda_mod.pcm_last_submit_src_last = 0u;
-    g_hda_mod.pcm_last_reclaim_src_last = 0u;
-    g_hda_mod.pcm_last_hw_src_frame = 0u;
-    g_hda_mod.dma_pos_trusted = 0u;
-    g_hda_mod.dma_pos_logged = 0u;
-    hda_mod_zero_all_pcm_buffers_local();
-}
-
-static void __attribute__((unused))
-hda_mod_pcm_resync_ring_local(uint32_t current_lpib,
-                              uint8_t hw_buffer,
-                              uint8_t old_play_index,
-                              uint32_t completed,
-                              const char *reason) {
-    uint32_t guard_count = HDA_PCM_RECOVERY_GUARD_DESCRIPTORS;
-    uint32_t i;
-
-    if (guard_count == 0u) {
-        guard_count = 1u;
-    }
-    if (guard_count >= HDA_BDL_ENTRIES) {
-        guard_count = HDA_BDL_ENTRIES - 1u;
-    }
-
-    for (i = 0u; i < guard_count; i++) {
-        uint8_t index = (uint8_t)((hw_buffer + i) % HDA_BDL_ENTRIES);
-
-        hda_mod_zero_dma_buffer_local(index);
-        hda_mod_set_bdl_descriptor_local(index, HDA_BUFFER_BYTES, 0u);
-        hda_mod_pcm_reset_desc_meta_local(index);
-        hda_mod_flush_descriptor_local(index);
-    }
-
-    g_hda_mod.pcm_play_index = hw_buffer;
-    g_hda_mod.pcm_write_index =
-        (uint8_t)((hw_buffer + guard_count) % HDA_BDL_ENTRIES);
-    g_hda_mod.pcm_fill_count = (uint8_t)guard_count;
-    g_hda_mod.pcm_partial_frames = 0u;
-    g_hda_mod.pcm_last_lpib = current_lpib;
-    g_hda_mod.pcm_last_lpib_tick = driver_timer_current_ticks();
-    g_hda_mod.pcm_last_hw_src_frame = 0u;
-    g_hda_mod.pcm_last_reclaim_src_last = 0u;
-    g_hda_mod.pcm_reclaim_tick = g_hda_mod.pcm_last_lpib_tick;
-    g_hda_mod.pcm_reclaim_bytes = 0u;
-    g_hda_mod.pcm_reclaim_budget_bytes = 0u;
-    hda_mod_pcm_scrub_unqueued_local();
-
-    if (g_hda_mod.pcm_underrun_count <= 8u ||
-        (g_hda_mod.pcm_underrun_count & 15u) == 0u) {
-        if (reason == NULL) {
-            reason = "ring";
+        distance_to_guard = ring_bytes - start_dist;
+        safe_bytes = distance_to_guard > guard ?
+            distance_to_guard - guard : 0u;
+        if (safe_bytes > wanted_bytes) {
+            safe_bytes = wanted_bytes;
         }
-        driver_log("driver: HDAMOD pcm %s resync count=%u lpib=%u hwbuf=%u oldplay=%u newplay=%u write=%u guard=%u done=%u\n",
-                   reason,
-                   g_hda_mod.pcm_underrun_count,
-                   current_lpib,
-                   (uint32_t)hw_buffer,
-                   (uint32_t)old_play_index,
-                   (uint32_t)g_hda_mod.pcm_play_index,
-                   (uint32_t)g_hda_mod.pcm_write_index,
-                   guard_count,
-                   completed);
     }
+    safe_bytes &= ~3u;
+
+    if (HDA_PCM_LPIB_GUARD_TRACE != 0u && safe_bytes != wanted_bytes) {
+        driver_log("driver: HDAMOD guarded write lpib=%u write=%u wanted=%u safe=%u start_dist=%u guard=%u queued=%lx app=%lx hw=%lx\n",
+                   lpib,
+                   write_offset,
+                   wanted_bytes,
+                   safe_bytes,
+                   start_dist,
+                   guard,
+                   queued,
+                   g_hda_mod.pcm_app_pos_bytes,
+                   g_hda_mod.pcm_hw_pos_bytes);
+    }
+    return safe_bytes;
 }
 
-static void hda_mod_pcm_reclaim_local(uint32_t allow_empty_stop) {
-    uint32_t sd_off = g_hda_mod.output_stream_offset;
-    uint32_t current_lpib;
-    uint32_t delta_bytes;
-    uint32_t completed;
-    uint32_t data_completed;
-    uint32_t fp_a;
-    uint32_t fp_b;
-    uint32_t fp_c;
-    uint32_t bcis;
-    uint32_t position_delta;
-    uint32_t plausible_delta;
-    uint32_t elapsed_lpib_ticks;
-    uint32_t hw_distance;
-    uint32_t budget_completed;
-    uint32_t timer_hz;
+static uint32_t hda_mod_pcm_prebuffer_bytes_local(void) {
+    return HDA_BUFFER_BYTES * g_hda_mod.q_prebuffer_desc;
+}
+
+static uint32_t hda_mod_pcm_output_bytes_remaining_local(uint64_t src_pos,
+                                                         uint64_t input_end,
+                                                         uint64_t src_step) {
+    uint64_t remaining;
+    uint64_t frames;
+
+    if (src_pos >= input_end || src_step == 0u) {
+        return 0u;
+    }
+    remaining = input_end - src_pos;
+    frames = (remaining + src_step - 1u) / src_step;
+    if (frames > 0xffffffffu / 4u) {
+        return 0xffffffffu;
+    }
+    return (uint32_t)frames * 4u;
+}
+
+static uint64_t hda_mod_pcm_queued_bytes_local(void) {
+    if (g_hda_mod.pcm_app_pos_bytes <= g_hda_mod.pcm_hw_pos_bytes) {
+        return 0u;
+    }
+    return g_hda_mod.pcm_app_pos_bytes - g_hda_mod.pcm_hw_pos_bytes;
+}
+
+static uint64_t hda_mod_pos_get_timer_bytes_local(void) {
     uint32_t now;
-    uint64_t reclaim_bytes;
-    uint8_t hw_buffer;
-    uint8_t old_play_index;
-    uint8_t i;
+    uint32_t timer_hz;
+    uint32_t elapsed_ticks;
+    uint64_t elapsed_bytes;
 
-    if (g_hda_mod.pcm_started == 0u || g_hda_mod.pcm_cbl_bytes == 0u) {
-        return;
-    }
-
-    hda_mod_pcm_update_reclaim_budget_local();
-    current_lpib = hda_mod_pcm_read_lpib_local();
     now = driver_timer_current_ticks();
     timer_hz = driver_timer_hz();
     if (timer_hz == 0u) {
         timer_hz = 100u;
     }
-    if (g_hda_mod.pcm_last_lpib_tick == 0u) {
-        g_hda_mod.pcm_last_lpib_tick = now;
-    }
-    elapsed_lpib_ticks = now - g_hda_mod.pcm_last_lpib_tick;
-    hw_buffer = hda_mod_pcm_buffer_from_lpib_local(current_lpib);
-    old_play_index = g_hda_mod.pcm_play_index;
-    if (hw_buffer >= old_play_index) {
-        hw_distance = hw_buffer - old_play_index;
-    } else {
-        hw_distance = HDA_BDL_ENTRIES - old_play_index + hw_buffer;
-    }
-    if (current_lpib >= g_hda_mod.pcm_last_lpib) {
-        position_delta = current_lpib - g_hda_mod.pcm_last_lpib;
-    } else {
-        position_delta = g_hda_mod.pcm_cbl_bytes - g_hda_mod.pcm_last_lpib +
-            current_lpib;
-    }
-    if (position_delta > g_hda_mod.pcm_cbl_bytes / 2u) {
-        plausible_delta =
-            (uint32_t)(((uint64_t)HDA_OUTPUT_BYTES_PER_SECOND *
-                        (uint64_t)elapsed_lpib_ticks) / (uint64_t)timer_hz);
-        plausible_delta += HDA_BUFFER_BYTES * 2u;
-        if (plausible_delta < HDA_BUFFER_BYTES * 2u ||
-            plausible_delta > g_hda_mod.pcm_cbl_bytes) {
-            plausible_delta = g_hda_mod.pcm_cbl_bytes;
-        }
-        if (position_delta <= plausible_delta) {
-            driver_log("driver: HDAMOD pcm reclaim long accept lpib=%u last=%u delta=%u plausible=%u ticks=%u hwbuf=%u play=%u write=%u fill=%u\n",
-                       current_lpib,
-                       g_hda_mod.pcm_last_lpib,
-                       position_delta,
-                       plausible_delta,
-                       elapsed_lpib_ticks,
-                       (uint32_t)hw_buffer,
-                       (uint32_t)old_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index,
-                       (uint32_t)g_hda_mod.pcm_fill_count);
-        } else {
-            driver_log("driver: HDAMOD pcm reclaim back ignore lpib=%u last=%u delta=%u plausible=%u ticks=%u hwbuf=%u play=%u write=%u fill=%u\n",
-                       current_lpib,
-                       g_hda_mod.pcm_last_lpib,
-                       position_delta,
-                       plausible_delta,
-                       elapsed_lpib_ticks,
-                       (uint32_t)hw_buffer,
-                       (uint32_t)old_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index,
-                       (uint32_t)g_hda_mod.pcm_fill_count);
-            position_delta = 0u;
-        }
-    }
-    reclaim_bytes = (uint64_t)g_hda_mod.pcm_reclaim_bytes + position_delta;
-    if (reclaim_bytes > g_hda_mod.pcm_cbl_bytes) {
-        reclaim_bytes = g_hda_mod.pcm_cbl_bytes;
-    }
-    g_hda_mod.pcm_reclaim_bytes = (uint32_t)reclaim_bytes;
-    completed = g_hda_mod.pcm_reclaim_bytes / HDA_BUFFER_BYTES;
-    if (hw_distance != 0u && completed > hw_distance) {
-        completed = hw_distance;
-    }
-    budget_completed = hda_mod_pcm_reclaim_ready_descriptors_local();
-    if (completed > budget_completed) {
-        if (HDA_PCM_TRACE != 0u && hda_mod_pcm_debug_due_local()) {
-            driver_log("driver: HDAMOD pcm reclaim timecap lpib=%u hwbuf=%u play=%u write=%u fill=%u done=%u budget=%u bytes=%u\n",
-                       current_lpib,
-                       (uint32_t)hw_buffer,
-                       (uint32_t)old_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index,
-                       (uint32_t)g_hda_mod.pcm_fill_count,
-                       completed,
-                       budget_completed,
-                       g_hda_mod.pcm_reclaim_budget_bytes);
-        }
-        completed = budget_completed;
-    }
-    if (HDA_PCM_TRACE != 0u) {
-        hda_mod_log("DBG reclaim t=%u lpib=%u hwbuf=%u play=%u write=%u fill=%u partial=%u reclaim_bytes=%u\n",
-                    driver_timer_current_ticks(),
-                    current_lpib,
-                    (uint32_t)hw_buffer,
-                    (uint32_t)g_hda_mod.pcm_play_index,
-                    (uint32_t)g_hda_mod.pcm_write_index,
-                    (uint32_t)g_hda_mod.pcm_fill_count,
-                    g_hda_mod.pcm_partial_frames,
-                    g_hda_mod.pcm_reclaim_bytes);
-    }
-    bcis = hda_mod_read8_local(sd_off + HDA_SD_STS) & HDA_SD_STS_BCIS;
-    if (bcis != 0u) {
-        hda_mod_write8_local(sd_off + HDA_SD_STS, HDA_SD_STS_BCIS);
-        if (completed > HDA_PCM_BCIS_CATCHUP_DESCRIPTORS) {
-            budget_completed = hda_mod_pcm_reclaim_budget_descriptors_local();
-            if (completed > budget_completed) {
-                if (HDA_PCM_TRACE != 0u && hda_mod_pcm_debug_due_local()) {
-                    driver_log("driver: HDAMOD pcm bcis catchup timecap lpib=%u hwbuf=%u play=%u write=%u fill=%u distance=%u budget=%u bytes=%u\n",
-                               current_lpib,
-                               (uint32_t)hw_buffer,
-                               (uint32_t)old_play_index,
-                               (uint32_t)g_hda_mod.pcm_write_index,
-                               (uint32_t)g_hda_mod.pcm_fill_count,
-                               completed,
-                               budget_completed,
-                               g_hda_mod.pcm_reclaim_budget_bytes);
-                }
-                completed = budget_completed;
-            }
-        }
-        if (completed > HDA_PCM_BCIS_CATCHUP_DESCRIPTORS) {
-            if (HDA_PCM_TRACE != 0u && hda_mod_pcm_debug_due_local()) {
-                driver_log("driver: HDAMOD pcm bcis catchup wide lpib=%u hwbuf=%u play=%u write=%u fill=%u distance=%u trace=%u\n",
-                           current_lpib,
-                           (uint32_t)hw_buffer,
-                           (uint32_t)old_play_index,
-                           (uint32_t)g_hda_mod.pcm_write_index,
-                           (uint32_t)g_hda_mod.pcm_fill_count,
-                           completed,
-                           HDA_PCM_BCIS_CATCHUP_DESCRIPTORS);
-            }
-            completed = HDA_PCM_BCIS_CATCHUP_DESCRIPTORS;
-        } else if (HDA_PCM_TRACE != 0u &&
-                   completed > 1u &&
-                   hda_mod_pcm_debug_due_local()) {
-            driver_log("driver: HDAMOD pcm bcis catchup done=%u lpib=%u hwbuf=%u play=%u write=%u fill=%u\n",
-                       completed,
-                       current_lpib,
-                       (uint32_t)hw_buffer,
-                       (uint32_t)old_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index,
-                       (uint32_t)g_hda_mod.pcm_fill_count);
-        }
-    }
-    delta_bytes = completed * HDA_BUFFER_BYTES;
-    g_hda_mod.pcm_last_lpib = current_lpib;
-    g_hda_mod.pcm_last_lpib_tick = now;
-    hda_mod_pcm_trace_hw_source_local(current_lpib, hw_buffer);
-    if (HDA_PCM_LOW_TRACE != 0u &&
-        g_hda_mod.pcm_fill_count <= 8u &&
-        hda_mod_pcm_debug_due_local()) {
-        driver_log("driver: HDAMOD LOW fill=%u lpib=%u play=%u write=%u\n",
-                   (uint32_t)g_hda_mod.pcm_fill_count,
-                   current_lpib,
-                   (uint32_t)g_hda_mod.pcm_play_index,
-                   (uint32_t)g_hda_mod.pcm_write_index);
-    }
-    if (HDA_PCM_RING_HAZARD_TRACE != 0u &&
-        (g_hda_mod.pcm_fill_count <= 4u ||
-         hda_mod_pcm_index_is_hw_guarded_local(g_hda_mod.pcm_write_index, hw_buffer)) &&
-        hda_mod_pcm_debug_due_local()) {
-        driver_log("driver: HDAMOD ring hazard lpib=%u hwbuf=%u next=%u guard2=%u play=%u write=%u fill=%u partial=%u delta=%u done=%u rem=%u\n",
-                   current_lpib,
-                   (uint32_t)hw_buffer,
-                   (uint32_t)((hw_buffer + 1u) % HDA_BDL_ENTRIES),
-                   (uint32_t)((hw_buffer + 2u) % HDA_BDL_ENTRIES),
-                   (uint32_t)g_hda_mod.pcm_play_index,
-                   (uint32_t)g_hda_mod.pcm_write_index,
-                   (uint32_t)g_hda_mod.pcm_fill_count,
-                   g_hda_mod.pcm_partial_frames,
-                   delta_bytes,
-                   completed,
-                   g_hda_mod.pcm_reclaim_bytes);
-    }
-    if (completed != 0u &&
-        g_hda_mod.pcm_fill_count == 0u &&
-        allow_empty_stop == 0u) {
-        g_hda_mod.pcm_underrun_count++;
-        driver_log("driver: HDAMOD pcm empty resync seen lpib=%u hwbuf=%u play=%u write=%u fill=%u done=%u rem=%u delta=%u distance=%u budget=%u ticks=%u\n",
-                   current_lpib,
-                   (uint32_t)hw_buffer,
-                   (uint32_t)old_play_index,
-                   (uint32_t)g_hda_mod.pcm_write_index,
-                   (uint32_t)g_hda_mod.pcm_fill_count,
-                   completed,
-                   g_hda_mod.pcm_reclaim_bytes,
-                   position_delta,
-                   hw_distance,
-                   budget_completed,
-                   elapsed_lpib_ticks);
-        hda_mod_pcm_resync_ring_local(current_lpib,
-                                      hw_buffer,
-                                      old_play_index,
-                                      completed,
-                                      "empty");
-        return;
-    }
-    if (completed > g_hda_mod.pcm_fill_count) {
-        g_hda_mod.pcm_underrun_count++;
-        if (HDA_PCM_UNDERRUN_TRACE != 0u) {
-            driver_log("driver: HDAMOD underrun count=%u lpib=%u hwbuf=%u play=%u write=%u fill=%u done=%u rem=%u\n",
-                       g_hda_mod.pcm_underrun_count,
-                       current_lpib,
-                       (uint32_t)hw_buffer,
-                       (uint32_t)old_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index,
-                       (uint32_t)g_hda_mod.pcm_fill_count,
-                       completed,
-                       g_hda_mod.pcm_reclaim_bytes);
-        }
-        driver_log("driver: HDAMOD pcm underrun seen lpib=%u hwbuf=%u play=%u write=%u fill=%u done=%u rem=%u delta=%u distance=%u budget=%u ticks=%u\n",
-                   current_lpib,
-                   (uint32_t)hw_buffer,
-                   (uint32_t)old_play_index,
-                   (uint32_t)g_hda_mod.pcm_write_index,
-                   (uint32_t)g_hda_mod.pcm_fill_count,
-                   completed,
-                   g_hda_mod.pcm_reclaim_bytes,
-                   position_delta,
-                   hw_distance,
-                   budget_completed,
-                   elapsed_lpib_ticks);
-        if (allow_empty_stop == 0u) {
-            hda_mod_pcm_resync_ring_local(current_lpib,
-                                          hw_buffer,
-                                          old_play_index,
-                                          completed,
-                                          "underrun");
-            return;
-        }
-    }
-    data_completed = completed;
-    if (data_completed > g_hda_mod.pcm_fill_count) {
-        data_completed = g_hda_mod.pcm_fill_count;
-    }
-    if (data_completed != 0u) {
-        for (i = 0u; i < data_completed; i++) {
-            uint8_t consumed =
-                (uint8_t)((old_play_index + i) % HDA_BDL_ENTRIES);
-            uint32_t reclaim_gap =
-                g_hda_mod.pcm_last_reclaim_src_last != 0u &&
-                g_hda_mod.pcm_desc_src_first[consumed] !=
-                g_hda_mod.pcm_last_reclaim_src_last + 1u;
-            uint32_t log_reclaim;
 
-            hda_mod_pcm_buffer_fingerprint_local(consumed, &fp_a, &fp_b, &fp_c);
-            g_hda_mod.pcm_reclaim_seq++;
-            log_reclaim = reclaim_gap ||
-                (completed > 1u && (i == 0u || i + 1u == data_completed)) ||
-                (g_hda_mod.pcm_reclaim_seq <= 8u) ||
-                ((g_hda_mod.pcm_reclaim_seq & 31u) == 0u);
-            if (log_reclaim) {
-                hda_mod_log("driver: HDAMOD pcm reclaim seq=%u idx=%u sub=%u call=%u src=%u..%u frames=%u fp=%x:%x:%x lpib=%u hw=%u done=%u gap=%u fill=%u play=%u write=%u\n",
-                            g_hda_mod.pcm_reclaim_seq,
-                            (uint32_t)consumed,
-                            g_hda_mod.pcm_desc_submit[consumed],
-                            g_hda_mod.pcm_desc_call[consumed],
-                            g_hda_mod.pcm_desc_src_first[consumed],
-                            g_hda_mod.pcm_desc_src_last[consumed],
-                            g_hda_mod.pcm_desc_frames[consumed],
-                            fp_a,
-                            fp_b,
-                            fp_c,
-                            current_lpib,
-                            (uint32_t)hw_buffer,
-                            completed,
-                            reclaim_gap,
-                            (uint32_t)g_hda_mod.pcm_fill_count,
-                            (uint32_t)old_play_index,
-                            (uint32_t)g_hda_mod.pcm_write_index);
-            }
-            if (g_hda_mod.pcm_desc_frames[consumed] != 0u) {
-                g_hda_mod.pcm_last_reclaim_src_last =
-                    g_hda_mod.pcm_desc_src_last[consumed];
-            }
-            if (consumed != hw_buffer) {
-                hda_mod_pcm_reset_desc_meta_local(consumed);
-            }
-        }
-        g_hda_mod.pcm_fill_count = (uint8_t)(g_hda_mod.pcm_fill_count - data_completed);
-        g_hda_mod.pcm_play_index =
-            (uint8_t)((old_play_index + data_completed) % HDA_BDL_ENTRIES);
-        hda_mod_pcm_consume_position_bytes_local(data_completed);
-        hda_mod_pcm_consume_reclaim_budget_local(data_completed);
-        hda_mod_pcm_scrub_unqueued_local();
+    elapsed_ticks = now - g_hda_mod.pcm_start_tick;
+    elapsed_bytes =
+        ((uint64_t)HDA_OUTPUT_BYTES_PER_SECOND *
+         (uint64_t)elapsed_ticks) / (uint64_t)timer_hz;
+
+    return g_hda_mod.pcm_start_hw_pos_bytes + elapsed_bytes;
+}
+
+static uint64_t hda_mod_pos_get_hw_bytes_local(void) {
+    switch (g_hda_mod.position_mode) {
+        case HDA_POS_MODE_DMA_POSBUF:
+            return hda_mod_pos_get_dma_posbuf_bytes_local();
+        case HDA_POS_MODE_TIMER:
+        case HDA_POS_MODE_TIMER_LPIB_GUARD:
+            return hda_mod_pos_get_timer_bytes_local();
+        case HDA_POS_MODE_LPIB:
+        default:
+            return hda_mod_pos_get_lpib_bytes_local();
     }
-    hda_mod_pcm_silence_unqueued_ahead_local(hw_buffer);
-    if (g_hda_mod.pcm_fill_count == 0u && g_hda_mod.pcm_partial_frames == 0u) {
-        if (allow_empty_stop == 0u) {
-            if ((hda_mod_read8_local(sd_off + HDA_SD_CTL0) & HDA_SD_CTL_RUN) == 0u) {
-                g_hda_mod.pcm_active = 0u;
-            } else if (HDA_PCM_EMPTY_TRACE != 0u && hda_mod_pcm_debug_due_local()) {
-                driver_log("driver: HDAMOD pcm empty defer lpib=%u hwbuf=%u play=%u write=%u curcall=%u total=%u\n",
-                           current_lpib,
-                           (uint32_t)hw_buffer,
-                           (uint32_t)g_hda_mod.pcm_play_index,
-                           (uint32_t)g_hda_mod.pcm_write_index,
-                           g_hda_mod.pcm_current_call_seq,
-                           g_hda_mod.pcm_total_input_frames);
-            }
-            return;
-        }
-        if ((hda_mod_read8_local(sd_off + HDA_SD_CTL0) & HDA_SD_CTL_RUN) != 0u) {
-            g_hda_mod.pcm_empty_count++;
-            if (HDA_PCM_EMPTY_TRACE != 0u) {
-                driver_log("driver: HDAMOD empty count=%u lpib=%u hwbuf=%u play=%u write=%u curcall=%u total=%u rem=%u\n",
-                           g_hda_mod.pcm_empty_count,
-                           current_lpib,
-                           (uint32_t)hw_buffer,
-                           (uint32_t)g_hda_mod.pcm_play_index,
-                           (uint32_t)g_hda_mod.pcm_write_index,
-                           g_hda_mod.pcm_current_call_seq,
-                           g_hda_mod.pcm_total_input_frames,
-                           g_hda_mod.pcm_reclaim_bytes);
-            }
-            hda_mod_pcm_stop_empty_local(sd_off, current_lpib, hw_buffer);
-            return;
-        }
-        hda_mod_log("driver: HDAMOD pcm empty stopped lpib=%u hwbuf=%u play=%u write=%u curcall=%u fill=%u part=%u\n",
-                    current_lpib,
-                    (uint32_t)hw_buffer,
-                    (uint32_t)g_hda_mod.pcm_play_index,
-                    (uint32_t)g_hda_mod.pcm_write_index,
-                    g_hda_mod.pcm_current_call_seq,
-                    (uint32_t)g_hda_mod.pcm_fill_count,
-                    g_hda_mod.pcm_partial_frames);
-        hda_mod_pcm_drop_stream_local();
+}
+
+static uint64_t hda_mod_pcm_free_bytes_local(void) {
+    uint64_t queued;
+    uint32_t ring_bytes;
+
+    ring_bytes = g_hda_mod.pcm_cbl_bytes != 0u ?
+        g_hda_mod.pcm_cbl_bytes : hda_mod_pcm_ring_bytes_local();
+    queued = hda_mod_pcm_queued_bytes_local();
+    if (queued >= ring_bytes) {
+        return 0u;
+    }
+    return (uint64_t)ring_bytes - queued;
+}
+
+static uint32_t hda_mod_pcm_lpib_delta_local(uint32_t old_lpib,
+                                             uint32_t new_lpib,
+                                             uint32_t ring_bytes) {
+    if (ring_bytes == 0u) {
+        return 0u;
+    }
+    old_lpib %= ring_bytes;
+    new_lpib %= ring_bytes;
+    if (new_lpib >= old_lpib) {
+        return new_lpib - old_lpib;
+    }
+    return ring_bytes - old_lpib + new_lpib;
+}
+
+static void hda_mod_pcm_sync_debug_indices_local(void) {
+    uint32_t ring_bytes = g_hda_mod.pcm_cbl_bytes;
+    uint64_t queued = hda_mod_pcm_queued_bytes_local();
+
+    if (ring_bytes == 0u) {
+        g_hda_mod.pcm_write_index = 0u;
+        g_hda_mod.pcm_play_index = 0u;
+        g_hda_mod.pcm_fill_count = 0u;
+        g_hda_mod.pcm_partial_frames = 0u;
+        g_hda_mod.pcm_reclaim_bytes = 0u;
         return;
     }
-    if ((hda_mod_read8_local(sd_off + HDA_SD_CTL0) & HDA_SD_CTL_RUN) == 0u) {
+    if (queued > ring_bytes) {
+        queued = ring_bytes;
+    }
+    g_hda_mod.pcm_play_index =
+        (uint8_t)(((uint32_t)(g_hda_mod.pcm_hw_pos_bytes % ring_bytes) /
+                   HDA_BUFFER_BYTES) % HDA_BDL_ENTRIES);
+    g_hda_mod.pcm_write_index =
+        (uint8_t)(((uint32_t)(g_hda_mod.pcm_app_pos_bytes % ring_bytes) /
+                   HDA_BUFFER_BYTES) % HDA_BDL_ENTRIES);
+    g_hda_mod.pcm_fill_count =
+        (uint8_t)((queued + HDA_BUFFER_BYTES - 1u) / HDA_BUFFER_BYTES);
+    g_hda_mod.pcm_partial_frames =
+        ((uint32_t)(g_hda_mod.pcm_app_pos_bytes % HDA_BUFFER_BYTES)) / 4u;
+    g_hda_mod.pcm_reclaim_bytes = (uint32_t)(queued % HDA_BUFFER_BYTES);
+}
+
+static void hda_mod_pcm_log_byte_state_local(const char *event) {
+    driver_log("driver: HDAMOD byte state event=%s lpib=%u delta=%u app=%lx hw=%lx queued=%lx free=%lx started=%u active=%u play=%u write=%u fill=%u\n",
+               event,
+               g_hda_mod.pcm_last_lpib,
+               g_hda_mod.pcm_last_lpib_delta,
+               g_hda_mod.pcm_app_pos_bytes,
+               g_hda_mod.pcm_hw_pos_bytes,
+               hda_mod_pcm_queued_bytes_local(),
+               hda_mod_pcm_free_bytes_local(),
+               (uint32_t)g_hda_mod.pcm_started,
+               (uint32_t)g_hda_mod.pcm_active,
+               (uint32_t)g_hda_mod.pcm_play_index,
+               (uint32_t)g_hda_mod.pcm_write_index,
+               (uint32_t)g_hda_mod.pcm_fill_count);
+}
+
+static void hda_mod_pcm_prepare_byte_ring_local(void) {
+    g_hda_mod.pcm_cbl_bytes = hda_mod_pcm_ring_bytes_local();
+    g_hda_mod.pcm_app_pos_bytes = 0u;
+    g_hda_mod.pcm_hw_pos_bytes = 0u;
+    g_hda_mod.pcm_last_lpib = 0u;
+    g_hda_mod.pcm_last_hw_offset = 0u;
+    g_hda_mod.pcm_last_lpib_delta = 0u;
+    g_hda_mod.pcm_last_lpib_tick = 0u;
+    g_hda_mod.pcm_start_tick = 0u;
+    g_hda_mod.pcm_start_hw_pos_bytes = 0u;
+    g_hda_mod.pcm_last_dma_pos = 0u;
+    g_hda_mod.pcm_position_lpib = 0u;
+    g_hda_mod.pcm_position_tick = 0u;
+    g_hda_mod.pcm_position_reject_count = 0u;
+    g_hda_mod.pcm_position_valid = 0u;
+    g_hda_mod.pcm_reclaim_tick = 0u;
+    g_hda_mod.pcm_reclaim_bytes = 0u;
+    g_hda_mod.pcm_reclaim_budget_bytes = 0u;
+    hda_mod_pcm_sync_debug_indices_local();
+}
+
+static void hda_mod_pcm_flush_ring_range_local(uint32_t start, uint32_t bytes) {
+    uint32_t ring_bytes = g_hda_mod.pcm_cbl_bytes;
+
+    if (ring_bytes == 0u || bytes == 0u) {
+        return;
+    }
+    start %= ring_bytes;
+    while (bytes != 0u) {
+        uint32_t desc = start / HDA_BUFFER_BYTES;
+        uint32_t offset = start % HDA_BUFFER_BYTES;
+        uint32_t chunk = HDA_BUFFER_BYTES - offset;
+
+        if (desc >= HDA_BDL_ENTRIES || g_hda_mod.buffers[desc] == NULL) {
+            return;
+        }
+        if (chunk > bytes) {
+            chunk = bytes;
+        }
+        hda_mod_flush_range_local(g_hda_mod.buffers[desc] + offset, chunk);
+        bytes -= chunk;
+        start += chunk;
+        if (start >= ring_bytes) {
+            start = 0u;
+        }
+    }
+}
+
+static uint32_t hda_mod_pcm_fill_ring_frames_local(uint32_t ring_offset,
+                                                   uint32_t max_frames,
+                                                   const uint8_t *src,
+                                                   uint32_t input_frames,
+                                                   uint64_t *src_pos,
+                                                   uint64_t src_step,
+                                                   uint32_t src_stride,
+                                                   uint32_t channels,
+                                                   uint32_t bits_per_sample) {
+    uint32_t written_frames = 0u;
+    uint32_t ring_bytes = g_hda_mod.pcm_cbl_bytes;
+
+    if (ring_bytes == 0u || src == NULL || src_pos == NULL ||
+        src_stride == 0u || src_step == 0u) {
+        return 0u;
+    }
+    ring_offset %= ring_bytes;
+    while (written_frames < max_frames &&
+           (uint32_t)(*src_pos >> 32) < input_frames) {
+        uint32_t desc = ring_offset / HDA_BUFFER_BYTES;
+        uint32_t offset = ring_offset % HDA_BUFFER_BYTES;
+        uint32_t segment_frames = (HDA_BUFFER_BYTES - offset) / 4u;
+        uint32_t segment_written = 0u;
+        int16_t *out;
+
+        if (desc >= HDA_BDL_ENTRIES || g_hda_mod.buffers[desc] == NULL) {
+            break;
+        }
+        if (segment_frames > max_frames - written_frames) {
+            segment_frames = max_frames - written_frames;
+        }
+        out = (int16_t *)(g_hda_mod.buffers[desc] + offset);
+        while (segment_written < segment_frames) {
+            uint32_t src_frame = (uint32_t)(*src_pos >> 32);
+            uint32_t src_offset;
+            int16_t left;
+            int16_t right;
+
+            if (src_frame >= input_frames) {
+                break;
+            }
+            src_offset = src_frame * src_stride;
+            if (bits_per_sample == 8u) {
+                left = hda_mod_decode_u8_sample_local(src[src_offset]);
+                right = channels == 1u ? left :
+                    hda_mod_decode_u8_sample_local(src[src_offset + 1u]);
+            } else {
+                left = hda_mod_decode_le16_sample_local(src + src_offset);
+                right = channels == 1u ? left :
+                    hda_mod_decode_le16_sample_local(src + src_offset + 2u);
+            }
+            out[segment_written * 2u] = left;
+            out[segment_written * 2u + 1u] = right;
+            *src_pos += src_step;
+            segment_written++;
+        }
+        if (segment_written == 0u) {
+            break;
+        }
+        g_hda_mod.pcm_buffer_silent[desc] = 0u;
+        written_frames += segment_written;
+        ring_offset += segment_written * 4u;
+        if (ring_offset >= ring_bytes) {
+            ring_offset -= ring_bytes;
+        }
+    }
+    return written_frames;
+}
+
+static void hda_mod_pcm_ack_bcis_local(void) {
+    uint32_t bcis =
+        hda_mod_read8_local(g_hda_mod.output_stream_offset + HDA_SD_STS) &
+        HDA_SD_STS_BCIS;
+
+    if (bcis != 0u) {
+        hda_mod_write8_local(g_hda_mod.output_stream_offset + HDA_SD_STS,
+                             HDA_SD_STS_BCIS);
+    }
+}
+
+static void hda_mod_pcm_update_timer_position_local(uint32_t halt_on_xrun) {
+    uint64_t old_hw = g_hda_mod.pcm_hw_pos_bytes;
+    uint64_t timer_hw = hda_mod_pos_get_hw_bytes_local();
+    uint64_t advanced;
+
+    (void)halt_on_xrun;
+    if (timer_hw > g_hda_mod.pcm_app_pos_bytes) {
+        timer_hw = g_hda_mod.pcm_app_pos_bytes;
+    }
+    if (timer_hw > old_hw) {
+        advanced = timer_hw - old_hw;
+        if (advanced > 0xffffffffu) {
+            advanced = 0xffffffffu;
+        }
+        g_hda_mod.pcm_hw_pos_bytes = timer_hw;
+        g_hda_mod.pcm_last_lpib_delta = (uint32_t)advanced;
+    } else {
+        g_hda_mod.pcm_last_lpib_delta = 0u;
+    }
+
+    g_hda_mod.pcm_last_hw_offset =
+        (uint32_t)(g_hda_mod.pcm_hw_pos_bytes % g_hda_mod.pcm_cbl_bytes);
+    g_hda_mod.pcm_last_lpib = (uint32_t)hda_mod_pos_get_lpib_bytes_local();
+    g_hda_mod.pcm_last_lpib_tick = driver_timer_current_ticks();
+}
+
+static void hda_mod_pcm_update_register_position_local(uint64_t queued_before) {
+    uint32_t position =
+        (uint32_t)(hda_mod_pos_get_hw_bytes_local() % g_hda_mod.pcm_cbl_bytes);
+    uint32_t now = driver_timer_current_ticks();
+    uint32_t delta;
+    uint32_t timer_hz;
+    uint32_t elapsed_ticks;
+    uint32_t plausible_delta = 0u;
+
+    g_hda_mod.pcm_last_lpib = (uint32_t)hda_mod_pos_get_lpib_bytes_local();
+    if (g_hda_mod.pcm_last_lpib_tick == 0u) {
+        g_hda_mod.pcm_last_hw_offset = position;
+        g_hda_mod.pcm_last_lpib_delta = 0u;
+        g_hda_mod.pcm_last_lpib_tick = now;
+        return;
+    }
+
+    delta = hda_mod_pcm_lpib_delta_local(g_hda_mod.pcm_last_hw_offset,
+                                         position,
+                                         g_hda_mod.pcm_cbl_bytes);
+    timer_hz = driver_timer_hz();
+    if (timer_hz == 0u) {
+        timer_hz = 100u;
+    }
+    elapsed_ticks = now - g_hda_mod.pcm_last_lpib_tick;
+
+    if (hda_mod_pcm_delta_plausible_local(delta,
+                                          elapsed_ticks,
+                                          timer_hz,
+                                          &plausible_delta)) {
+        g_hda_mod.pcm_hw_pos_bytes += delta;
+        g_hda_mod.pcm_last_lpib_delta = delta;
+    } else {
+        uint32_t wall_delta =
+            (uint32_t)(((uint64_t)HDA_OUTPUT_BYTES_PER_SECOND *
+                        (uint64_t)elapsed_ticks) / (uint64_t)timer_hz);
+
+        if (wall_delta > queued_before) {
+            wall_delta = (uint32_t)queued_before;
+        }
+        g_hda_mod.pcm_hw_pos_bytes += wall_delta;
+        g_hda_mod.pcm_last_lpib_delta = wall_delta;
+        g_hda_mod.pcm_position_reject_count++;
+
+        if (hda_mod_log_ratelimit_local(&g_hda_mod.pcm_log_recover_tick,
+                                        &g_hda_mod.pcm_log_recover_suppressed)) {
+            driver_log("driver: HDAMOD position recover mode=%u count=%u old=%u new=%u raw_delta=%u wall_delta=%u plausible=%u ticks=%u app=%lx hw=%lx queued=%lx free=%lx suppressed=%u\n",
+                       (uint32_t)g_hda_mod.position_mode,
+                       g_hda_mod.pcm_position_reject_count,
+                       g_hda_mod.pcm_last_hw_offset,
+                       position,
+                       delta,
+                       wall_delta,
+                       plausible_delta,
+                       elapsed_ticks,
+                       g_hda_mod.pcm_app_pos_bytes,
+                       g_hda_mod.pcm_hw_pos_bytes,
+                       hda_mod_pcm_queued_bytes_local(),
+                       hda_mod_pcm_free_bytes_local(),
+                       hda_mod_log_take_suppressed_local(
+                           &g_hda_mod.pcm_log_recover_suppressed));
+        }
+    }
+
+    g_hda_mod.pcm_last_hw_offset = position;
+    g_hda_mod.pcm_last_lpib_tick = now;
+}
+
+static uint64_t hda_mod_pcm_timer_keep_back_bytes_local(void) {
+    return HDA_BUFFER_BYTES * 4u;
+}
+
+static int hda_mod_pcm_handle_fake_xrun_local(uint64_t queued_before) {
+    uint64_t timer_keep_back;
+
+    if (!hda_mod_pos_mode_uses_timer_local()) {
+        return 0;
+    }
+    timer_keep_back = hda_mod_pcm_timer_keep_back_bytes_local();
+    if (queued_before <= timer_keep_back) {
+        return 0;
+    }
+
+    g_hda_mod.pcm_fake_xrun_count++;
+    if (g_hda_mod.pcm_app_pos_bytes > timer_keep_back) {
+        g_hda_mod.pcm_hw_pos_bytes =
+            g_hda_mod.pcm_app_pos_bytes - timer_keep_back;
+    } else {
+        g_hda_mod.pcm_hw_pos_bytes = 0u;
+    }
+    g_hda_mod.pcm_start_tick = driver_timer_current_ticks();
+    g_hda_mod.pcm_start_hw_pos_bytes = g_hda_mod.pcm_hw_pos_bytes;
+    g_hda_mod.pcm_last_lpib_tick = g_hda_mod.pcm_start_tick;
+    g_hda_mod.pcm_last_hw_offset =
+        (uint32_t)(g_hda_mod.pcm_hw_pos_bytes %
+                   g_hda_mod.pcm_cbl_bytes);
+    g_hda_mod.pcm_last_lpib_delta = 0u;
+    g_hda_mod.pcm_started = 1u;
+    g_hda_mod.pcm_active = 1u;
+    hda_mod_pcm_sync_debug_indices_local();
+
+    if (hda_mod_log_ratelimit_local(&g_hda_mod.pcm_log_fake_xrun_tick,
+                                    &g_hda_mod.pcm_log_fake_xrun_suppressed)) {
+        driver_log("driver: HDAMOD fake XRUN rebase mode=%u count=%u keep=%lx queued_before=%lx app=%lx hw=%lx queued=%lx suppressed=%u\n",
+                   (uint32_t)g_hda_mod.position_mode,
+                   g_hda_mod.pcm_fake_xrun_count,
+                   timer_keep_back,
+                   queued_before,
+                   g_hda_mod.pcm_app_pos_bytes,
+                   g_hda_mod.pcm_hw_pos_bytes,
+                   hda_mod_pcm_queued_bytes_local(),
+                   hda_mod_log_take_suppressed_local(
+                       &g_hda_mod.pcm_log_fake_xrun_suppressed));
+    }
+    return 1;
+}
+
+static void hda_mod_pcm_handle_xrun_local(uint32_t halt_on_xrun,
+                                          uint64_t queued_before) {
+    uint32_t silence_bytes;
+    uint64_t target_app_pos;
+
+    if (g_hda_mod.pcm_cbl_bytes == 0u) {
+        return;
+    }
+    if (g_hda_mod.pcm_hw_pos_bytes < g_hda_mod.pcm_app_pos_bytes) {
+        return;
+    }
+    if (halt_on_xrun == 0u) {
+        hda_mod_sd_halt_local(g_hda_mod.output_stream_offset);
+        g_hda_mod.pcm_started = 0u;
+        g_hda_mod.pcm_active = 0u;
+        hda_mod_pcm_sync_debug_indices_local();
+        return;
+    }
+
+    if (halt_on_xrun != 0u && hda_mod_pcm_handle_fake_xrun_local(queued_before)) {
+        return;
+    }
+
+    g_hda_mod.pcm_underrun_count++;
+    if (hda_mod_log_ratelimit_local(&g_hda_mod.pcm_log_xrun_tick,
+                                    &g_hda_mod.pcm_log_xrun_suppressed)) {
+        driver_log("driver: HDAMOD XRUN survive mode=%u count=%u app=%lx hw=%lx queued_before=%lx lpib=%u pad_desc=%u call=%u base=%u total=%u rem=%u:%x play=%u write=%u fill=%u suppressed=%u\n",
+                   (uint32_t)g_hda_mod.position_mode,
+                   g_hda_mod.pcm_underrun_count,
+                   g_hda_mod.pcm_app_pos_bytes,
+                   g_hda_mod.pcm_hw_pos_bytes,
+                   queued_before,
+                   g_hda_mod.pcm_last_lpib,
+                   (uint32_t)g_hda_mod.q_xrun_survive_desc,
+                   g_hda_mod.pcm_current_call_seq,
+                   g_hda_mod.pcm_current_call_base_frame,
+                   g_hda_mod.pcm_total_input_frames,
+                   (uint32_t)(g_hda_mod.pcm_src_remainder >> 32),
+                   (uint32_t)g_hda_mod.pcm_src_remainder,
+                   (uint32_t)g_hda_mod.pcm_play_index,
+                   (uint32_t)g_hda_mod.pcm_write_index,
+                   (uint32_t)g_hda_mod.pcm_fill_count,
+                   hda_mod_log_take_suppressed_local(
+                       &g_hda_mod.pcm_log_xrun_suppressed));
+    }
+
+    silence_bytes = hda_mod_pcm_xrun_survive_bytes_local();
+    if (silence_bytes == 0u) {
+        silence_bytes = HDA_BUFFER_BYTES;
+    }
+    hda_mod_pcm_fill_silence_ahead_local(g_hda_mod.pcm_hw_pos_bytes,
+                                         silence_bytes);
+    target_app_pos = g_hda_mod.pcm_hw_pos_bytes + silence_bytes;
+    if (g_hda_mod.pcm_app_pos_bytes < target_app_pos) {
+        g_hda_mod.pcm_app_pos_bytes = target_app_pos;
+    }
+
+    if (hda_mod_pos_mode_uses_timer_local()) {
+        g_hda_mod.pcm_start_tick = driver_timer_current_ticks();
+        g_hda_mod.pcm_start_hw_pos_bytes = g_hda_mod.pcm_hw_pos_bytes;
+        g_hda_mod.pcm_last_lpib_tick = g_hda_mod.pcm_start_tick;
+    }
+    g_hda_mod.pcm_started = 1u;
+    g_hda_mod.pcm_active = 1u;
+    hda_mod_pcm_sync_debug_indices_local();
+}
+
+static int hda_mod_pcm_update_hw_pos_local(uint32_t halt_on_xrun) {
+    uint64_t queued_before;
+
+    if (g_hda_mod.pcm_started == 0u || g_hda_mod.pcm_cbl_bytes == 0u) {
+        g_hda_mod.pcm_last_lpib_delta = 0u;
+        hda_mod_pcm_sync_debug_indices_local();
+        return 1;
+    }
+
+    queued_before = hda_mod_pcm_queued_bytes_local();
+    if (hda_mod_pos_mode_uses_timer_local()) {
+        hda_mod_pcm_update_timer_position_local(halt_on_xrun);
+    } else {
+        hda_mod_pcm_update_register_position_local(queued_before);
+    }
+
+    hda_mod_pcm_ack_bcis_local();
+    if (g_hda_mod.pcm_hw_pos_bytes >= g_hda_mod.pcm_app_pos_bytes) {
+        hda_mod_pcm_handle_xrun_local(halt_on_xrun, queued_before);
+        hda_mod_pcm_sync_debug_indices_local();
+        return 1;
+    }
+
+    if ((hda_mod_read8_local(g_hda_mod.output_stream_offset + HDA_SD_CTL0) &
+         HDA_SD_CTL_RUN) == 0u) {
         g_hda_mod.pcm_active = 0u;
     }
+
+    hda_mod_pcm_sync_debug_indices_local();
+    return 1;
 }
 
 static int hda_mod_pcm_start_local(uint16_t format) {
     uint32_t sd_off = g_hda_mod.output_stream_offset;
-    uint32_t lpib_samples;
+    uint32_t initial_hw_offset;
+    uint64_t queued;
+    uint32_t start_tick;
 
     if (g_hda_mod.pcm_started != 0u) {
         return 1;
     }
-    if (g_hda_mod.pcm_fill_count == 0u) {
+    if (g_hda_mod.pcm_cbl_bytes == 0u) {
+        g_hda_mod.pcm_cbl_bytes = hda_mod_pcm_ring_bytes_local();
+    }
+    queued = hda_mod_pcm_queued_bytes_local();
+    if (queued == 0u) {
         return 1;
     }
 
     hda_mod_flush_bdl_local();
 
-    g_hda_mod.pcm_cbl_bytes = HDA_BUFFER_BYTES * HDA_BDL_ENTRIES;
     if (!hda_mod_sd_start_local(sd_off,
                                 g_hda_mod.play_stream_id,
                                 format,
@@ -2413,40 +2327,51 @@ static int hda_mod_pcm_start_local(uint16_t format) {
         return 0;
     }
 
-    /* Additional delay after DMA start for hardware stability */
     hda_mod_delay_local(10000u);
 
-    /* Read LPIB multiple times to ensure valid value on real hardware */
-    lpib_samples = hda_mod_read32_local(sd_off + HDA_SD_LPIB);
-    lpib_samples = hda_mod_read32_local(sd_off + HDA_SD_LPIB);
-    g_hda_mod.pcm_last_lpib = lpib_samples % g_hda_mod.pcm_cbl_bytes;
+    g_hda_mod.position_mode = g_hda_mod.q_pos_mode;
+    start_tick = driver_timer_current_ticks();
+    g_hda_mod.pcm_start_tick = start_tick;
+    g_hda_mod.pcm_start_hw_pos_bytes = 0u;
+    g_hda_mod.pcm_hw_pos_bytes = 0u;
+    initial_hw_offset =
+        (uint32_t)(hda_mod_pos_get_hw_bytes_local() % g_hda_mod.pcm_cbl_bytes);
+    g_hda_mod.pcm_last_hw_offset = initial_hw_offset;
+    g_hda_mod.pcm_last_lpib = (uint32_t)hda_mod_pos_get_lpib_bytes_local();
+    g_hda_mod.pcm_last_lpib_delta = 0u;
     g_hda_mod.pcm_position_lpib = g_hda_mod.pcm_last_lpib;
-    g_hda_mod.pcm_position_tick = driver_timer_current_ticks();
-    g_hda_mod.pcm_last_lpib_tick = g_hda_mod.pcm_position_tick;
+    g_hda_mod.pcm_position_tick = start_tick;
+    g_hda_mod.pcm_last_lpib_tick = start_tick;
     g_hda_mod.pcm_position_reject_count = 0u;
     g_hda_mod.pcm_position_valid = 1u;
-    g_hda_mod.pcm_reclaim_tick = g_hda_mod.pcm_position_tick;
+    g_hda_mod.pcm_reclaim_tick = start_tick;
     g_hda_mod.pcm_reclaim_bytes = 0u;
     g_hda_mod.pcm_reclaim_budget_bytes = 0u;
-    g_hda_mod.pcm_play_index = 0u;
     g_hda_mod.pcm_active = 1u;
     g_hda_mod.pcm_started = 1u;
-    driver_log("driver: HDAMOD pcm start ok sd=%x ctl=%x cbl=%u fill=%u write=%u lpib=%u\n",
+
+    hda_mod_pcm_sync_debug_indices_local();
+    driver_log("driver: HDAMOD byte ring start ok sd=%x ctl=%x cbl=%u queued=%lx app=%lx hw=%lx play=%u write=%u lpib=%u posmode=%u timer_hz=%u\n",
                sd_off,
                (uint32_t)hda_mod_read8_local(sd_off + HDA_SD_CTL0),
                g_hda_mod.pcm_cbl_bytes,
-               (uint32_t)g_hda_mod.pcm_fill_count,
+               hda_mod_pcm_queued_bytes_local(),
+               g_hda_mod.pcm_app_pos_bytes,
+               g_hda_mod.pcm_hw_pos_bytes,
+               (uint32_t)g_hda_mod.pcm_play_index,
                (uint32_t)g_hda_mod.pcm_write_index,
-               g_hda_mod.pcm_last_lpib);
+               g_hda_mod.pcm_last_lpib,
+               (uint32_t)g_hda_mod.position_mode,
+               driver_timer_hz());
     return 1;
 }
 
-static int hda_mod_pcm_wait_for_space_local(uint16_t format) {
+static int hda_mod_pcm_wait_for_byte_space_local(uint16_t format,
+                                                  uint32_t min_bytes) {
     uint32_t timer_hz = driver_timer_hz();
     uint32_t start_ticks;
     uint32_t timeout_ticks;
-    uint8_t hw_buffer = 0u;
-    int write_guarded;
+    uint32_t safe_margin = hda_mod_pcm_safe_margin_bytes_local();
 
     if (timer_hz == 0u) {
         timer_hz = 100u;
@@ -2456,180 +2381,52 @@ static int hda_mod_pcm_wait_for_space_local(uint16_t format) {
     if (timeout_ticks < 10u) {
         timeout_ticks = 10u;
     }
+    if (min_bytes < 4u) {
+        min_bytes = 4u;
+    }
     while (1) {
-        write_guarded = hda_mod_pcm_write_is_hw_guarded_local(&hw_buffer);
-        if (g_hda_mod.pcm_fill_count < HDA_PCM_MAX_QUEUED_DESCRIPTORS &&
-            write_guarded == 0) {
+        uint64_t free_bytes;
+        uint64_t queued;
+
+        if (g_hda_mod.pcm_started != 0u) {
+            if (!hda_mod_pcm_update_hw_pos_local(1u)) {
+                return 0;
+            }
+        }
+        queued = hda_mod_pcm_queued_bytes_local();
+        free_bytes = hda_mod_pcm_free_bytes_local();
+        if (free_bytes > safe_margin &&
+            free_bytes - safe_margin >= min_bytes) {
             return 1;
         }
         if (hda_mod_pcm_cancelled_local()) {
             return 0;
         }
-        if (g_hda_mod.pcm_started == 0u && !hda_mod_pcm_start_local(format)) {
+        if (g_hda_mod.pcm_started == 0u &&
+            queued != 0u &&
+            !hda_mod_pcm_start_local(format)) {
             return 0;
         }
-        hda_mod_pcm_reclaim_local(0u);
-        write_guarded = hda_mod_pcm_write_is_hw_guarded_local(&hw_buffer);
-        if (g_hda_mod.pcm_fill_count < HDA_PCM_MAX_QUEUED_DESCRIPTORS &&
-            write_guarded == 0) {
-            return 1;
-        }
-        if (HDA_PCM_RING_HAZARD_TRACE != 0u &&
-            write_guarded != 0 &&
-            hda_mod_pcm_debug_due_local()) {
-            driver_log("driver: HDAMOD ring wait hwbuf=%u guard=%u guard1=%u guard2=%u play=%u write=%u fill=%u part=%u\n",
-                       (uint32_t)hw_buffer,
-                       HDA_PCM_HW_GUARD_DESCRIPTORS,
-                       (uint32_t)((hw_buffer + 1u) % HDA_BDL_ENTRIES),
-                       (uint32_t)((hw_buffer + 2u) % HDA_BDL_ENTRIES),
-                       (uint32_t)g_hda_mod.pcm_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index,
-                       (uint32_t)g_hda_mod.pcm_fill_count,
-                       g_hda_mod.pcm_partial_frames);
-        }
         if (g_hda_mod.pcm_started != 0u && g_hda_mod.pcm_active == 0u) {
-            hda_mod_log("driver: HDAMOD pcm stopped while waiting lpib=%u fill=%u\n",
-                        g_hda_mod.pcm_last_lpib,
-                        (uint32_t)g_hda_mod.pcm_fill_count);
+            hda_mod_log("driver: HDAMOD byte ring stopped while waiting queued=%lx free=%lx app=%lx hw=%lx lpib=%u\n",
+                        queued,
+                        free_bytes,
+                        g_hda_mod.pcm_app_pos_bytes,
+                        g_hda_mod.pcm_hw_pos_bytes,
+                        g_hda_mod.pcm_last_lpib);
             return 0;
         }
         if ((uint32_t)(driver_timer_current_ticks() - start_ticks) > timeout_ticks) {
-            hda_mod_log("driver: HDAMOD pcm wait timeout lpib=%u fill=%u\n",
-                        g_hda_mod.pcm_last_lpib,
-                        (uint32_t)g_hda_mod.pcm_fill_count);
+            hda_mod_log("driver: HDAMOD byte ring wait timeout queued=%lx free=%lx app=%lx hw=%lx lpib=%u\n",
+                        queued,
+                        free_bytes,
+                        g_hda_mod.pcm_app_pos_bytes,
+                        g_hda_mod.pcm_hw_pos_bytes,
+                        g_hda_mod.pcm_last_lpib);
             return 0;
         }
-        hda_mod_delay_local(1000u);
+        hda_mod_wait_for_event_profiled_local(g_hda_profile_pcm_wait);
     }
-}
-
-static int hda_mod_pcm_submit_current_local(uint16_t format) {
-    uint8_t submitted_index;
-    uint32_t fp_a;
-    uint32_t fp_b;
-    uint32_t fp_c;
-    uint32_t lvi = 0xffffffffu;
-    uint32_t lpib = 0xffffffffu;
-    uint32_t submit_gap;
-    uint32_t log_submit;
-
-    if (g_hda_mod.pcm_partial_frames == 0u) {
-        return 1;
-    }
-    if (g_hda_mod.pcm_write_index >= HDA_BDL_ENTRIES) {
-        driver_log("driver: HDAMOD pcm bad write index=%u\n",
-                   (uint32_t)g_hda_mod.pcm_write_index);
-        return 0;
-    }
-    if (!hda_mod_pcm_wait_for_space_local(format)) {
-        driver_log("driver: HDAMOD pcm submit wait failed idx=%u fill=%u play=%u write=%u part=%u started=%u active=%u lpib=%u\n",
-                   (uint32_t)g_hda_mod.pcm_write_index,
-                   (uint32_t)g_hda_mod.pcm_fill_count,
-                   (uint32_t)g_hda_mod.pcm_play_index,
-                   (uint32_t)g_hda_mod.pcm_write_index,
-                   g_hda_mod.pcm_partial_frames,
-                   (uint32_t)g_hda_mod.pcm_started,
-                   (uint32_t)g_hda_mod.pcm_active,
-                   g_hda_mod.pcm_last_lpib);
-        return 0;
-    }
-    if (g_hda_mod.pcm_partial_frames == 0u) {
-        return 1;
-    }
-    if (g_hda_mod.pcm_write_index >= HDA_BDL_ENTRIES) {
-        driver_log("driver: HDAMOD pcm bad write index after wait=%u\n",
-                   (uint32_t)g_hda_mod.pcm_write_index);
-        return 0;
-    }
-    if (g_hda_mod.pcm_partial_frames < HDA_BUFFER_FRAMES) {
-        hda_mod_zero_pcm_tail_local(g_hda_mod.pcm_write_index,
-                                    g_hda_mod.pcm_partial_frames);
-    }
-
-    hda_mod_set_bdl_descriptor_local(g_hda_mod.pcm_write_index,
-                                     HDA_BUFFER_BYTES,
-                                     0u);
-
-    submitted_index = g_hda_mod.pcm_write_index;
-    if (HDA_PCM_TRACE != 0u) {
-        hda_mod_pcm_buffer_fingerprint_local(submitted_index, &fp_a, &fp_b, &fp_c);
-    } else {
-        fp_a = 0u;
-        fp_b = 0u;
-        fp_c = 0u;
-    }
-    g_hda_mod.pcm_submit_seq++;
-    g_hda_mod.pcm_desc_submit[submitted_index] = g_hda_mod.pcm_submit_seq;
-
-    hda_mod_flush_buffer_local(submitted_index);
-    hda_mod_flush_descriptor_local(submitted_index);
-
-    g_hda_mod.pcm_partial_frames = 0u;
-    g_hda_mod.pcm_write_index =
-        (uint8_t)((g_hda_mod.pcm_write_index + 1u) % HDA_BDL_ENTRIES);
-    if (g_hda_mod.pcm_fill_count < HDA_PCM_MAX_QUEUED_DESCRIPTORS) {
-        g_hda_mod.pcm_fill_count++;
-    }
-    if (g_hda_mod.pcm_started == 0u &&
-        g_hda_mod.pcm_fill_count >= HDA_PCM_PREBUFFER_DESCRIPTORS &&
-        !hda_mod_pcm_start_local(format)) {
-        driver_log("driver: HDAMOD pcm submit start failed seq=%u idx=%u fill=%u play=%u write=%u\n",
-                   g_hda_mod.pcm_submit_seq,
-                   (uint32_t)submitted_index,
-                   (uint32_t)g_hda_mod.pcm_fill_count,
-                   (uint32_t)g_hda_mod.pcm_play_index,
-                   (uint32_t)g_hda_mod.pcm_write_index);
-        return 0;
-    }
-    if (g_hda_mod.pcm_started != 0u) {
-        lvi = hda_mod_read16_local(g_hda_mod.output_stream_offset + HDA_SD_LVI);
-        if (g_hda_mod.pcm_cbl_bytes != 0u) {
-            lpib = hda_mod_read32_local(g_hda_mod.output_stream_offset + HDA_SD_LPIB) %
-                g_hda_mod.pcm_cbl_bytes;
-        }
-    }
-    if (HDA_PCM_TRACE != 0u) {
-        hda_mod_log("DBG submit t=%u seq=%u idx=%u lvi=%u lpib=%u fill=%u play=%u write=%u\n",
-                    driver_timer_current_ticks(),
-                    g_hda_mod.pcm_submit_seq,
-                    (uint32_t)submitted_index,
-                    lvi,
-                    lpib,
-                    (uint32_t)g_hda_mod.pcm_fill_count,
-                    (uint32_t)g_hda_mod.pcm_play_index,
-                    (uint32_t)g_hda_mod.pcm_write_index);
-    }
-    submit_gap = g_hda_mod.pcm_last_submit_src_last != 0u &&
-        g_hda_mod.pcm_desc_src_first[submitted_index] !=
-        g_hda_mod.pcm_last_submit_src_last + 1u;
-    log_submit = submit_gap ||
-        g_hda_mod.pcm_submit_seq <= 8u ||
-        ((g_hda_mod.pcm_submit_seq & 31u) == 0u) ||
-        submitted_index == 0u ||
-        g_hda_mod.pcm_desc_frames[submitted_index] != HDA_BUFFER_FRAMES;
-    if (log_submit) {
-        hda_mod_log("driver: HDAMOD pcm submit seq=%u idx=%u call=%u src=%u..%u frames=%u fp=%x:%x:%x gap=%u fill=%u play=%u next=%u lvi=%u lpib=%u\n",
-                    g_hda_mod.pcm_submit_seq,
-                    (uint32_t)submitted_index,
-                    g_hda_mod.pcm_desc_call[submitted_index],
-                    g_hda_mod.pcm_desc_src_first[submitted_index],
-                    g_hda_mod.pcm_desc_src_last[submitted_index],
-                    g_hda_mod.pcm_desc_frames[submitted_index],
-                    fp_a,
-                    fp_b,
-                    fp_c,
-                    submit_gap,
-                    (uint32_t)g_hda_mod.pcm_fill_count,
-                    (uint32_t)g_hda_mod.pcm_play_index,
-                    (uint32_t)g_hda_mod.pcm_write_index,
-                    lvi,
-                    lpib);
-    }
-    if (g_hda_mod.pcm_desc_frames[submitted_index] != 0u) {
-        g_hda_mod.pcm_last_submit_src_last =
-            g_hda_mod.pcm_desc_src_last[submitted_index];
-    }
-    return 1;
 }
 
 static int hda_mod_pcm_enqueue_local(const uint8_t *src,
@@ -2640,128 +2437,156 @@ static int hda_mod_pcm_enqueue_local(const uint8_t *src,
                                      uint16_t format) {
     uint64_t src_pos = g_hda_mod.pcm_src_remainder;
     uint64_t input_end = (uint64_t)input_frames << 32;
+    uint32_t src_stride = channels * (bits_per_sample / 8u);
 
-    hda_mod_log("driver: HDAMOD pcm enqueue enter call=%u base=%u frames=%u fill=%u play=%u write=%u part=%u started=%u active=%u\n",
+    if (src == NULL || src_stride == 0u || input_frames == 0u) {
+        return 0;
+    }
+    if (g_hda_mod.pcm_cbl_bytes == 0u) {
+        g_hda_mod.pcm_cbl_bytes = hda_mod_pcm_ring_bytes_local();
+    }
+
+    hda_mod_log("driver: HDAMOD byte enqueue enter call=%u base=%u frames=%u queued=%lx app=%lx hw=%lx play=%u write=%u started=%u active=%u\n",
                 g_hda_mod.pcm_current_call_seq,
                 g_hda_mod.pcm_current_call_base_frame,
                 input_frames,
-                (uint32_t)g_hda_mod.pcm_fill_count,
+                hda_mod_pcm_queued_bytes_local(),
+                g_hda_mod.pcm_app_pos_bytes,
+                g_hda_mod.pcm_hw_pos_bytes,
                 (uint32_t)g_hda_mod.pcm_play_index,
                 (uint32_t)g_hda_mod.pcm_write_index,
-                g_hda_mod.pcm_partial_frames,
                 (uint32_t)g_hda_mod.pcm_started,
                 (uint32_t)g_hda_mod.pcm_active);
     while ((uint32_t)(src_pos >> 32) < input_frames) {
         uint64_t src_before;
         uint64_t src_last_pos;
+        uint64_t app_before;
+        uint64_t queued;
+        uint64_t free_bytes;
+        uint32_t safe_margin;
+        uint32_t remaining_output_bytes;
+        uint32_t refill_bytes;
+        uint32_t write_offset;
+        uint32_t safe_write_bytes;
+        uint32_t max_frames;
         uint32_t abs_first;
         uint32_t abs_last;
-        uint32_t partial_before;
         uint32_t written_frames;
-        uint8_t target_index;
+        uint32_t written_bytes;
+        uint64_t convert_start;
 
-        hda_mod_pcm_reclaim_local(0u);
+        if (g_hda_mod.pcm_started != 0u) {
+            if (!hda_mod_pcm_update_hw_pos_local(1u)) {
+                return 0;
+            }
+        }
         if (hda_mod_pcm_cancelled_local()) {
             return 0;
         }
-        if (g_hda_mod.pcm_current_call_seq == 0u) {
-            hda_mod_log("driver: HDAMOD pcm enqueue call lost after reclaim src=%u:%x fill=%u play=%u write=%u part=%u started=%u active=%u\n",
-                        (uint32_t)(src_pos >> 32),
-                        (uint32_t)src_pos,
-                        (uint32_t)g_hda_mod.pcm_fill_count,
-                        (uint32_t)g_hda_mod.pcm_play_index,
-                        (uint32_t)g_hda_mod.pcm_write_index,
-                        g_hda_mod.pcm_partial_frames,
-                        (uint32_t)g_hda_mod.pcm_started,
-                        (uint32_t)g_hda_mod.pcm_active);
+        queued = hda_mod_pcm_queued_bytes_local();
+        if (g_hda_mod.pcm_started == 0u &&
+            queued >= hda_mod_pcm_prebuffer_bytes_local() &&
+            !hda_mod_pcm_start_local(format)) {
+            return 0;
         }
-        if (g_hda_mod.pcm_partial_frames == 0u) {
-            if (!hda_mod_pcm_wait_for_space_local(format)) {
-                driver_log("driver: HDAMOD pcm enqueue wait failed call=%u src=%u:%x fill=%u play=%u write=%u part=%u started=%u active=%u lpib=%u\n",
+        free_bytes = hda_mod_pcm_free_bytes_local();
+        safe_margin = hda_mod_pcm_safe_margin_bytes_local();
+        remaining_output_bytes =
+            hda_mod_pcm_output_bytes_remaining_local(src_pos,
+                                                     input_end,
+                                                     src_step);
+        refill_bytes = remaining_output_bytes;
+        if (refill_bytes > hda_mod_pcm_write_quantum_bytes_local()) {
+            refill_bytes = hda_mod_pcm_write_quantum_bytes_local();
+        }
+        if (refill_bytes < 4u) {
+            refill_bytes = 4u;
+        }
+        if (free_bytes <= safe_margin ||
+            free_bytes - safe_margin < refill_bytes) {
+            if (!hda_mod_pcm_wait_for_byte_space_local(format, refill_bytes)) {
+                driver_log("driver: HDAMOD byte enqueue wait failed call=%u src=%u:%x queued=%lx free=%lx app=%lx hw=%lx started=%u active=%u lpib=%u\n",
                            g_hda_mod.pcm_current_call_seq,
                            (uint32_t)(src_pos >> 32),
                            (uint32_t)src_pos,
-                           (uint32_t)g_hda_mod.pcm_fill_count,
-                           (uint32_t)g_hda_mod.pcm_play_index,
-                           (uint32_t)g_hda_mod.pcm_write_index,
-                           g_hda_mod.pcm_partial_frames,
+                           hda_mod_pcm_queued_bytes_local(),
+                           hda_mod_pcm_free_bytes_local(),
+                           g_hda_mod.pcm_app_pos_bytes,
+                           g_hda_mod.pcm_hw_pos_bytes,
                            (uint32_t)g_hda_mod.pcm_started,
                            (uint32_t)g_hda_mod.pcm_active,
                            g_hda_mod.pcm_last_lpib);
                 return 0;
             }
-            if (g_hda_mod.pcm_current_call_seq == 0u) {
-                hda_mod_log("driver: HDAMOD pcm enqueue call lost after wait src=%u:%x fill=%u play=%u write=%u part=%u started=%u active=%u\n",
-                            (uint32_t)(src_pos >> 32),
-                            (uint32_t)src_pos,
-                            (uint32_t)g_hda_mod.pcm_fill_count,
-                            (uint32_t)g_hda_mod.pcm_play_index,
-                            (uint32_t)g_hda_mod.pcm_write_index,
-                            g_hda_mod.pcm_partial_frames,
-                            (uint32_t)g_hda_mod.pcm_started,
-                            (uint32_t)g_hda_mod.pcm_active);
-            }
-            hda_mod_zero_buffer_local(g_hda_mod.pcm_write_index);
-            hda_mod_pcm_reset_desc_meta_local(g_hda_mod.pcm_write_index);
+            free_bytes = hda_mod_pcm_free_bytes_local();
         }
-        target_index = g_hda_mod.pcm_write_index;
-        partial_before = g_hda_mod.pcm_partial_frames;
+        if (free_bytes <= safe_margin) {
+            continue;
+        }
+        max_frames = (uint32_t)((free_bytes - safe_margin) / 4u);
+        if (max_frames > hda_mod_pcm_write_quantum_bytes_local() / 4u) {
+            max_frames = hda_mod_pcm_write_quantum_bytes_local() / 4u;
+        }
+        if (max_frames == 0u) {
+            continue;
+        }
         src_before = src_pos;
+        app_before = g_hda_mod.pcm_app_pos_bytes;
+        write_offset = (uint32_t)(app_before % g_hda_mod.pcm_cbl_bytes);
+        safe_write_bytes =
+            hda_mod_pcm_guarded_write_bytes_local(write_offset,
+                                                  max_frames * 4u);
+        if (safe_write_bytes < 4u) {
+            (void)hda_mod_pcm_update_hw_pos_local(1u);
+            hda_mod_delay_local(1000u);
+            continue;
+        }
+        max_frames = safe_write_bytes / 4u;
+        convert_start = driver_profile_clock();
         written_frames =
-            hda_mod_fill_pcm_frames_local(target_index,
-                                          partial_before,
-                                          src,
-                                          input_frames,
-                                          &src_pos,
-                                          src_step,
-                                          channels,
-                                          bits_per_sample);
+            hda_mod_pcm_fill_ring_frames_local(write_offset,
+                                               max_frames,
+                                               src,
+                                               input_frames,
+                                               &src_pos,
+                                               src_step,
+                                               src_stride,
+                                               channels,
+                                               bits_per_sample);
+        driver_profile_record(g_hda_profile_pcm_convert,
+                              driver_profile_clock() - convert_start,
+                              (uint64_t)written_frames * 4u);
         if (written_frames == 0u) {
             break;
         }
+        written_bytes = written_frames * 4u;
+        hda_mod_pcm_flush_ring_range_local(write_offset, written_bytes);
+        g_hda_mod.pcm_app_pos_bytes += written_bytes;
+        hda_mod_pcm_sync_debug_indices_local();
         src_last_pos = src_pos >= src_step ? src_pos - src_step : src_pos;
         abs_first = g_hda_mod.pcm_current_call_base_frame +
             (uint32_t)(src_before >> 32);
         abs_last = g_hda_mod.pcm_current_call_base_frame +
             (uint32_t)(src_last_pos >> 32);
-        if (g_hda_mod.pcm_desc_frames[target_index] == 0u) {
-            g_hda_mod.pcm_desc_src_first[target_index] = abs_first;
-            g_hda_mod.pcm_desc_call[target_index] =
-                g_hda_mod.pcm_current_call_seq;
-        }
-        g_hda_mod.pcm_desc_src_last[target_index] = abs_last;
-        g_hda_mod.pcm_desc_frames[target_index] += written_frames;
-        if (partial_before != 0u ||
-            written_frames != HDA_BUFFER_FRAMES ||
+        if (written_frames != max_frames ||
             g_hda_mod.pcm_current_call_seq == 0u) {
-            hda_mod_log("driver: HDAMOD pcm fill call=%u idx=%u part=%u+%u src=%u..%u fill=%u play=%u write=%u rem=%u:%x\n",
+            hda_mod_log("driver: HDAMOD byte fill call=%u off=%u bytes=%u src=%u..%u queued=%lx app=%lx hw=%lx play=%u write=%u rem=%u:%x\n",
                         g_hda_mod.pcm_current_call_seq,
-                        (uint32_t)target_index,
-                        partial_before,
-                        written_frames,
+                        write_offset,
+                        written_bytes,
                         abs_first,
                         abs_last,
-                        (uint32_t)g_hda_mod.pcm_fill_count,
+                        hda_mod_pcm_queued_bytes_local(),
+                        g_hda_mod.pcm_app_pos_bytes,
+                        g_hda_mod.pcm_hw_pos_bytes,
                         (uint32_t)g_hda_mod.pcm_play_index,
                         (uint32_t)g_hda_mod.pcm_write_index,
                         (uint32_t)(src_pos >> 32),
                         (uint32_t)src_pos);
         }
-        g_hda_mod.pcm_partial_frames += written_frames;
-        if (g_hda_mod.pcm_partial_frames == HDA_BUFFER_FRAMES &&
-            !hda_mod_pcm_submit_current_local(format)) {
-            driver_log("driver: HDAMOD pcm enqueue submit failed call=%u idx=%u src=%u:%x fill=%u play=%u write=%u part=%u started=%u active=%u lpib=%u\n",
-                       g_hda_mod.pcm_current_call_seq,
-                       (uint32_t)target_index,
-                       (uint32_t)(src_pos >> 32),
-                       (uint32_t)src_pos,
-                       (uint32_t)g_hda_mod.pcm_fill_count,
-                       (uint32_t)g_hda_mod.pcm_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index,
-                       g_hda_mod.pcm_partial_frames,
-                       (uint32_t)g_hda_mod.pcm_started,
-                       (uint32_t)g_hda_mod.pcm_active,
-                       g_hda_mod.pcm_last_lpib);
+        if (g_hda_mod.pcm_started == 0u &&
+            hda_mod_pcm_queued_bytes_local() >= hda_mod_pcm_prebuffer_bytes_local() &&
+            !hda_mod_pcm_start_local(format)) {
             return 0;
         }
     }
@@ -2788,40 +2613,41 @@ static int hda_mod_pcm_drain_local(void) {
         return 1;
     }
     start_ticks = driver_timer_current_ticks();
-    queued_bytes = (uint64_t)g_hda_mod.pcm_fill_count * HDA_BUFFER_BYTES;
-    if (queued_bytes > g_hda_mod.pcm_reclaim_bytes) {
-        queued_bytes -= g_hda_mod.pcm_reclaim_bytes;
-    } else {
-        queued_bytes = 0u;
-    }
+    (void)hda_mod_pcm_update_hw_pos_local(0u);
+    queued_bytes = hda_mod_pcm_queued_bytes_local();
     drain_ticks = (queued_bytes * timer_hz + HDA_OUTPUT_BYTES_PER_SECOND - 1u) /
         HDA_OUTPUT_BYTES_PER_SECOND;
     timeout_ticks = (uint32_t)drain_ticks + timer_hz * 5u;
     if (timeout_ticks < timer_hz * 10u) {
         timeout_ticks = timer_hz * 10u;
     }
-    while (g_hda_mod.pcm_fill_count != 0u) {
-        hda_mod_pcm_reclaim_local(1u);
+    while (hda_mod_pcm_queued_bytes_local() != 0u) {
+        (void)hda_mod_pcm_update_hw_pos_local(0u);
         if (hda_mod_pcm_cancelled_local()) {
             return 0;
         }
-        if (g_hda_mod.pcm_fill_count == 0u) {
+        if (hda_mod_pcm_queued_bytes_local() == 0u) {
             break;
         }
         if (g_hda_mod.pcm_active == 0u) {
-            hda_mod_log("driver: HDAMOD pcm drain stopped lpib=%u fill=%u\n",
+            hda_mod_log("driver: HDAMOD byte drain stopped lpib=%u queued=%lx app=%lx hw=%lx\n",
                         g_hda_mod.pcm_last_lpib,
-                        (uint32_t)g_hda_mod.pcm_fill_count);
+                        hda_mod_pcm_queued_bytes_local(),
+                        g_hda_mod.pcm_app_pos_bytes,
+                        g_hda_mod.pcm_hw_pos_bytes);
             return 0;
         }
         if ((uint32_t)(driver_timer_current_ticks() - start_ticks) > timeout_ticks) {
-            hda_mod_log("driver: HDAMOD pcm drain timeout lpib=%u fill=%u\n",
+            hda_mod_log("driver: HDAMOD byte drain timeout lpib=%u queued=%lx app=%lx hw=%lx\n",
                         g_hda_mod.pcm_last_lpib,
-                        (uint32_t)g_hda_mod.pcm_fill_count);
+                        hda_mod_pcm_queued_bytes_local(),
+                        g_hda_mod.pcm_app_pos_bytes,
+                        g_hda_mod.pcm_hw_pos_bytes);
             return 0;
         }
-        hda_mod_delay_local(1000u);
+        hda_mod_wait_for_event_profiled_local(g_hda_profile_pcm_drain);
     }
+    hda_mod_pcm_log_byte_state_local("drain-end");
     hda_mod_sd_halt_local(g_hda_mod.output_stream_offset);
     hda_mod_reset_pcm_state_local();
     return 1;
@@ -2974,30 +2800,43 @@ static int hda_mod_play_pcm_local(void *ctx,
         }
     }
     if (g_hda_mod.pcm_started == 0u) {
-        new_stream = 1u;
-        if (g_hda_mod.pcm_fill_count != 0u ||
-            g_hda_mod.pcm_partial_frames != 0u ||
-            g_hda_mod.pcm_write_index != 0u ||
-            g_hda_mod.pcm_active != 0u) {
-            hda_mod_log("driver: HDAMOD pcm reset before call old active=%u fill=%u play=%u write=%u part=%u rem=%u:%x total=%u\n",
-                        (uint32_t)g_hda_mod.pcm_active,
-                        (uint32_t)g_hda_mod.pcm_fill_count,
-                        (uint32_t)g_hda_mod.pcm_play_index,
-                        (uint32_t)g_hda_mod.pcm_write_index,
-                        g_hda_mod.pcm_partial_frames,
-                        (uint32_t)(g_hda_mod.pcm_src_remainder >> 32),
-                        (uint32_t)g_hda_mod.pcm_src_remainder,
-                        g_hda_mod.pcm_total_input_frames);
-        }
-        hda_mod_sd_halt_local(g_hda_mod.output_stream_offset);
-        hda_mod_reset_pcm_state_local();
-        g_hda_mod.pcm_input_sample_rate = sample_rate;
-        g_hda_mod.pcm_input_channels = channels;
-        g_hda_mod.pcm_input_bits = bits_per_sample;
-        g_hda_mod.pcm_output_sample_rate = output_sample_rate;
-        hda_mod_zero_all_pcm_buffers_local();
-        if (!hda_mod_configure_playback_converter_local(format)) {
-            return hda_mod_restore_log_and_return_local(saved_log, 0);
+        uint32_t keep_buffered =
+            g_hda_mod.pcm_cbl_bytes != 0u &&
+            hda_mod_pcm_queued_bytes_local() != 0u &&
+            hda_mod_pcm_input_matches_local(sample_rate,
+                                            channels,
+                                            bits_per_sample,
+                                            output_sample_rate);
+
+        if (!keep_buffered) {
+            new_stream = 1u;
+            if (g_hda_mod.pcm_fill_count != 0u ||
+                g_hda_mod.pcm_partial_frames != 0u ||
+                g_hda_mod.pcm_write_index != 0u ||
+                g_hda_mod.pcm_active != 0u) {
+                hda_mod_log("driver: HDAMOD pcm reset before call old active=%u fill=%u play=%u write=%u part=%u rem=%u:%x total=%u\n",
+                            (uint32_t)g_hda_mod.pcm_active,
+                            (uint32_t)g_hda_mod.pcm_fill_count,
+                            (uint32_t)g_hda_mod.pcm_play_index,
+                            (uint32_t)g_hda_mod.pcm_write_index,
+                            g_hda_mod.pcm_partial_frames,
+                            (uint32_t)(g_hda_mod.pcm_src_remainder >> 32),
+                            (uint32_t)g_hda_mod.pcm_src_remainder,
+                            g_hda_mod.pcm_total_input_frames);
+            }
+            hda_mod_sd_halt_local(g_hda_mod.output_stream_offset);
+            hda_mod_reset_pcm_state_local();
+            g_hda_mod.pcm_input_sample_rate = sample_rate;
+            g_hda_mod.pcm_input_channels = channels;
+            g_hda_mod.pcm_input_bits = bits_per_sample;
+            g_hda_mod.pcm_output_sample_rate = output_sample_rate;
+            hda_mod_zero_all_pcm_buffers_local();
+            hda_mod_pcm_prepare_byte_ring_local();
+            if (!hda_mod_configure_playback_converter_local(format)) {
+                return hda_mod_restore_log_and_return_local(saved_log, 0);
+            }
+        } else {
+            hda_mod_pcm_sync_debug_indices_local();
         }
         hda_mod_log("driver: HDAMOD pcm begin in=%u out=%u fmt=%x ch=%u bits=%u\n",
                     sample_rate,
@@ -3065,26 +2904,17 @@ static int hda_mod_play_pcm_local(void *ctx,
         hda_mod_reset_pcm_state_local();
         return hda_mod_restore_log_and_return_local(saved_log, 0);
     }
-    if (async == 0u && !hda_mod_pcm_submit_current_local(format)) {
-        hda_mod_log("driver: HDAMOD pcm call final submit failed id=%u fill=%u play=%u write=%u part=%u\n",
-                    call_seq,
-                    (uint32_t)g_hda_mod.pcm_fill_count,
-                    (uint32_t)g_hda_mod.pcm_play_index,
-                    (uint32_t)g_hda_mod.pcm_write_index,
-                    g_hda_mod.pcm_partial_frames);
-        hda_mod_sd_halt_local(g_hda_mod.output_stream_offset);
-        hda_mod_reset_pcm_state_local();
-        return hda_mod_restore_log_and_return_local(saved_log, 0);
-    }
     if (g_hda_mod.pcm_started == 0u &&
         async != 0u &&
-        g_hda_mod.pcm_fill_count < HDA_PCM_PREBUFFER_DESCRIPTORS) {
+        hda_mod_pcm_queued_bytes_local() < hda_mod_pcm_prebuffer_bytes_local()) {
         return hda_mod_restore_log_and_return_local(saved_log, 1);
     }
-    if (g_hda_mod.pcm_started == 0u && !hda_mod_pcm_start_local(format)) {
-        hda_mod_log("driver: HDAMOD pcm call start failed id=%u fill=%u play=%u write=%u part=%u\n",
+    if (g_hda_mod.pcm_started == 0u &&
+        hda_mod_pcm_queued_bytes_local() != 0u &&
+        !hda_mod_pcm_start_local(format)) {
+        hda_mod_log("driver: HDAMOD byte call start failed id=%u queued=%lx play=%u write=%u part=%u\n",
                     call_seq,
-                    (uint32_t)g_hda_mod.pcm_fill_count,
+                    hda_mod_pcm_queued_bytes_local(),
                     (uint32_t)g_hda_mod.pcm_play_index,
                     (uint32_t)g_hda_mod.pcm_write_index,
                     g_hda_mod.pcm_partial_frames);
@@ -3200,8 +3030,8 @@ static int hda_mod_play_stream_local(void *ctx,
         return hda_mod_restore_log_and_return_local(saved_log, 0);
     }
     read_capacity = HDA_STREAM_READ_PAGES * HDA_PAGE_BYTES;
-    if (read_capacity > HDA_STREAM_READ_CHUNK_BYTES) {
-        read_capacity = HDA_STREAM_READ_CHUNK_BYTES;
+    if (read_capacity > hda_mod_stream_read_chunk_bytes_local()) {
+        read_capacity = hda_mod_stream_read_chunk_bytes_local();
     }
     read_capacity -= read_capacity % src_frame_bytes;
     if (read_capacity == 0u) {
@@ -3229,6 +3059,7 @@ static int hda_mod_play_stream_local(void *ctx,
     g_hda_mod.pcm_cancel_ctx = stream->ctx;
     g_hda_mod.pcm_cancelled = stream->cancelled;
     hda_mod_zero_all_pcm_buffers_local();
+    hda_mod_pcm_prepare_byte_ring_local();
     if (!hda_mod_configure_playback_converter_local(format)) {
         fail_stage = 1u;
         goto done;
@@ -3249,6 +3080,10 @@ static int hda_mod_play_stream_local(void *ctx,
         uint32_t play_bytes;
         uint32_t read_start;
         uint32_t read_ticks;
+        uint32_t enqueue_start = 0u;
+        uint32_t enqueue_ticks = 0u;
+        uint64_t read_cycle_start;
+        uint64_t enqueue_app_before = g_hda_mod.pcm_app_pos_bytes;
         uint8_t started_before;
 
         want -= want % src_frame_bytes;
@@ -3260,17 +3095,31 @@ static int hda_mod_play_stream_local(void *ctx,
             goto done;
         }
         read_start = driver_timer_current_ticks();
+        read_cycle_start = driver_profile_clock();
         got = stream->read(stream->ctx, read_buffer, want);
+        driver_profile_record(g_hda_profile_stream_read,
+                              driver_profile_clock() - read_cycle_start,
+                              got);
         read_ticks = (uint32_t)(driver_timer_current_ticks() - read_start);
-        if (HDA_STREAM_SLOW_READ_TRACE != 0u && read_ticks >= slow_read_ticks) {
-            driver_log("driver: HDAMOD slow read ticks=%u want=%u got=%u remaining=%u fill=%u play=%u write=%u\n",
+        if (HDA_STREAM_SLOW_READ_TRACE != 0u &&
+            read_ticks >= slow_read_ticks &&
+            hda_mod_log_ratelimit_local(&g_hda_mod.pcm_log_slow_read_tick,
+                                        &g_hda_mod.pcm_log_slow_read_suppressed)) {
+            driver_log("driver: HDAMOD slow read ticks=%u want=%u got=%u remaining=%u lpib=%u delta=%u app=%lx hw=%lx queued=%lx free=%lx started=%u active=%u suppressed=%u\n",
                        read_ticks,
                        want,
                        got,
                        remaining,
-                       (uint32_t)g_hda_mod.pcm_fill_count,
-                       (uint32_t)g_hda_mod.pcm_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index);
+                       g_hda_mod.pcm_last_lpib,
+                       g_hda_mod.pcm_last_lpib_delta,
+                       g_hda_mod.pcm_app_pos_bytes,
+                       g_hda_mod.pcm_hw_pos_bytes,
+                       hda_mod_pcm_queued_bytes_local(),
+                       hda_mod_pcm_free_bytes_local(),
+                       (uint32_t)g_hda_mod.pcm_started,
+                       (uint32_t)g_hda_mod.pcm_active,
+                       hda_mod_log_take_suppressed_local(
+                           &g_hda_mod.pcm_log_slow_read_suppressed));
         }
         if (got == 0u) {
             fail_stage = 3u;
@@ -3293,36 +3142,56 @@ static int hda_mod_play_stream_local(void *ctx,
             g_hda_mod.pcm_current_call_seq = call_seq;
             g_hda_mod.pcm_current_call_base_frame = call_base_frame;
             g_hda_mod.pcm_total_input_frames += input_frames;
+            enqueue_start = driver_timer_current_ticks();
             if (!hda_mod_pcm_enqueue_local(read_buffer,
                                            input_frames,
                                            src_step,
                                            stream->channels,
                                            stream->bits_per_sample,
                                            format)) {
+                enqueue_ticks =
+                    (uint32_t)(driver_timer_current_ticks() - enqueue_start);
+                driver_log("driver: HDAMOD stream enqueue failed seq=%u read_ticks=%u enqueue_ticks=%u got=%u wrote=%lx lpib=%u delta=%u app=%lx hw=%lx queued=%lx free=%lx\n",
+                           read_seq,
+                           read_ticks,
+                           enqueue_ticks,
+                           got,
+                           g_hda_mod.pcm_app_pos_bytes - enqueue_app_before,
+                           g_hda_mod.pcm_last_lpib,
+                           g_hda_mod.pcm_last_lpib_delta,
+                           g_hda_mod.pcm_app_pos_bytes,
+                           g_hda_mod.pcm_hw_pos_bytes,
+                           hda_mod_pcm_queued_bytes_local(),
+                           hda_mod_pcm_free_bytes_local());
                 fail_stage = 5u;
                 goto done;
             }
+            enqueue_ticks =
+                (uint32_t)(driver_timer_current_ticks() - enqueue_start);
         }
         if (read_seq <= 4u ||
             started_before != g_hda_mod.pcm_started ||
             (read_seq & 63u) == 0u) {
-            uint32_t lpib = 0u;
-
-            if (g_hda_mod.pcm_cbl_bytes != 0u) {
-                lpib = hda_mod_pcm_read_lpib_local();
-            }
-            driver_log("driver: HDAMOD stream chunk seq=%u got=%u play=%u remain=%u fill=%u playi=%u write=%u part=%u started=%u active=%u lpib=%u\n",
+            driver_log("driver: HDAMOD stream chunk seq=%u got=%u play=%u remain=%u read_ticks=%u enqueue_ticks=%u wrote=%lx lpib=%u delta=%u app=%lx hw=%lx queued=%lx free=%lx started=%u active=%u playi=%u write=%u fill=%u part=%u\n",
                        read_seq,
                        got,
                        play_bytes,
                        remaining,
-                       (uint32_t)g_hda_mod.pcm_fill_count,
-                       (uint32_t)g_hda_mod.pcm_play_index,
-                       (uint32_t)g_hda_mod.pcm_write_index,
-                       g_hda_mod.pcm_partial_frames,
+                       read_ticks,
+                       enqueue_ticks,
+                       g_hda_mod.pcm_app_pos_bytes - enqueue_app_before,
+                       g_hda_mod.pcm_last_lpib,
+                       g_hda_mod.pcm_last_lpib_delta,
+                       g_hda_mod.pcm_app_pos_bytes,
+                       g_hda_mod.pcm_hw_pos_bytes,
+                       hda_mod_pcm_queued_bytes_local(),
+                       hda_mod_pcm_free_bytes_local(),
                        (uint32_t)g_hda_mod.pcm_started,
                        (uint32_t)g_hda_mod.pcm_active,
-                       lpib);
+                       (uint32_t)g_hda_mod.pcm_play_index,
+                       (uint32_t)g_hda_mod.pcm_write_index,
+                       (uint32_t)g_hda_mod.pcm_fill_count,
+                       g_hda_mod.pcm_partial_frames);
         }
         if (got >= remaining) {
             remaining = 0u;
@@ -3334,15 +3203,13 @@ static int hda_mod_play_stream_local(void *ctx,
             goto done;
         }
     }
-    if (!hda_mod_pcm_submit_current_local(format)) {
-        fail_stage = 7u;
-        goto done;
-    }
     if (hda_mod_pcm_cancelled_local()) {
         fail_stage = 8u;
         goto done;
     }
-    if (g_hda_mod.pcm_started == 0u && !hda_mod_pcm_start_local(format)) {
+    if (g_hda_mod.pcm_started == 0u &&
+        hda_mod_pcm_queued_bytes_local() != 0u &&
+        !hda_mod_pcm_start_local(format)) {
         fail_stage = 9u;
         goto done;
     }
@@ -3355,27 +3222,35 @@ static int hda_mod_play_stream_local(void *ctx,
 done:
     driver_free_pages(read_buffer, HDA_STREAM_READ_PAGES);
     if (ok) {
-        driver_log("driver: HDAMOD stream ok chunks=%u fill=%u play=%u write=%u part=%u started=%u active=%u lpib=%u rem=%u\n",
+        driver_log("driver: HDAMOD stream ok chunks=%u lpib=%u delta=%u app=%lx hw=%lx queued=%lx free=%lx started=%u active=%u play=%u write=%u fill=%u part=%u\n",
                    read_seq,
-                   (uint32_t)g_hda_mod.pcm_fill_count,
-                   (uint32_t)g_hda_mod.pcm_play_index,
-                   (uint32_t)g_hda_mod.pcm_write_index,
-                   g_hda_mod.pcm_partial_frames,
+                   g_hda_mod.pcm_last_lpib,
+                   g_hda_mod.pcm_last_lpib_delta,
+                   g_hda_mod.pcm_app_pos_bytes,
+                   g_hda_mod.pcm_hw_pos_bytes,
+                   hda_mod_pcm_queued_bytes_local(),
+                   hda_mod_pcm_free_bytes_local(),
                    (uint32_t)g_hda_mod.pcm_started,
                    (uint32_t)g_hda_mod.pcm_active,
-                   g_hda_mod.pcm_last_lpib,
-                   g_hda_mod.pcm_reclaim_bytes);
+                   (uint32_t)g_hda_mod.pcm_play_index,
+                   (uint32_t)g_hda_mod.pcm_write_index,
+                   (uint32_t)g_hda_mod.pcm_fill_count,
+                   g_hda_mod.pcm_partial_frames);
     } else {
-        driver_log("driver: HDAMOD stream failed stage=%u fill=%u play=%u write=%u part=%u started=%u active=%u lpib=%u rem=%u\n",
+        driver_log("driver: HDAMOD stream failed stage=%u lpib=%u delta=%u app=%lx hw=%lx queued=%lx free=%lx started=%u active=%u play=%u write=%u fill=%u part=%u\n",
                    fail_stage,
-                   (uint32_t)g_hda_mod.pcm_fill_count,
-                   (uint32_t)g_hda_mod.pcm_play_index,
-                   (uint32_t)g_hda_mod.pcm_write_index,
-                   g_hda_mod.pcm_partial_frames,
+                   g_hda_mod.pcm_last_lpib,
+                   g_hda_mod.pcm_last_lpib_delta,
+                   g_hda_mod.pcm_app_pos_bytes,
+                   g_hda_mod.pcm_hw_pos_bytes,
+                   hda_mod_pcm_queued_bytes_local(),
+                   hda_mod_pcm_free_bytes_local(),
                    (uint32_t)g_hda_mod.pcm_started,
                    (uint32_t)g_hda_mod.pcm_active,
-                   g_hda_mod.pcm_last_lpib,
-                   g_hda_mod.pcm_reclaim_bytes);
+                   (uint32_t)g_hda_mod.pcm_play_index,
+                   (uint32_t)g_hda_mod.pcm_write_index,
+                   (uint32_t)g_hda_mod.pcm_fill_count,
+                   g_hda_mod.pcm_partial_frames);
         hda_mod_sd_halt_local(g_hda_mod.output_stream_offset);
         hda_mod_reset_pcm_state_local();
     }
@@ -3488,6 +3363,13 @@ static int hda_mod_init(void) {
     uint16_t command;
 
     driver_memset(&g_hda_mod, 0, sizeof(g_hda_mod));
+    g_hda_profile_spin = driver_profile_register("hda.spin");
+    g_hda_profile_flush = driver_profile_register("hda.cache-flush");
+    g_hda_profile_codec_cmd = driver_profile_register("hda.codec-cmd");
+    g_hda_profile_pcm_convert = driver_profile_register("hda.pcm-convert");
+    g_hda_profile_stream_read = driver_profile_register("hda.stream-read");
+    g_hda_profile_pcm_wait = driver_profile_register("hda.pcm-wait");
+    g_hda_profile_pcm_drain = driver_profile_register("hda.pcm-drain");
     if (!driver_pci_find_by_class(HDA_PCI_CLASS_MULTIMEDIA,
                                   HDA_PCI_SUBCLASS_AUDIO,
                                   0u,
@@ -3538,16 +3420,18 @@ static int hda_mod_init(void) {
     g_hda_mod.initialized = hda_mod_controller_reset_local() ? 1u : 0u;
     hda_mod_refresh_registers_local();
     hda_mod_probe_codec_vendor_local();
+    hda_mod_apply_codec_quirk_local();
     if (!hda_mod_register_audio_local()) {
         return 0;
     }
     hda_mod_publish_status_local();
-    hda_mod_log("driver: HDAMOD build=resync12 hwguard=%u resync_guard=%u prebuf=%u maxq=%u stream_chunk=%u\n",
-                HDA_PCM_HW_GUARD_DESCRIPTORS,
-                HDA_PCM_RECOVERY_GUARD_DESCRIPTORS,
-                HDA_PCM_PREBUFFER_DESCRIPTORS,
-                HDA_PCM_MAX_QUEUED_DESCRIPTORS,
-                HDA_STREAM_READ_CHUNK_BYTES);
+    hda_mod_log("driver: HDAMOD build=byte-ring32-contig-refill margin=%u pos_tol=%u prebuf=%u ring=%u write_quantum=%u stream_chunk=%u\n",
+                (uint32_t)g_hda_mod.q_safe_margin_desc,
+                HDA_PCM_POSITION_TOLERANCE_DESCRIPTORS,
+                (uint32_t)g_hda_mod.q_prebuffer_desc,
+                HDA_BDL_ENTRIES,
+                hda_mod_pcm_write_quantum_bytes_local(),
+                hda_mod_stream_read_chunk_bytes_local());
     hda_mod_log("driver: HDAMOD init bdf=%u:%u.%u cmd=%x mmio=%x:%x gcap=%x ver=%u.%u codecs=%x codec=%x init=%u\n",
                 (uint32_t)g_hda_mod.bus,
                 (uint32_t)g_hda_mod.slot,

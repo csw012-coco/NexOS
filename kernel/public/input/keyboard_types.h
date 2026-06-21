@@ -74,9 +74,11 @@ enum keyboard_keycode {
     KEYBOARD_KEY_SLASH,
     KEYBOARD_KEY_LEFT_ALT,
     KEYBOARD_KEY_RIGHT_ALT,
+    KEYBOARD_KEY_HANGUL,
     KEYBOARD_KEY_F1,
     KEYBOARD_KEY_F2,
-    KEYBOARD_KEY_F3
+    KEYBOARD_KEY_F3,
+    KEYBOARD_KEY_F4
 };
 
 struct keyboard_event {

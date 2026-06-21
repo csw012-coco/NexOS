@@ -43,6 +43,14 @@ extern kernel_prepare_user_frame_return
 %%done:
 %endmacro
 
+%macro CALL_FRAME_HANDLER 2
+    mov r15, rsp
+    and rsp, -16
+    mov %1, r15
+    call %2
+    mov rsp, r15
+%endmacro
+
 %macro IRQ_STUB 2
 %1:
     cld
@@ -64,19 +72,16 @@ extern kernel_prepare_user_frame_return
     ENTER_KERNEL_FROM_USER 128
     test byte [rsp + 128], 0x3
     jz %%skip_user_entry
-    mov rdi, rsp
-    call kernel_prepare_user_frame_return
+    CALL_FRAME_HANDLER rdi, kernel_prepare_user_frame_return
 %%skip_user_entry:
     mov edi, %2
-    mov rsi, rsp
-    call irq_dispatch
+    CALL_FRAME_HANDLER rsi, irq_dispatch
     mov rbx, 0xfffffffffffffff0
     cmp rax, rbx
     je usermode_resume_from_syscall
     test byte [rsp + 128], 0x3
     jz %%skip_user_return
-    mov rdi, rsp
-    call kernel_prepare_user_frame_return
+    CALL_FRAME_HANDLER rdi, kernel_prepare_user_frame_return
     test rax, rax
     jz usermode_resume_from_syscall
 %%skip_user_return:
@@ -137,15 +142,35 @@ IRQ_STUB irq15_stub, 47
     push rax
     ENTER_KERNEL_FROM_USER 136
     mov edi, %2
-    mov rsi, rsp
-    call kernel_panic_dispatch_exception
+    CALL_FRAME_HANDLER rsi, kernel_panic_dispatch_exception
     mov rbx, 0xfffffffffffffff0
     cmp rax, rbx
     je usermode_resume_from_syscall
+    cmp rax, 1
+    je %%resume
 .hang:
     cli
     hlt
     jmp .hang
+%%resume:
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rbp
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    add rsp, 8
+    LEAVE_KERNEL_TO_USER 8
+    iretq
 %endmacro
 
 %macro EXC_NOERR_STUB 2
@@ -169,15 +194,35 @@ IRQ_STUB irq15_stub, 47
     push rax
     ENTER_KERNEL_FROM_USER 136
     mov edi, %2
-    mov rsi, rsp
-    call kernel_panic_dispatch_exception
+    CALL_FRAME_HANDLER rsi, kernel_panic_dispatch_exception
     mov rbx, 0xfffffffffffffff0
     cmp rax, rbx
     je usermode_resume_from_syscall
+    cmp rax, 1
+    je %%resume
 .hang:
     cli
     hlt
     jmp .hang
+%%resume:
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rbp
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    add rsp, 8
+    LEAVE_KERNEL_TO_USER 8
+    iretq
 %endmacro
 
 EXC_NOERR_STUB divide_error_stub, 0
@@ -207,19 +252,16 @@ syscall_stub:
     ENTER_KERNEL_FROM_USER 128
     test byte [rsp + 128], 0x3
     jz .skip_user_entry
-    mov rdi, rsp
-    call kernel_prepare_user_frame_return
+    CALL_FRAME_HANDLER rdi, kernel_prepare_user_frame_return
     test rax, rax
     jz usermode_resume_from_syscall
 .skip_user_entry:
-    mov rdi, rsp
-    call syscall_dispatch
+    CALL_FRAME_HANDLER rdi, syscall_dispatch
     mov rbx, 0xfffffffffffffff0
     cmp rax, rbx
     je usermode_resume_from_syscall
     mov [rsp], rax
-    mov rdi, rsp
-    call kernel_prepare_user_frame_return
+    CALL_FRAME_HANDLER rdi, kernel_prepare_user_frame_return
     test rax, rax
     jz usermode_resume_from_syscall
     pop rax

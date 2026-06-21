@@ -9,6 +9,16 @@ echo "こんにちは"
 echo "┌───┬───┐"
 echo "│ NexOS │"
 echo "└───┴───┘ "
+echo "一	일	하나"
+echo "二	이	둘"
+echo "三	삼	셋"
+echo "四	사	넷"
+echo "五	오	다섯"
+echo "六	육	여섯"
+echo "七	칠	일곱"
+echo "八	팔	여덟"
+echo "九	구	아홉"
+echo "十	십	열"
 switch_root /dev/root
 service boot
 exec /cmd/ush --tty /dev/tty

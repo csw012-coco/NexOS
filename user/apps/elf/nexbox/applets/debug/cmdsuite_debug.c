@@ -34,6 +34,58 @@ static void dump_bytes_local(const uint8_t *data, uint32_t count) {
     }
 }
 
+static void write_u64_dec_local(uint64_t value) {
+    char text[24];
+    uint32_t pos = sizeof(text);
+
+    text[--pos] = '\0';
+    do {
+        text[--pos] = (char)('0' + value % 10u);
+        value /= 10u;
+    } while (value != 0u);
+    write_str(text + pos);
+}
+
+static int cmd_dbg_profile_local(int argc, char **argv) {
+    struct syscall_profile_info info;
+    uint32_t index = 0u;
+    uint32_t flags = 0u;
+
+    if (argc > 3 ||
+        (argc == 3 && !streq_local(argv[2], "reset"))) {
+        write_err_usage("dbg profile", " [reset]\n");
+        return 1;
+    }
+    if (argc == 3) {
+        flags = SYS_PROFILE_QUERY_RESET;
+    }
+    write_str("profile counters (units are counter-specific)\n");
+    while (profile_query(index, flags, &info) > 0) {
+        uint64_t average = info.calls != 0u ? info.cycles / info.calls : 0u;
+
+        write_dec(index);
+        write_str(" ");
+        write_text_padded(info.name, SYS_PROFILE_NAME_MAX - 1u);
+        write_str(" calls=");
+        write_u64_dec_local(info.calls);
+        write_str(" cycles=");
+        write_u64_dec_local(info.cycles);
+        write_str(" avg=");
+        write_u64_dec_local(average);
+        write_str(" units=");
+        write_u64_dec_local(info.units);
+        write_str("\n");
+        flags = 0u;
+        index++;
+    }
+    if (index == 0u) {
+        write_str("(no profile counters)\n");
+    } else if (argc == 3) {
+        write_str("profile counters reset\n");
+    }
+    return 0;
+}
+
 int cmd_dmesg(void) {
     struct syscall_kmsg_info info;
     uint32_t offset = 0;
@@ -61,39 +113,26 @@ int cmd_lspci(void) {
     write_str("PCI devices\n");
 
     while (pci_query_at(index, &info) > 0 && info.present) {
-        write_dec(index);
-        write_str(" ");
-        write_dec(info.bus);
-        write_str(":");
-        write_dec(info.slot);
-        write_str(".");
-        write_dec(info.function);
-        write_str(" class=");
-        write_hex_u32((info.class_code << 8) | info.subclass);
-        write_str(" prog_if=");
-        write_hex_u32(info.prog_if);
-        write_str(" vendor=");
-        write_hex_u32(info.vendor_id);
-        write_str(" device=");
-        write_hex_u32(info.device_id);
-        write_str(" irq=");
-        write_dec(info.irq_line);
-        write_str(" pin=");
-        write_dec(info.irq_pin);
-        write_str("\n");
-        write_str("  bars ");
-        write_hex_u32(info.bar0);
-        write_str(" ");
-        write_hex_u32(info.bar1);
-        write_str(" ");
-        write_hex_u32(info.bar2);
-        write_str(" ");
-        write_hex_u32(info.bar3);
-        write_str(" ");
-        write_hex_u32(info.bar4);
-        write_str(" ");
-        write_hex_u32(info.bar5);
-        write_str("\n");
+        dprintf(STDOUT_FILENO,
+                "%u %u:%u.%u class=%08X prog_if=%08X vendor=%08X device=%08X irq=%u pin=%u\n",
+                index,
+                info.bus,
+                info.slot,
+                info.function,
+                (info.class_code << 8) | info.subclass,
+                info.prog_if,
+                info.vendor_id,
+                info.device_id,
+                info.irq_line,
+                info.irq_pin);
+        dprintf(STDOUT_FILENO,
+                "  bars %08X %08X %08X %08X %08X %08X\n",
+                info.bar0,
+                info.bar1,
+                info.bar2,
+                info.bar3,
+                info.bar4,
+                info.bar5);
         printed = 1;
         index++;
     }
@@ -387,7 +426,7 @@ int cmd_dbg(int argc, char **argv) {
     uint32_t i;
 
     if (argc < 2) {
-        write_err_usage("dbg", " <mem|pmm|ticks|info|pagealloc|pagefree|read>\n");
+        write_err_usage("dbg", " <mem|pmm|ticks|info|profile|pagealloc|pagefree|read>\n");
         return 1;
     }
     if (streq_local(argv[1], "mem")) {
@@ -443,6 +482,9 @@ int cmd_dbg(int argc, char **argv) {
         write_dec(bootinfo.module_count);
         write_str("\n");
         return 0;
+    }
+    if (streq_local(argv[1], "profile")) {
+        return cmd_dbg_profile_local(argc, argv);
     }
     if (streq_local(argv[1], "pagealloc")) {
         uint64_t page = page_alloc();

@@ -4,7 +4,7 @@
 #define MALLOC_MIN_SPLIT 16u
 #define MALLOC_MAGIC_FREE 0x4e58465245454850ull
 #define MALLOC_MAGIC_ALLOC 0x4e58414c4c4f4348ull
-#define MALLOC_MAX_CHUNK_PAGES 256u
+#define MALLOC_MAX_CHUNK_PAGES 2048u
 
 struct malloc_block {
     size_t size;

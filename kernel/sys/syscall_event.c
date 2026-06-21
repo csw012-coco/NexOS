@@ -2,6 +2,10 @@
 #include "drivers/input/keyboard.h"
 #include "drivers/input/mouse.h"
 #include "fs/vfs_internal.h"
+#include "kernel/internal/proc/process_types_internal.h"
+#include "kernel/public/input/input_focus.h"
+#include "kernel/public/proc/job_control.h"
+#include "kernel/public/proc/process.h"
 
 static void syscall_capability_event_sanitize(struct syscall_capability_event *event) {
     if (event == 0) {
@@ -40,6 +44,7 @@ static void syscall_gui_event_from_keyboard(struct syscall_gui_event *event,
     event->released = record->event.released;
     event->shift = record->event.shift;
     event->ctrl = record->event.ctrl;
+    event->alt = record->event.alt;
 }
 
 static void syscall_gui_event_from_mouse(struct syscall_gui_event *event,
@@ -56,6 +61,7 @@ static void syscall_gui_event_from_mouse(struct syscall_gui_event *event,
     event->released = 0u;
     event->shift = 0u;
     event->ctrl = 0u;
+    event->alt = 0u;
 }
 
 static uint64_t syscall_gui_event_cursor_init(uint64_t user_info_addr) {
@@ -74,6 +80,7 @@ static uint64_t syscall_gui_event_cursor_init(uint64_t user_info_addr) {
 
 static uint64_t syscall_gui_event_poll(uint64_t user_info_addr) {
     struct syscall_gui_event_poll poll;
+    const struct process *proc;
     struct keyboard_event_record key_record;
     struct mouse_event_record mouse_record;
     struct syscall_gui_event_cursor key_cursor;
@@ -88,6 +95,16 @@ static uint64_t syscall_gui_event_poll(uint64_t user_info_addr) {
     }
     if (!syscall_copy_from_user(&poll, user_info_addr, sizeof(poll))) {
         return syscall_kill_bad_user_pointer();
+    }
+
+    proc = process_current();
+    if (input_focus_owner_pid() != 0u &&
+        (proc == 0 || input_focus_owner_pid() != proc->pid)) {
+        poll.event.type = SYS_GUI_EVENT_NONE;
+        if (!syscall_copy_to_user(user_info_addr, &poll, sizeof(poll))) {
+            return syscall_kill_bad_user_pointer();
+        }
+        return SYS_GUI_EVENT_EMPTY;
     }
 
     key_cursor = poll.cursor;
@@ -120,12 +137,34 @@ static uint64_t syscall_gui_event_poll(uint64_t user_info_addr) {
     return SYS_GUI_EVENT_READY;
 }
 
+static uint64_t syscall_gui_event_grab(void) {
+    const struct process *proc = process_current();
+
+    if (proc == 0 || !job_current_process_foreground_allowed()) {
+        return (uint64_t)-1;
+    }
+    return input_focus_grab(proc->pid) ? 0u : (uint64_t)-1;
+}
+
+static uint64_t syscall_gui_event_release(void) {
+    const struct process *proc = process_current();
+
+    if (proc == 0) {
+        return (uint64_t)-1;
+    }
+    return input_focus_release(proc->pid) ? 0u : (uint64_t)-1;
+}
+
 uint64_t syscall_handle_gui_event(uint32_t op, uint64_t user_info_addr) {
     switch (op) {
         case SYS_GUI_EVENT_CURSOR_INIT:
             return syscall_gui_event_cursor_init(user_info_addr);
         case SYS_GUI_EVENT_POLL:
             return syscall_gui_event_poll(user_info_addr);
+        case SYS_GUI_EVENT_GRAB:
+            return syscall_gui_event_grab();
+        case SYS_GUI_EVENT_RELEASE:
+            return syscall_gui_event_release();
         default:
             return (uint64_t)-1;
     }

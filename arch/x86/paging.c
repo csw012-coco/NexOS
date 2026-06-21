@@ -1,5 +1,6 @@
 #include "arch/x86/paging.h"
 #include "kernel/public/mem/pmm.h"
+#include "lib/string.h"
 
 extern char __kernel_start[];
 extern char __kernel_end[];
@@ -16,15 +17,27 @@ enum {
     PAGING_FLAG_PRESENT = 1ull << 0,
     PAGING_FLAG_RW = 1ull << 1,
     PAGING_FLAG_USER = 1ull << 2,
+    PAGING_FLAG_PWT = 1ull << 3,
+    PAGING_FLAG_PCD = 1ull << 4,
     PAGING_FLAG_PAGE_SIZE = 1ull << 7,
+    PAGING_FLAG_PAT_4K = 1ull << 7,
+    PAGING_FLAG_COW = 1ull << 9,
     PAGING_FLAG_NX = 1ull << 63,
     PAGING_ADDR_MASK = 0x000ffffffffff000ull,
     PAGING_TABLE_ENTRIES = 512,
     PAGING_KERNEL_RANGE_LIMIT = 64,
+    PAGING_MSR_PAT = 0x00000277u,
     PAGING_MSR_EFER = 0xc0000080u,
     PAGING_EFER_NXE = 1ull << 11,
+    PAGING_CPUID_BASIC_FEATURES = 0x00000001u,
+    PAGING_CPUID_PAT_BIT = 1u << 16,
     PAGING_CPUID_EXT_FEATURES = 0x80000001u,
-    PAGING_CPUID_NX_BIT = 1u << 20
+    PAGING_CPUID_NX_BIT = 1u << 20,
+    PAGING_PAT_ENTRY_WC = 4u,
+    PAGING_MEMORY_TYPE_WC = 1u,
+    PAGING_CR0_NW = 1ull << 29,
+    PAGING_CR0_CD = 1ull << 30,
+    PAGING_RFLAGS_IF = 1ull << 9
 };
 
 struct paging_kernel_range {
@@ -40,12 +53,14 @@ static struct paging_kernel_range g_kernel_ranges[PAGING_KERNEL_RANGE_LIMIT];
 static uint32_t g_kernel_range_count;
 static uint8_t g_paging_nx_supported;
 static uint8_t g_paging_nx_enabled;
+static uint8_t g_paging_pat_wc_enabled;
 static uint64_t *paging_table_from_entry(uint64_t entry);
 static int paging_translate_in_root(uint64_t cr3, uint64_t virt_addr, uint64_t *phys_out);
 static int paging_translate_current(uint64_t virt_addr, uint64_t *phys_out);
 static uint64_t *paging_root_table(uint64_t cr3);
 static uint64_t *paging_alloc_table(uint64_t *phys_out);
 static uint64_t paging_clone_table_deep(uint64_t table_phys, uint32_t level);
+static uint64_t paging_clone_table_cow(uint64_t table_phys, uint32_t level, int *ok);
 static void paging_destroy_table_deep(uint64_t table_phys, uint32_t level);
 static int paging_walk_in_root(uint64_t root_cr3, uint64_t virt_addr, struct paging_walk_info *info_out);
 static uint64_t *paging_walk_to_pte_in_root(uint64_t root_cr3, uint64_t addr, int create, int user_accessible);
@@ -119,6 +134,48 @@ static void paging_enable_nx(void) {
     g_paging_nx_supported = 1;
     paging_write_msr(PAGING_MSR_EFER, paging_read_msr(PAGING_MSR_EFER) | PAGING_EFER_NXE);
     g_paging_nx_enabled = (paging_read_msr(PAGING_MSR_EFER) & PAGING_EFER_NXE) != 0;
+}
+
+static int paging_enable_pat_write_combining(void) {
+    uint32_t edx = 0;
+    uint64_t pat;
+    uint64_t next_pat;
+    uint64_t cr0;
+    uint64_t rflags;
+    uint64_t cr3;
+
+    if (g_paging_pat_wc_enabled) {
+        return 1;
+    }
+    paging_cpuid(PAGING_CPUID_BASIC_FEATURES, 0, 0, 0, 0, &edx);
+    if ((edx & PAGING_CPUID_PAT_BIT) == 0) {
+        return 0;
+    }
+
+    pat = paging_read_msr(PAGING_MSR_PAT);
+    next_pat = (pat & ~(0xffull << (PAGING_PAT_ENTRY_WC * 8u))) |
+               ((uint64_t)PAGING_MEMORY_TYPE_WC << (PAGING_PAT_ENTRY_WC * 8u));
+    if (next_pat != pat) {
+        __asm__ __volatile__("pushfq; popq %0" : "=r"(rflags));
+        __asm__ __volatile__("cli" : : : "memory");
+        __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
+        __asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3));
+        __asm__ __volatile__("mov %0, %%cr0"
+                             :
+                             : "r"((cr0 | PAGING_CR0_CD) & ~PAGING_CR0_NW)
+                             : "memory");
+        __asm__ __volatile__("wbinvd" : : : "memory");
+        __asm__ __volatile__("mov %0, %%cr3" : : "r"(cr3) : "memory");
+        paging_write_msr(PAGING_MSR_PAT, next_pat);
+        __asm__ __volatile__("wbinvd" : : : "memory");
+        __asm__ __volatile__("mov %0, %%cr0" : : "r"(cr0) : "memory");
+        __asm__ __volatile__("mov %0, %%cr3" : : "r"(cr3) : "memory");
+        if ((rflags & PAGING_RFLAGS_IF) != 0) {
+            __asm__ __volatile__("sti" : : : "memory");
+        }
+    }
+    g_paging_pat_wc_enabled = 1;
+    return 1;
 }
 
 static void paging_append_kernel_range(uint64_t virt_addr, uint64_t phys_addr) {
@@ -401,6 +458,62 @@ static uint64_t paging_clone_table_deep(uint64_t table_phys, uint32_t level) {
     return dst_phys;
 }
 
+static uint64_t paging_clone_table_cow(uint64_t table_phys, uint32_t level, int *ok) {
+    uint64_t *src_table;
+    uint64_t *dst_table;
+    uint64_t dst_phys = 0;
+
+    if (table_phys == 0 || level == 0 || ok == 0 || !*ok) {
+        return 0;
+    }
+    src_table = (uint64_t *)paging_phys_direct_map(table_phys & PAGING_ADDR_MASK);
+    dst_table = paging_alloc_table(&dst_phys);
+    if (dst_table == 0) {
+        *ok = 0;
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < PAGING_TABLE_ENTRIES; i++) {
+        uint64_t entry = src_table[i];
+
+        if ((entry & PAGING_FLAG_PRESENT) == 0) {
+            continue;
+        }
+        if (level == 1 || (entry & PAGING_FLAG_PAGE_SIZE) != 0) {
+            uint64_t phys = entry & PAGING_ADDR_MASK;
+
+            if (level == 1 && (entry & PAGING_FLAG_USER) != 0 && pmm_ref_count(phys) != 0) {
+                if (!pmm_retain_page(phys)) {
+                    *ok = 0;
+                    break;
+                }
+                if ((entry & PAGING_FLAG_RW) != 0) {
+                    entry = (entry & ~PAGING_FLAG_RW) | PAGING_FLAG_COW;
+                    src_table[i] = entry;
+                }
+            }
+            dst_table[i] = entry;
+            continue;
+        }
+
+        {
+            uint64_t child = paging_clone_table_cow(entry & PAGING_ADDR_MASK, level - 1, ok);
+
+            if (!*ok || child == 0) {
+                *ok = 0;
+                break;
+            }
+            dst_table[i] = (entry & ~PAGING_ADDR_MASK) | child;
+        }
+    }
+
+    if (!*ok) {
+        paging_destroy_table_deep(dst_phys, level);
+        return 0;
+    }
+    return dst_phys;
+}
+
 static void paging_destroy_table_deep(uint64_t table_phys, uint32_t level) {
     uint64_t *table;
 
@@ -417,6 +530,16 @@ static void paging_destroy_table_deep(uint64_t table_phys, uint32_t level) {
                 continue;
             }
             paging_destroy_table_deep(entry & PAGING_ADDR_MASK, level - 1);
+        }
+    } else {
+        for (uint32_t i = 0; i < PAGING_TABLE_ENTRIES; i++) {
+            uint64_t entry = table[i];
+
+            if ((entry & (PAGING_FLAG_PRESENT | PAGING_FLAG_USER)) ==
+                    (PAGING_FLAG_PRESENT | PAGING_FLAG_USER) &&
+                pmm_ref_count(entry & PAGING_ADDR_MASK) != 0) {
+                (void)pmm_release_page(entry & PAGING_ADDR_MASK);
+            }
         }
     }
     (void)pmm_free_page(table_phys & PAGING_ADDR_MASK);
@@ -602,6 +725,68 @@ uint64_t paging_clone_root_deep(uint64_t source_cr3) {
 
 uint64_t paging_clone_current_root_deep(void) {
     return paging_clone_root_deep(paging_get_current_cr3());
+}
+
+uint64_t paging_clone_root_cow(uint64_t source_cr3) {
+    int ok = 1;
+    uint64_t clone = paging_clone_table_cow(source_cr3 & PAGING_ADDR_MASK, 4, &ok);
+
+    if (!ok || clone == 0) {
+        return 0;
+    }
+    if ((source_cr3 & PAGING_ADDR_MASK) == paging_get_current_cr3()) {
+        paging_flush_tlb();
+    }
+    return clone;
+}
+
+int paging_resolve_cow_fault(uint64_t root_cr3, uint64_t fault_addr, uint64_t error_code) {
+    uint64_t page = fault_addr & PAGING_ADDR_MASK;
+    uint64_t *pte;
+    uint64_t entry;
+    uint64_t old_phys;
+    uint32_t refs;
+
+    if ((error_code & 0x7u) != 0x7u) {
+        return 0;
+    }
+    pte = paging_walk_to_pte_in_root(root_cr3, page, 0, 1);
+    if (pte == 0) {
+        return 0;
+    }
+    entry = *pte;
+    if ((entry & (PAGING_FLAG_PRESENT | PAGING_FLAG_USER | PAGING_FLAG_COW)) !=
+        (PAGING_FLAG_PRESENT | PAGING_FLAG_USER | PAGING_FLAG_COW)) {
+        return 0;
+    }
+    old_phys = entry & PAGING_ADDR_MASK;
+    refs = pmm_ref_count(old_phys);
+    if (refs == 0) {
+        return 0;
+    }
+    if (refs == 1u) {
+        *pte = (entry | PAGING_FLAG_RW) & ~PAGING_FLAG_COW;
+    } else {
+        uint64_t new_phys = pmm_alloc_page();
+
+        if (new_phys == 0) {
+            return 0;
+        }
+        memcpy(paging_phys_direct_map(new_phys),
+               paging_phys_direct_map(old_phys),
+               4096u);
+        *pte = (entry & ~(PAGING_ADDR_MASK | PAGING_FLAG_COW)) |
+               new_phys | PAGING_FLAG_RW;
+        if (!pmm_release_page(old_phys)) {
+            *pte = entry;
+            (void)pmm_release_page(new_phys);
+            return 0;
+        }
+    }
+    if ((root_cr3 & PAGING_ADDR_MASK) == paging_get_current_cr3()) {
+        __asm__ __volatile__("invlpg (%0)" : : "r"((void *)(uintptr_t)page) : "memory");
+    }
+    return 1;
 }
 
 uint64_t paging_create_user_root(void) {
@@ -985,6 +1170,41 @@ int paging_map_page_with_exec(uint64_t virt_addr,
     *pte = (phys_addr & PAGING_ADDR_MASK) | entry_flags;
     paging_flush_tlb();
     return 1;
+}
+
+int paging_set_write_combining(uint64_t virt_addr, uint64_t size) {
+    uint64_t start;
+    uint64_t end;
+    uint64_t page;
+    int mapped = 1;
+
+    if (size == 0 || virt_addr + size < virt_addr ||
+        !paging_enable_pat_write_combining()) {
+        return 0;
+    }
+    start = virt_addr & ~0xfffull;
+    end = (virt_addr + size + 0xfffull) & ~0xfffull;
+    if (end <= start) {
+        return 0;
+    }
+
+    __asm__ __volatile__("wbinvd" : : : "memory");
+    for (page = start; page < end; page += 0x1000ull) {
+        uint64_t *pte = paging_walk_to_pte(page, 1);
+
+        if (pte == 0 || (*pte & PAGING_FLAG_PRESENT) == 0) {
+            mapped = 0;
+            continue;
+        }
+        *pte = (*pte & ~(PAGING_FLAG_PWT | PAGING_FLAG_PCD | PAGING_FLAG_PAT_4K)) |
+               PAGING_FLAG_PAT_4K;
+        __asm__ __volatile__("invlpg (%0)"
+                             :
+                             : "r"((void *)(uintptr_t)page)
+                             : "memory");
+    }
+    __asm__ __volatile__("wbinvd" : : : "memory");
+    return mapped;
 }
 
 int paging_unmap_page(uint64_t virt_addr, uint64_t *phys_addr) {

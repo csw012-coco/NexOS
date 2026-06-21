@@ -11,6 +11,7 @@ enum {
 
 typedef int (*blockdev_read_fn)(struct block_device *dev, uint64_t lba, uint32_t count, void *buffer);
 typedef int (*blockdev_write_fn)(struct block_device *dev, uint64_t lba, uint32_t count, const void *buffer);
+typedef int (*blockdev_flush_fn)(struct block_device *dev);
 
 struct blockdev_info {
     const char *name;
@@ -37,6 +38,7 @@ struct block_device {
     struct blockdev_partition partitions[BLOCKDEV_MAX_PARTITIONS];
     blockdev_read_fn read;
     blockdev_write_fn write;
+    blockdev_flush_fn flush;
     void *driver_data;
 };
 
@@ -51,3 +53,4 @@ uint32_t blockdev_partition_count(struct block_device *dev);
 int blockdev_partition_get(struct block_device *dev, uint32_t index, struct blockdev_partition *out);
 int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *buffer);
 int blockdev_write(struct block_device *dev, uint64_t lba, uint32_t count, const void *buffer);
+int blockdev_flush(struct block_device *dev);

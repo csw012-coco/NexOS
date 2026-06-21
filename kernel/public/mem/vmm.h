@@ -53,6 +53,8 @@ struct vmm_page_walk_info {
 /* Core VMM operations */
 uint64_t vmm_current_root(void);
 uint64_t vmm_create_user_root(void);
+uint64_t vmm_clone_root_cow(uint64_t source_root);
+int vmm_resolve_cow_fault(uint64_t root, uint64_t fault_addr, uint64_t error_code);
 void vmm_destroy_user_root(uint64_t root);
 void vmm_switch_root(uint64_t root);
 int vmm_root_is_current(uint64_t root);

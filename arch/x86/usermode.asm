@@ -40,8 +40,9 @@ usermode_enter:
     lea rdx, [rel saved_kernel_r15]
     mov [rdx + rcx * 8], r15
     lea rdx, [rel saved_kernel_rsp]
-    mov [rdx + rcx * 8], rsp
-    lea rax, [rel usermode_kernel_resume]
+    lea rax, [rsp + 8]
+    mov [rdx + rcx * 8], rax
+    mov rax, [rsp]
     lea rdx, [rel saved_kernel_rip]
     mov [rdx + rcx * 8], rax
     inc rcx
@@ -77,8 +78,9 @@ usermode_resume_frame:
     lea r8, [rel saved_kernel_r15]
     mov [r8 + rcx * 8], r15
     lea r8, [rel saved_kernel_rsp]
-    mov [r8 + rcx * 8], rsp
-    lea rax, [rel usermode_kernel_resume]
+    lea rax, [rsp + 8]
+    mov [r8 + rcx * 8], rax
+    mov rax, [rsp]
     lea r8, [rel saved_kernel_rip]
     mov [r8 + rcx * 8], rax
     inc rcx
@@ -128,7 +130,9 @@ usermode_kernel_resume:
     mov r14, [rdx + rcx * 8]
     lea rdx, [rel saved_kernel_r15]
     mov r15, [rdx + rcx * 8]
-    ret
+    lea rdx, [rel saved_kernel_rip]
+    mov rax, [rdx + rcx * 8]
+    jmp rax
 
 usermode_resume_from_syscall:
     mov rcx, [rel saved_kernel_depth]
@@ -141,9 +145,7 @@ usermode_resume_from_syscall:
     mov [rel saved_kernel_resume_index], rcx
     lea rdx, [rel saved_kernel_rsp]
     mov rsp, [rdx + rcx * 8]
-    lea rdx, [rel saved_kernel_rip]
-    mov rax, [rdx + rcx * 8]
-    jmp rax
+    jmp usermode_kernel_resume
 
 usermode_bad_context_depth:
     cli

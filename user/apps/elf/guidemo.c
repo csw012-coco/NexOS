@@ -4,10 +4,13 @@ enum {
     WM_WINDOW_MAX = 4,
     WM_TITLEBAR_HEIGHT = 24,
     WM_CLOSE_SIZE = 12,
+    WM_BLIT_BADGE_WIDTH = 96,
+    WM_BLIT_BADGE_HEIGHT = 14,
     WM_GFX_BATCH_CAPACITY = SYS_GFX_BATCH_MAX_COMMANDS
 };
 
 static struct syscall_gfx_batch_entry g_wm_gfx_batch[WM_GFX_BATCH_CAPACITY];
+static uint32_t g_wm_blit_badge[WM_BLIT_BADGE_WIDTH * WM_BLIT_BADGE_HEIGHT];
 
 struct wm_window {
     int32_t x;
@@ -50,6 +53,16 @@ static int point_in_rect(int32_t px, int32_t py, int32_t x, int32_t y, uint32_t 
 }
 
 static void wm_init(struct wm_state *wm, uint32_t screen_w, uint32_t screen_h) {
+    for (uint32_t y = 0; y < WM_BLIT_BADGE_HEIGHT; y++) {
+        for (uint32_t x = 0; x < WM_BLIT_BADGE_WIDTH; x++) {
+            uint32_t green = 160u + x * 72u / WM_BLIT_BADGE_WIDTH;
+            uint32_t blue = 190u + y * 48u / WM_BLIT_BADGE_HEIGHT;
+
+            g_wm_blit_badge[y * WM_BLIT_BADGE_WIDTH + x] =
+                (32u << 16) | (green << 8) | blue;
+        }
+    }
+
     wm->windows[0].x = 46;
     wm->windows[0].y = 62;
     wm->windows[0].width = 260u;
@@ -222,7 +235,6 @@ static void draw_desktop(uint32_t width, uint32_t height) {
     }
     gfx_fill_rect(0, 0, width, 30u, 0x111827u);
     gfx_fill_rect(0, (int32_t)height - 38, width, 38u, 0x111827u);
-    gfx_fill_rect(16, 8, 96u, 14u, 0x22d3eeu);
     gfx_fill_rect(128, 8, 70u, 14u, 0xfbbf24u);
     gfx_fill_rect(214, 8, 86u, 14u, 0x34d399u);
 }
@@ -301,7 +313,7 @@ int main(int argc, char **argv) {
     struct syscall_gfx_info info;
     struct syscall_gui_event event;
     struct wm_state wm;
-    uint32_t frames = 600u;
+    uint32_t frame = 0u;
     int running = 1;
 
     (void)argc;
@@ -311,10 +323,14 @@ int main(int argc, char **argv) {
         eprintf("guidemo: framebuffer graphics unavailable\n");
         return 1;
     }
+    if (gui_input_grab() != 0) {
+        eprintf("guidemo: could not acquire exclusive input focus\n");
+        return 1;
+    }
 
     wm_init(&wm, info.width, info.height);
     printf("guidemo: window manager prototype, drag titlebars, click close, Tab cycles focus, Esc exits\n");
-    for (uint32_t frame = 0; frame < frames && running; frame++) {
+    while (running) {
         while (gui_poll_event(&event) == SYS_GUI_EVENT_READY) {
             if (event.type == SYS_GUI_EVENT_MOUSE) {
                 wm_handle_mouse(&wm, &event, info.width, info.height);
@@ -328,11 +344,29 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        (void)gfx_batch_begin(g_wm_gfx_batch, WM_GFX_BATCH_CAPACITY);
+        if (!running) {
+            break;
+        }
+        if (gfx_batch_begin(g_wm_gfx_batch, WM_GFX_BATCH_CAPACITY) != 0) {
+            eprintf("guidemo: could not begin graphics batch\n");
+            break;
+        }
         wm_draw(&wm, info.width, info.height, frame);
-        gfx_present();
+        if (gfx_batch_submit(0u) != 0 ||
+            gfx_blit(g_wm_blit_badge,
+                     WM_BLIT_BADGE_WIDTH * sizeof(uint32_t),
+                     16,
+                     8,
+                     WM_BLIT_BADGE_WIDTH,
+                     WM_BLIT_BADGE_HEIGHT) != 0 ||
+            gfx_present() != 0) {
+            eprintf("guidemo: rendering failed\n");
+            break;
+        }
         sleep(2u);
+        frame++;
     }
+    (void)gui_input_release();
     printf("guidemo done\n");
     return 0;
 }

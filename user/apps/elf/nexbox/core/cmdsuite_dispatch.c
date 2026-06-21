@@ -233,6 +233,7 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"action", cmd_wrap_action},
     {"mapper", cmd_wrap_mapper},
     {"echo", cmd_echo},
+    {"yes", cmd_yes},
     {"clear", cmd_wrap_clear},
     {"pwd", cmd_wrap_pwd},
     {"tty", cmd_tty},

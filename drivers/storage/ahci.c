@@ -11,6 +11,8 @@ enum {
     AHCI_MAX_PORTS = 32u,
     AHCI_MAX_DEVICES = 4u,
     AHCI_SECTOR_SIZE = 512u,
+    AHCI_BOUNCE_SIZE = 4096u,
+    AHCI_MAX_SECTORS_PER_COMMAND = AHCI_BOUNCE_SIZE / AHCI_SECTOR_SIZE,
     AHCI_MMIO_MAP_SIZE = 0x2000u,
 
     AHCI_GHC_AE = 1u << 31,
@@ -132,11 +134,7 @@ static uint32_t g_ahci_device_count;
 static struct ahci_hba_mem *g_ahci_hba;
 
 static void ahci_zero(void *ptr, uint32_t bytes) {
-    uint8_t *out = (uint8_t *)ptr;
-
-    for (uint32_t i = 0; i < bytes; i++) {
-        out[i] = 0u;
-    }
+    memset(ptr, 0, bytes);
 }
 
 static uint64_t ahci_read_u64le_words(const uint16_t *words, uint32_t lo_word, uint32_t hi_word) {
@@ -343,19 +341,31 @@ static int ahci_identify(struct ahci_device *dev) {
 static int ahci_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count, void *buffer) {
     struct ahci_device *dev = (struct ahci_device *)bdev->driver_data;
     uint8_t *out = (uint8_t *)buffer;
+    uint32_t done = 0u;
 
     if (dev == 0 || !dev->present || buffer == 0 || count == 0u ||
         dev->bounce == 0 || lba >= dev->sector_count || (uint64_t)count > dev->sector_count - lba) {
         return -1;
     }
-    for (uint32_t sector = 0; sector < count; sector++) {
-        ahci_zero(dev->bounce, AHCI_SECTOR_SIZE);
-        if (!ahci_command_dma(dev, ATA_CMD_READ_DMA_EXT, lba + sector, 1u, dev->bounce_phys, AHCI_SECTOR_SIZE, 0)) {
+    while (done < count) {
+        uint32_t chunk = count - done;
+        uint32_t bytes;
+
+        if (chunk > AHCI_MAX_SECTORS_PER_COMMAND) {
+            chunk = AHCI_MAX_SECTORS_PER_COMMAND;
+        }
+        bytes = chunk * AHCI_SECTOR_SIZE;
+        if (!ahci_command_dma(dev,
+                              ATA_CMD_READ_DMA_EXT,
+                              lba + done,
+                              chunk,
+                              dev->bounce_phys,
+                              bytes,
+                              0)) {
             return -1;
         }
-        for (uint32_t i = 0; i < AHCI_SECTOR_SIZE; i++) {
-            out[sector * AHCI_SECTOR_SIZE + i] = dev->bounce[i];
-        }
+        memcpy(out + done * AHCI_SECTOR_SIZE, dev->bounce, bytes);
+        done += chunk;
     }
     return 0;
 }
@@ -363,23 +373,39 @@ static int ahci_read_impl(struct block_device *bdev, uint64_t lba, uint32_t coun
 static int ahci_write_impl(struct block_device *bdev, uint64_t lba, uint32_t count, const void *buffer) {
     struct ahci_device *dev = (struct ahci_device *)bdev->driver_data;
     const uint8_t *in = (const uint8_t *)buffer;
+    uint32_t done = 0u;
 
     if (dev == 0 || !dev->present || buffer == 0 || count == 0u ||
         dev->bounce == 0 || lba >= dev->sector_count || (uint64_t)count > dev->sector_count - lba) {
         return -1;
     }
-    for (uint32_t sector = 0; sector < count; sector++) {
-        for (uint32_t i = 0; i < AHCI_SECTOR_SIZE; i++) {
-            dev->bounce[i] = in[sector * AHCI_SECTOR_SIZE + i];
+    while (done < count) {
+        uint32_t chunk = count - done;
+        uint32_t bytes;
+
+        if (chunk > AHCI_MAX_SECTORS_PER_COMMAND) {
+            chunk = AHCI_MAX_SECTORS_PER_COMMAND;
         }
-        if (!ahci_command_dma(dev, ATA_CMD_WRITE_DMA_EXT, lba + sector, 1u, dev->bounce_phys, AHCI_SECTOR_SIZE, 1)) {
+        bytes = chunk * AHCI_SECTOR_SIZE;
+        memcpy(dev->bounce, in + done * AHCI_SECTOR_SIZE, bytes);
+        if (!ahci_command_dma(dev,
+                              ATA_CMD_WRITE_DMA_EXT,
+                              lba + done,
+                              chunk,
+                              dev->bounce_phys,
+                              bytes,
+                              1)) {
             return -1;
         }
-    }
-    if (!ahci_flush(dev)) {
-        return -1;
+        done += chunk;
     }
     return 0;
+}
+
+static int ahci_flush_impl(struct block_device *bdev) {
+    struct ahci_device *dev = bdev != 0 ? (struct ahci_device *)bdev->driver_data : 0;
+
+    return dev != 0 && dev->present && ahci_flush(dev) ? 0 : -1;
 }
 
 static void ahci_setup_port(struct ahci_device *dev) {
@@ -450,6 +476,7 @@ void ahci_init(void) {
         dev->blockdev.block_count = dev->sector_count;
         dev->blockdev.read = ahci_read_impl;
         dev->blockdev.write = ahci_write_impl;
+        dev->blockdev.flush = ahci_flush_impl;
         dev->blockdev.driver_data = dev;
         dev->present = 1u;
         if (blockdev_register(&dev->blockdev) == 0) {

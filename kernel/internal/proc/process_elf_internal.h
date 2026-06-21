@@ -7,6 +7,12 @@ struct vfs_node;
 
 int process_begin_elf_session(void);
 int process_load_elf_image(const uint8_t *image, uint32_t image_size, uint64_t *entry_out);
+int process_handle_demand_page_fault(struct process_session *session,
+                                     struct user_page_mapping *mappings,
+                                     uint64_t fault_addr,
+                                     uint64_t error_code);
+void process_release_elf_backing(struct process_session *session);
+int process_retain_elf_backing(struct process_session *session);
 int process_extract_command_name(const char *command_line, char *name_out, uint32_t name_out_size);
 int process_prepare_arguments(const char *command_line, const char *const *envp, uint64_t *stack_top_out);
 int process_resolve_exec_target(struct vfs *vfs,

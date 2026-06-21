@@ -43,6 +43,7 @@ int cmd_build_program_command(int argc,
 
 int cmd_help(void);
 int cmd_echo(int argc, char **argv);
+int cmd_yes(int argc, char **argv);
 int cmd_clear(void);
 int cmd_pwd(void);
 int cmd_tty(int argc, char **argv);

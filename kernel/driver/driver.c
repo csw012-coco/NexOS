@@ -6,6 +6,7 @@
 #include "fs/vfs.h"
 #include "hal/hal.h"
 #include "kernel/public/core/kprint.h"
+#include "kernel/public/core/profile.h"
 #include "kernel/public/mem/pmm.h"
 #include "lib/string.h"
 
@@ -125,6 +126,11 @@ static const struct driver_kernel_symbol g_driver_kernel_symbols[] = {
     { "driver_str_len", (uint64_t)(uintptr_t)str_len },
     { "driver_timer_current_ticks", (uint64_t)(uintptr_t)driver_timer_current_ticks },
     { "driver_timer_hz", (uint64_t)(uintptr_t)driver_timer_hz },
+    { "driver_cpu_wait_for_event", (uint64_t)(uintptr_t)hal_cpu_wait_for_event },
+    { "driver_cpu_relax", (uint64_t)(uintptr_t)hal_cpu_relax },
+    { "driver_profile_register", (uint64_t)(uintptr_t)kernel_profile_register },
+    { "driver_profile_clock", (uint64_t)(uintptr_t)kernel_profile_clock },
+    { "driver_profile_record", (uint64_t)(uintptr_t)kernel_profile_record },
     { NULL, 0 }
 };
 

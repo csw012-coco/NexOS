@@ -12,6 +12,59 @@ void hal_x86_cpu_halt_impl(void) {
     __asm__ __volatile__("hlt");
 }
 
+void hal_x86_cpu_wait_for_interrupt_impl(void) {
+    __asm__ __volatile__("sti; hlt; cli" ::: "memory");
+}
+
+void hal_x86_cpu_wait_for_event_impl(void) {
+    uint64_t flags;
+
+    __asm__ __volatile__("pushfq; pop %0" : "=r"(flags));
+    if ((flags & (1ull << 9)) != 0u) {
+        __asm__ __volatile__("hlt" ::: "memory");
+    } else {
+        __asm__ __volatile__("pause" ::: "memory");
+    }
+}
+
+void hal_x86_cpu_relax_impl(void) {
+    __asm__ __volatile__("pause" ::: "memory");
+}
+
+void hal_x86_cpu_enable_sse_impl(void) {
+    uint64_t cr0;
+    uint64_t cr4;
+
+    __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~(1ull << 2);
+    cr0 |= (1ull << 1) | (1ull << 5);
+    __asm__ __volatile__("mov %0, %%cr0" : : "r"(cr0) : "memory");
+
+    __asm__ __volatile__("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1ull << 9) | (1ull << 10);
+    __asm__ __volatile__("mov %0, %%cr4" : : "r"(cr4) : "memory");
+    __asm__ __volatile__("clts; fninit" ::: "memory");
+}
+
+void hal_x86_fpu_state_save_impl(void *state) {
+    __asm__ __volatile__("fxsave (%0)" : : "r"(state) : "memory");
+}
+
+void hal_x86_fpu_state_restore_impl(const void *state) {
+    __asm__ __volatile__("fxrstor (%0)" : : "r"(state) : "memory");
+}
+
+void hal_x86_fpu_state_init_impl(void *state) {
+    uint8_t previous_storage[HAL_FPU_STATE_SIZE + 15u];
+    void *previous = (void *)(((uintptr_t)previous_storage + 15u) & ~(uintptr_t)15u);
+    uint32_t mxcsr = 0x1f80u;
+
+    hal_x86_fpu_state_save_impl(previous);
+    __asm__ __volatile__("fninit; ldmxcsr %0" : : "m"(mxcsr) : "memory");
+    hal_x86_fpu_state_save_impl(state);
+    hal_x86_fpu_state_restore_impl(previous);
+}
+
 uint64_t hal_x86_cpu_current_sp_impl(void) {
     uint64_t rsp;
 

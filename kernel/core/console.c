@@ -5,6 +5,8 @@ static const char digits[] = "0123456789ABCDEF";
 static const uint8_t g_console_ansi_palette[8] = {0, 4, 2, 6, 1, 5, 3, 7};
 static const struct console *g_console_visible_display;
 
+#define CONSOLE_TAB_WIDTH 8u
+
 static uint16_t console_height(const struct console *console) {
     return (uint16_t)(console->bottom_row - console->top_row + 1u);
 }
@@ -645,6 +647,15 @@ void console_put_codepoint(struct console *console, uint32_t codepoint, uint8_t 
     if (codepoint == '\r') {
         console->cursor_col = 0;
         console_sync_cursor(console);
+        return;
+    }
+    if (codepoint == '\t') {
+        uint16_t spaces = (uint16_t)(CONSOLE_TAB_WIDTH -
+                                     (console->cursor_col % CONSOLE_TAB_WIDTH));
+
+        while (spaces-- != 0u) {
+            console_put_codepoint(console, ' ', color);
+        }
         return;
     }
     if (codepoint == '\b') {

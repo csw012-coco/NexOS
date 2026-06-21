@@ -36,6 +36,30 @@ static void kernel_gfx_fill_info(struct syscall_gfx_info *info) {
     info->text_rows = hal_display_text_rows();
 }
 
+void kernel_gfx_dimensions(uint32_t *width_out, uint32_t *height_out) {
+    if (width_out != 0) {
+        *width_out = g_kernel_gfx_width;
+    }
+    if (height_out != 0) {
+        *height_out = g_kernel_gfx_height;
+    }
+}
+
+int kernel_gfx_blit_xrgb8888(const uint32_t *pixels,
+                             uint32_t pitch,
+                             uint32_t width,
+                             uint32_t height,
+                             int32_t dst_x,
+                             int32_t dst_y) {
+    if (pixels == 0 || width == 0u || height == 0u ||
+        width > 0xffffffffu / 4u || pitch < width * 4u ||
+        g_kernel_gfx_width == 0u || g_kernel_gfx_height == 0u) {
+        return 0;
+    }
+    hal_display_blit_xrgb8888(pixels, pitch, width, height, dst_x, dst_y);
+    return 1;
+}
+
 enum kernel_gfx_buffer_kind kernel_gfx_buffer_kind(uint32_t op) {
     switch (op) {
         case SYS_GFX_INFO:
@@ -106,8 +130,8 @@ void kernel_gfx_begin_batch(void) {
 }
 
 void kernel_gfx_end_batch(uint32_t flags) {
+    hal_display_end_update();
     if ((flags & SYS_GFX_BATCH_PRESENT) != 0u) {
         hal_display_present();
     }
-    hal_display_end_update();
 }

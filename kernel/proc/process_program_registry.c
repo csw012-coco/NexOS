@@ -7,6 +7,7 @@ static const struct process_program g_process_programs[] = {
     { "memdemo", "MEMDEMO.ELF" },
     { "readdemo", "READDEMO.ELF" },
     { "yielddemo", "YIELDDEMO.ELF" },
+    { "ipcdemo", "IPCDEMO.ELF" },
     { "badptr", "BADPTR.ELF" },
     { "sleepdemo", "SLEEPDEMO.ELF" },
     { "cat", "CATDEMO.ELF" },

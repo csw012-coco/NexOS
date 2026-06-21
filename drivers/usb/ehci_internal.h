@@ -28,8 +28,11 @@ enum {
     EHCI_MSC_DEBUG = 0u,
     EHCI_PAGE_SIZE = 4096u,
     EHCI_SECTOR_SIZE = 512u,
-    EHCI_MSC_READAHEAD_MAX_SECTORS = 1u,
-    EHCI_MSC_READAHEAD_INITIAL_SECTORS = 1u,
+    EHCI_MSC_TRANSFER_PAGES = 4u,
+    EHCI_MSC_TRANSFER_BYTES = EHCI_MSC_TRANSFER_PAGES * EHCI_PAGE_SIZE,
+    EHCI_MSC_TRANSFER_SECTORS = EHCI_MSC_TRANSFER_BYTES / EHCI_SECTOR_SIZE,
+    EHCI_MSC_READAHEAD_MAX_SECTORS = EHCI_MSC_TRANSFER_SECTORS,
+    EHCI_MSC_READAHEAD_INITIAL_SECTORS = EHCI_MSC_TRANSFER_SECTORS,
     EHCI_ASYNC_CONTROL_SPINS = 8000000u,
     EHCI_ASYNC_BULK_META_SPINS = 12000000u,
     EHCI_ASYNC_BULK_DATA_SPINS = 300000000u,
@@ -364,7 +367,6 @@ uint8_t ehci_msc_get_max_lun(struct ehci_msc_device *dev);
 void ehci_msc_record_sense(struct ehci_msc_device *dev, const uint8_t *sense, uint32_t length);
 void ehci_msc_reduce_readahead(struct ehci_msc_device *dev);
 int ehci_msc_request_sense(struct ehci_msc_device *dev, uint8_t *sense, uint32_t length);
-int ehci_bytes_equal(const uint8_t *lhs, const uint8_t *rhs, uint32_t size);
 int ehci_msc_buffer_has_transport_signature(const uint8_t *data);
 int ehci_msc_sync_cache(struct ehci_msc_device *dev, uint64_t lba, uint32_t count);
 void ehci_msc_retry_delay(struct ehci_msc_device *dev);
@@ -374,6 +376,7 @@ int ehci_msc_read_capacity(struct ehci_msc_device *dev);
 int ehci_msc_probe(struct ehci_msc_device *dev);
 int ehci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count, void *buffer);
 int ehci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t count, const void *buffer);
+int ehci_msc_flush_impl(struct block_device *bdev);
 
 int ehci_parse_hid_keyboard_config(struct ehci_hid_keyboard *kbd, const uint8_t *cfg, uint32_t length);
 int ehci_hid_set_protocol(struct ehci_hid_keyboard *kbd, uint8_t protocol);

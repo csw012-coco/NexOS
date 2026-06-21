@@ -670,6 +670,7 @@ int vfs_mount_fs_at_lba(struct vfs *vfs,
 int vfs_umount(struct vfs *vfs, const char *target) {
     uint32_t slot;
     char name[NOS_NAME_BUFFER_SIZE];
+    struct block_device *bdev;
 
     if (vfs == 0 || target == 0 || target[0] != '/') {
         return vfs_mount_fail(VFS_MOUNT_ERR_INVALID_TARGET);
@@ -681,6 +682,12 @@ int vfs_umount(struct vfs *vfs, const char *target) {
         return vfs_mount_fail(VFS_MOUNT_ERR_TARGET_NOT_FOUND);
     }
     if (vfs->root_kind == vfs->mounts[slot].kind && vfs->root_slot == slot + 1u) {
+        return vfs_mount_fail(VFS_MOUNT_ERR_TARGET_BUSY);
+    }
+    bdev = vfs->mounts[slot].kind == VFS_MOUNT_FAT32
+        ? vfs->mounts[slot].fat32.bdev
+        : vfs->mounts[slot].nxfs.bdev;
+    if (blockdev_flush(bdev) != 0) {
         return vfs_mount_fail(VFS_MOUNT_ERR_TARGET_BUSY);
     }
     vfs->mounts[slot].fat32.mounted = 0;

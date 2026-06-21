@@ -1,5 +1,7 @@
 #include "user/libc/include/nlibc.h"
 
+int errno;
+
 static int stdlib_digit_value_local(char ch) {
     if (ch >= '0' && ch <= '9') {
         return ch - '0';
@@ -123,4 +125,8 @@ int atoi(const char *text) {
     }
     value = strtoul(cursor, 0, 10);
     return sign < 0 ? -(int)value : (int)value;
+}
+
+int abs(int value) {
+    return value < 0 ? -value : value;
 }

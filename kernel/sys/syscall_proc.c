@@ -160,6 +160,15 @@ uint64_t syscall_handle_getpid(void) {
     return proc != 0 ? proc->pid : 0u;
 }
 
+uint64_t syscall_handle_fork(const struct syscall_frame *frame) {
+    uint32_t child_pid = 0;
+
+    if (!job_fork_current(frame, &child_pid)) {
+        return (uint64_t)-1;
+    }
+    return child_pid;
+}
+
 uint64_t syscall_handle_proc_query(uint32_t kind, uint32_t index, uint64_t user_info_addr) {
     struct process_snapshot proc;
     int ok;

@@ -136,6 +136,11 @@ static int xhci_wait_command_completion(uint8_t *slot_id_out, uint32_t *completi
         uint32_t control;
 
         if (!xhci_pop_event(&event)) {
+            if ((spin & 0xfffu) == 0xfffu) {
+                hal_cpu_wait_for_event();
+            } else {
+                hal_cpu_relax();
+            }
             continue;
         }
         control = event.control;
@@ -175,6 +180,11 @@ int xhci_wait_transfer_event_spins(uint8_t slot_id,
         uint32_t control;
 
         if (!xhci_pop_event(&event)) {
+            if ((spin & 0xfffu) == 0xfffu) {
+                hal_cpu_wait_for_event();
+            } else {
+                hal_cpu_relax();
+            }
             continue;
         }
         control = event.control;

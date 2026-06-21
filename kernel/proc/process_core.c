@@ -1,6 +1,8 @@
 #include "kernel/internal/proc/process_lifecycle_internal.h"
+#include "kernel/internal/proc/process_elf_internal.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/mem/vmm.h"
+#include "hal/hal.h"
 #include "lib/string.h"
 
 struct tty *g_user_tty;
@@ -68,6 +70,9 @@ static void job_reset_mapping_table(struct user_page_mapping *mappings) {
         mappings[i].virt_addr = 0;
         mappings[i].phys_addr = 0;
         mappings[i].reserved_pool = 0;
+        mappings[i].shared = 0;
+        mappings[i].writable = 0;
+        mappings[i].shm_slot = 0;
     }
 }
 
@@ -78,6 +83,8 @@ static void job_reset_runtime_slot(struct job_runtime *runtime) {
     runtime->used = 0;
     runtime->entry = 0;
     runtime->stack_top = 0;
+    runtime->session.fpu_state_valid = 0u;
+    process_release_elf_backing(&runtime->session);
     addrspace_reset(&runtime->session.address_space);
     process_clear_slot_state(&runtime->session.process);
     job_reset_mapping_table(runtime->mappings);
@@ -105,10 +112,20 @@ static void process_refresh_console_from_stdio(struct process *proc) {
     }
 }
 
+void process_discard_non_stdio_files(struct process *proc) {
+    if (proc == NULL) {
+        return;
+    }
+    for (uint32_t i = SYS_FD_STDERR + 1u; i < PROCESS_FILE_MAX; i++) {
+        file_discard(&proc->files[i]);
+    }
+}
+
 static void process_prepare_slot(struct process *proc,
                                  uint32_t slot,
                                  struct address_space *address_space,
                                  const struct process *parent_proc) {
+    process_discard_files(proc);
     process_set_default_state(proc, slot, PROCESS_STATE_RUNNING);
     proc->pid = g_next_pid++;
     proc->console_handle = parent_proc != NULL ? parent_proc->console_handle : g_user_tty;
@@ -122,6 +139,7 @@ static void process_prepare_slot(struct process *proc,
         process_init_stdio(proc);
         process_set_cwd(proc, "/");
     }
+    process_discard_non_stdio_files(proc);
     proc->address_space = address_space;
 }
 
@@ -195,6 +213,7 @@ void process_clear_slot_state(struct process *proc) {
     if (proc == NULL) {
         return;
     }
+    process_discard_files(proc);
     process_set_default_state(proc, 0, PROCESS_STATE_FREE);
 }
 
@@ -351,6 +370,8 @@ void process_clear_current(struct process_session *session) {
     if (session == NULL) {
         return;
     }
+    session->fpu_state_valid = 0u;
+    process_release_elf_backing(session);
     process_clear_slot_state(&session->process);
 }
 
@@ -360,6 +381,44 @@ void process_discard_files(struct process *proc) {
     }
     for (uint32_t i = 0; i < PROCESS_FILE_MAX; i++) {
         file_discard(&proc->files[i]);
+    }
+}
+
+void process_forget_files(struct process *proc) {
+    if (proc == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < PROCESS_FILE_MAX; i++) {
+        file_reset(&proc->files[i]);
+    }
+}
+
+static void process_wake_matching_file_waiter(struct process *proc,
+                                              void *private_data,
+                                              uint8_t file_kind) {
+    if (proc == NULL || proc->state != PROCESS_STATE_WAITING || private_data == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < PROCESS_FILE_MAX; i++) {
+        struct file *file = &proc->files[i];
+
+        if (file_is_active(file) &&
+            file->kind == file_kind &&
+            file->private_data == private_data) {
+            proc->state = PROCESS_STATE_READY;
+            return;
+        }
+    }
+}
+
+void process_wake_file_waiters(void *private_data, uint8_t file_kind) {
+    process_wake_matching_file_waiter(&g_user_session.process, private_data, file_kind);
+    for (uint32_t i = 0; i < USER_PROCESS_LIMIT; i++) {
+        if (g_bg_runtimes[i].used) {
+            process_wake_matching_file_waiter(&g_bg_runtimes[i].session.process,
+                                              private_data,
+                                              file_kind);
+        }
     }
 }
 
@@ -401,6 +460,10 @@ void process_init(struct tty *tty, volatile uint32_t *timer_ticks) {
     g_user_tty = tty;
     g_user_timer_ticks = timer_ticks;
     process_bind_session(&g_user_session, g_user_page_mappings);
+    g_user_session.fpu_state_valid = 0u;
+    g_user_session.elf_backing_slot = 0xffu;
+    g_user_session.elf_image_size = 0;
+    g_user_session.elf_segment_count = 0;
     addrspace_reset(&g_user_session.address_space);
     process_reset_slots();
     process_reset_exit_record(&g_last_exited_process);
@@ -432,6 +495,7 @@ void process_exit_current(struct process_session *session, int32_t exit_code) {
             kprint("proc: exit pid=%u code=%d\n", session->process.pid, exit_code);
         }
     }
+    hal_display_present();
     process_mark_exit_pending(&session->process, exit_code);
 }
 

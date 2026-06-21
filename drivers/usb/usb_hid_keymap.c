@@ -35,6 +35,7 @@ enum keyboard_keycode usb_hid_usage_to_keycode(uint8_t usage) {
         [0x3a] = KEYBOARD_KEY_F1,
         [0x3b] = KEYBOARD_KEY_F2,
         [0x3c] = KEYBOARD_KEY_F3,
+        [0x3d] = KEYBOARD_KEY_F4,
         [0x47] = KEYBOARD_KEY_SCROLL_LOCK,
         [0x4a] = KEYBOARD_KEY_HOME,
         [0x4b] = KEYBOARD_KEY_PAGE_UP,
@@ -46,6 +47,7 @@ enum keyboard_keycode usb_hid_usage_to_keycode(uint8_t usage) {
         [0x51] = KEYBOARD_KEY_DOWN,
         [0x52] = KEYBOARD_KEY_UP,
         [0x53] = KEYBOARD_KEY_NUM_LOCK,
+        [0x90] = KEYBOARD_KEY_HANGUL,
         [0xe0] = KEYBOARD_KEY_LEFT_CTRL,
         [0xe1] = KEYBOARD_KEY_LEFT_SHIFT,
         [0xe2] = KEYBOARD_KEY_LEFT_ALT,
@@ -66,12 +68,14 @@ int usb_hid_keycode_can_repeat(enum keyboard_keycode keycode) {
         case KEYBOARD_KEY_RIGHT_CTRL:
         case KEYBOARD_KEY_LEFT_ALT:
         case KEYBOARD_KEY_RIGHT_ALT:
+        case KEYBOARD_KEY_HANGUL:
         case KEYBOARD_KEY_CAPS_LOCK:
         case KEYBOARD_KEY_NUM_LOCK:
         case KEYBOARD_KEY_SCROLL_LOCK:
         case KEYBOARD_KEY_F1:
         case KEYBOARD_KEY_F2:
         case KEYBOARD_KEY_F3:
+        case KEYBOARD_KEY_F4:
             return 0;
         default:
             return 1;

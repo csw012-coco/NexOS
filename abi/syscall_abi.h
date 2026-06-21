@@ -14,8 +14,8 @@ enum {
     NOS_MOUNT_SLOT_MAX = 4u,
     NOS_PROCESS_SLOT_MAX = 8u,
     NOS_PROCESS_FILE_MAX = 16u,
-    NOS_ELF_FILE_BUFFER_SIZE = 524288u,
-    NOS_USER_STACK_SIZE = NOS_PAGE_SIZE
+    NOS_ELF_FILE_BUFFER_SIZE = 1048576u,
+    NOS_USER_STACK_SIZE = 0x10000u
 };
 
 enum syscall_number {
@@ -28,6 +28,7 @@ enum syscall_number {
     SYS_PIPE = 6,
     SYS_CLEAR = 7,
     SYS_TICKS = 8,
+    SYS_SEEK = 9,
 
     SYS_EXEC = 10,
     SYS_EXEC_REPLACE = 11,
@@ -52,6 +53,20 @@ enum syscall_number {
     SYS_UMOUNT = 29,
 
     SYS_QUERY = 30,
+    SYS_MKFIFO = 31,
+    SYS_FORK = 32,
+    SYS_MMAP = 33,
+    SYS_MUNMAP = 34,
+    SYS_SHM_OPEN = 35,
+    SYS_SHM_UNLINK = 36,
+    SYS_MQ_OPEN = 37,
+    SYS_MQ_UNLINK = 38,
+    SYS_MQ_SEND = 39,
+    SYS_MQ_RECEIVE = 42,
+    SYS_SEM_OPEN = 43,
+    SYS_SEM_UNLINK = 44,
+    SYS_SEM_TRYWAIT = 45,
+    SYS_SEM_POST = 46,
 
     SYS_PAGE_ALLOC = 40,
     SYS_PAGE_FREE = 41,
@@ -74,6 +89,50 @@ enum syscall_number {
     SYS_MAX = 71
 };
 
+enum syscall_mmap_prot {
+    SYS_PROT_READ = 1u,
+    SYS_PROT_WRITE = 2u,
+    SYS_PROT_EXEC = 4u
+};
+
+enum syscall_mmap_flags {
+    SYS_MAP_PRIVATE = 1u,
+    SYS_MAP_SHARED = 2u,
+    SYS_MAP_ANONYMOUS = 4u,
+    SYS_MAP_FIXED = 8u
+};
+
+enum syscall_shm_flags {
+    SYS_SHM_CREATE = 1u,
+    SYS_SHM_EXCL = 2u
+};
+
+struct syscall_mmap_request {
+    uint64_t addr;
+    uint64_t length;
+    uint32_t prot;
+    uint32_t flags;
+    uint32_t shm_handle;
+    uint32_t reserved;
+    uint64_t offset;
+};
+
+enum syscall_ipc_flags {
+    SYS_IPC_CREATE = 1u,
+    SYS_IPC_EXCL = 2u,
+    SYS_IPC_NONBLOCK = 4u
+};
+
+enum {
+    SYS_MQ_MESSAGE_MAX = 256u
+};
+
+struct syscall_mq_buffer {
+    uint64_t data_addr;
+    uint32_t size;
+    uint32_t flags;
+};
+
 enum syscall_read_flags {
     SYS_READ_BLOCKING = 0,
     SYS_READ_NONBLOCK = 1,
@@ -83,7 +142,15 @@ enum syscall_read_flags {
 enum syscall_open_flags {
     SYS_OPEN_CREAT = 1u,
     SYS_OPEN_TRUNC = 2u,
-    SYS_OPEN_APPEND = 4u
+    SYS_OPEN_APPEND = 4u,
+    SYS_OPEN_READ = 8u,
+    SYS_OPEN_WRITE = 16u
+};
+
+enum syscall_seek_whence {
+    SYS_SEEK_SET = 0,
+    SYS_SEEK_CUR = 1,
+    SYS_SEEK_END = 2
 };
 
 enum syscall_fd {
@@ -182,7 +249,20 @@ enum syscall_query_kind {
     SYS_QUERY_MACHINE_INFO = 16,
     SYS_QUERY_RTC = 17,
     SYS_QUERY_HDA = 18,
-    SYS_QUERY_TTY = 19
+    SYS_QUERY_TTY = 19,
+    SYS_QUERY_PROFILE = 20
+};
+
+enum {
+    SYS_PROFILE_NAME_MAX = 32u,
+    SYS_PROFILE_QUERY_RESET = 1u
+};
+
+struct syscall_profile_info {
+    char name[SYS_PROFILE_NAME_MAX];
+    uint64_t calls;
+    uint64_t cycles;
+    uint64_t units;
 };
 
 enum syscall_tty_kind {
@@ -233,12 +313,17 @@ enum syscall_gfx_op {
     SYS_GFX_CIRCLE = 8,
     SYS_GFX_FILL_CIRCLE = 9,
     SYS_GFX_PRESENT = 10,
-    SYS_GFX_BATCH = 11
+    SYS_GFX_BATCH = 11,
+    SYS_GFX_BLIT = 12
 };
 
 enum syscall_gfx_batch_flags {
     SYS_GFX_BATCH_PRESENT = 1u << 0,
     SYS_GFX_BATCH_MAX_COMMANDS = 256
+};
+
+enum syscall_gfx_pixel_format {
+    SYS_GFX_FORMAT_XRGB8888 = 1
 };
 
 struct syscall_gfx_info {
@@ -275,6 +360,17 @@ struct syscall_gfx_batch {
     uint32_t flags;
 };
 
+struct syscall_gfx_blit {
+    uint64_t pixels_addr;
+    int32_t dst_x;
+    int32_t dst_y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t format;
+    uint32_t flags;
+};
+
 enum syscall_clipboard_op {
     SYS_CLIPBOARD_GET = 0,
     SYS_CLIPBOARD_SET = 1,
@@ -290,7 +386,9 @@ struct syscall_clipboard_transfer {
 
 enum syscall_gui_event_op {
     SYS_GUI_EVENT_CURSOR_INIT = 0,
-    SYS_GUI_EVENT_POLL = 1
+    SYS_GUI_EVENT_POLL = 1,
+    SYS_GUI_EVENT_GRAB = 2,
+    SYS_GUI_EVENT_RELEASE = 3
 };
 
 enum syscall_gui_event_type {
@@ -373,7 +471,12 @@ enum syscall_gui_keycode {
     SYS_KEY_GRAVE,
     SYS_KEY_COMMA,
     SYS_KEY_PERIOD,
-    SYS_KEY_SLASH
+    SYS_KEY_SLASH,
+    SYS_KEY_LEFT_ALT,
+    SYS_KEY_RIGHT_ALT,
+    SYS_KEY_F1,
+    SYS_KEY_F2,
+    SYS_KEY_F3
 };
 
 enum syscall_gui_mouse_buttons {
@@ -400,6 +503,7 @@ struct syscall_gui_event {
     uint8_t released;
     uint8_t shift;
     uint8_t ctrl;
+    uint8_t alt;
 };
 
 struct syscall_gui_event_poll {

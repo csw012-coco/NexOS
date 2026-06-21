@@ -18,6 +18,65 @@ static int write_stdout_all_or_stop(const char *buf, uint32_t bytes) {
     return 1;
 }
 
+static void hexdump_append_char_local(char *out, uint32_t out_size, uint32_t *pos, char ch) {
+    if (out == 0 || pos == 0 || *pos >= out_size) {
+        return;
+    }
+    out[*pos] = ch;
+    *pos += 1u;
+}
+
+static void hexdump_append_hex_u32_local(char *out, uint32_t out_size, uint32_t *pos, uint32_t value) {
+    static const char hex[] = "0123456789ABCDEF";
+    uint32_t shift = 28u;
+
+    for (;;) {
+        hexdump_append_char_local(out, out_size, pos, hex[(value >> shift) & 0x0fu]);
+        if (shift == 0) {
+            break;
+        }
+        shift -= 4u;
+    }
+}
+
+static void hexdump_append_hex_byte_local(char *out, uint32_t out_size, uint32_t *pos, uint8_t value) {
+    static const char hex[] = "0123456789ABCDEF";
+
+    hexdump_append_char_local(out, out_size, pos, hex[(value >> 4) & 0x0fu]);
+    hexdump_append_char_local(out, out_size, pos, hex[value & 0x0fu]);
+}
+
+static uint32_t hexdump_format_line_local(char *out, uint32_t out_size, uint32_t offset, const uint8_t *buf, uint32_t got) {
+    uint32_t pos = 0;
+    uint32_t i;
+
+    hexdump_append_hex_u32_local(out, out_size, &pos, offset);
+    hexdump_append_char_local(out, out_size, &pos, ' ');
+    hexdump_append_char_local(out, out_size, &pos, ' ');
+    for (i = 0; i < 16u; i++) {
+        if (i < got) {
+            hexdump_append_hex_byte_local(out, out_size, &pos, buf[i]);
+        } else {
+            hexdump_append_char_local(out, out_size, &pos, ' ');
+            hexdump_append_char_local(out, out_size, &pos, ' ');
+        }
+        if (i + 1u != 16u) {
+            hexdump_append_char_local(out, out_size, &pos, ' ');
+        }
+    }
+    hexdump_append_char_local(out, out_size, &pos, ' ');
+    hexdump_append_char_local(out, out_size, &pos, ' ');
+    hexdump_append_char_local(out, out_size, &pos, '|');
+    for (i = 0; i < got; i++) {
+        char ch = (buf[i] >= 32u && buf[i] <= 126u) ? (char)buf[i] : '.';
+
+        hexdump_append_char_local(out, out_size, &pos, ch);
+    }
+    hexdump_append_char_local(out, out_size, &pos, '|');
+    hexdump_append_char_local(out, out_size, &pos, '\n');
+    return pos;
+}
+
 static int pager_wait(uint32_t tty_fd) {
     char ch = 0;
 
@@ -66,7 +125,7 @@ static void pager_run_fd(uint32_t content_fd, uint32_t tty_fd) {
 
 
 int cmd_help(void) {
-    write_str("cmd commands: help actions action mapper echo clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg\n");
+    write_str("cmd commands: help actions action mapper echo yes clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg\n");
     write_str("shell-only builtins: cd exit [code] exec set export alias functions history source .\n");
     write_str("multicall: nexbox <applet> [args]\n");
     write_str("set lists shell-local vars; env/export list exported environment\n");
@@ -84,6 +143,42 @@ int cmd_echo(int argc, char **argv) {
         write_str(argv[i]);
     }
     write_str("\n");
+    return 0;
+}
+
+int cmd_yes(int argc, char **argv) {
+    char line[512];
+    uint32_t length = 0u;
+
+    if (argc == 2 &&
+        (streq_local(argv[1], "-h") || streq_local(argv[1], "--help"))) {
+        write_str("usage: yes [text...]\n");
+        write_str("repeatedly print text, or y when no text is given\n");
+        return 0;
+    }
+    if (argc <= 1) {
+        line[length++] = 'y';
+    } else {
+        for (int i = 1; i < argc; i++) {
+            if (i > 1) {
+                if (length + 1u >= sizeof(line)) {
+                    write_err_str("yes: arguments too long\n");
+                    return 1;
+                }
+                line[length++] = ' ';
+            }
+            for (uint32_t j = 0; argv[i][j] != '\0'; j++) {
+                if (length + 1u >= sizeof(line)) {
+                    write_err_str("yes: arguments too long\n");
+                    return 1;
+                }
+                line[length++] = argv[i][j];
+            }
+        }
+    }
+    line[length++] = '\n';
+    while (write_stdout_all_or_stop(line, length) > 0) {
+    }
     return 0;
 }
 
@@ -416,11 +511,8 @@ int cmd_cat(int argc, char **argv) {
             int write_rc = write_stdout_all_or_stop(buf, bytes);
 
             if (write_rc < 0) {
-                write_err_str("cat: write failed\n");
-                if (fd != STDIN_FILENO) {
-                    close((uint32_t)fd);
-                }
-                return 1;
+                output_closed = 1;
+                break;
             }
             if (write_rc == 0) {
                 output_closed = 1;
@@ -466,8 +558,8 @@ int cmd_less(int argc, char **argv) {
 }
 
 int cmd_hexdump(int argc, char **argv) {
-    static const char hex[] = "0123456789ABCDEF";
     uint8_t buf[16];
+    char line[96];
     uint32_t offset = 0;
     int fd = STDIN_FILENO;
 
@@ -483,36 +575,18 @@ int cmd_hexdump(int argc, char **argv) {
         }
     }
     for (;;) {
-        uint32_t got = (uint32_t)read(fd, (char *)buf, sizeof(buf));
-        uint32_t i;
+        ssize_t read_rc = read(fd, (char *)buf, sizeof(buf));
+        uint32_t got;
+        uint32_t line_len;
 
-        if (got == 0) {
+        if (read_rc <= 0) {
             break;
         }
-        write_hex_u32(offset);
-        write_str("  ");
-        for (i = 0; i < sizeof(buf); i++) {
-            if (i < got) {
-                char out[3];
-
-                out[0] = hex[(buf[i] >> 4) & 0x0fu];
-                out[1] = hex[buf[i] & 0x0fu];
-                out[2] = '\0';
-                write_str(out);
-            } else {
-                write_str("  ");
-            }
-            if (i + 1u != sizeof(buf)) {
-                write_stdout(" ", 1);
-            }
+        got = (uint32_t)read_rc;
+        line_len = hexdump_format_line_local(line, sizeof(line), offset, buf, got);
+        if (write_stdout_all_or_stop(line, line_len) <= 0) {
+            break;
         }
-        write_str("  |");
-        for (i = 0; i < got; i++) {
-            char ch = (buf[i] >= 32u && buf[i] <= 126u) ? (char)buf[i] : '.';
-
-            write_stdout(&ch, 1);
-        }
-        write_str("|\n");
         offset += got;
         if (got < sizeof(buf)) {
             break;
@@ -946,36 +1020,118 @@ int cmd_wc(int argc, char **argv) {
 }
 
 int cmd_head(int argc, char **argv) {
-    char line[128];
+    char buffer[512];
     uint32_t count = 10u;
-    int fd;
+    uint32_t lines = 0u;
+    uint32_t bytes_left = 0u;
+    const char *path = NULL;
+    int fd = STDIN_FILENO;
+    int argi = 1;
+    int byte_mode = 0;
 
-    if (argc < 2 || argc > 3) {
-        write_err_usage("head", " <path> [count]\n");
-        return 1;
+    if (argc > 1 &&
+        (streq_local(argv[1], "-h") || streq_local(argv[1], "--help"))) {
+        write_str("usage: head [-n count|--lines=count|-count|-c count] [file]\n");
+        write_str("  -n, --lines=count  print the first count lines instead of 10\n");
+        write_str("print the first 10 lines, requested lines, or requested bytes\n");
+        return 0;
     }
-    if (argc == 3) {
-        if (!parse_u32_local(argv[2], &count)) {
+    if (argi < argc && streq_local(argv[argi], "-c")) {
+        if (argi + 1 >= argc || !parse_u32_local(argv[argi + 1], &count)) {
             write_err_str("head: invalid count\n");
             return 1;
         }
+        byte_mode = 1;
+        argi += 2;
+    } else if (argi < argc &&
+               (streq_local(argv[argi], "-n") ||
+                streq_local(argv[argi], "--lines"))) {
+        if (argi + 1 >= argc || !parse_u32_local(argv[argi + 1], &count)) {
+            write_err_str("head: invalid count\n");
+            return 1;
+        }
+        argi += 2;
+    } else if (argi < argc && starts_with_text_local(argv[argi], "--lines=")) {
+        if (!parse_u32_local(argv[argi] + 8, &count)) {
+            write_err_str("head: invalid count\n");
+            return 1;
+        }
+        argi++;
+    } else if (argi < argc &&
+               argv[argi][0] == '-' &&
+               argv[argi][1] == 'n' &&
+               argv[argi][2] != '\0') {
+        if (!parse_u32_local(argv[argi] + 2, &count)) {
+            write_err_str("head: invalid count\n");
+            return 1;
+        }
+        argi++;
+    } else if (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
+        if (!parse_u32_local(argv[argi] + 1, &count)) {
+            write_err_str("head: invalid count\n");
+            return 1;
+        }
+        argi++;
     }
-    fd = cmd_open_resolved_path(argv[1], 0);
-    if (fd < 0) {
-        write_err_str("head: open failed\n");
+    if (argi < argc) {
+        path = argv[argi++];
+    }
+    if (argi < argc) {
+        if (path == NULL || byte_mode || !parse_u32_local(argv[argi], &count)) {
+            write_err_usage("head", " [-n count|--lines=count|-count|-c count] [file]\n");
+            return 1;
+        }
+        argi++;
+    }
+    if (argi != argc) {
+        write_err_usage("head", " [-n count|--lines=count|-count|-c count] [file]\n");
         return 1;
     }
-    while (count != 0u) {
-        uint32_t got = read_line((uint32_t)fd, line, sizeof(line));
+    if (path != NULL && !streq_local(path, "-")) {
+        fd = cmd_open_resolved_path(path, 0);
+        if (fd < 0) {
+            write_err_str("head: open failed\n");
+            return 1;
+        }
+    }
+    if (byte_mode) {
+        bytes_left = count;
+        while (bytes_left != 0u) {
+            uint32_t chunk = bytes_left < sizeof(buffer) ? bytes_left : (uint32_t)sizeof(buffer);
+            ssize_t got = read(fd, buffer, chunk);
 
-        if (got == 0) {
+            if (got <= 0) {
+                break;
+            }
+            if (write_stdout_all_or_stop(buffer, (uint32_t)got) <= 0) {
+                break;
+            }
+            bytes_left -= (uint32_t)got;
+        }
+        if (fd != STDIN_FILENO) {
+            close((uint32_t)fd);
+        }
+        return 0;
+    }
+    while (lines < count) {
+        ssize_t got = read(fd, buffer, sizeof(buffer));
+        uint32_t output = 0u;
+
+        if (got <= 0) {
             break;
         }
-        write_str(line);
-        write_str("\n");
-        count--;
+        while (output < (uint32_t)got) {
+            if (buffer[output++] == '\n' && ++lines == count) {
+                break;
+            }
+        }
+        if (write_stdout_all_or_stop(buffer, output) <= 0) {
+            break;
+        }
     }
-    close((uint32_t)fd);
+    if (fd != STDIN_FILENO) {
+        close((uint32_t)fd);
+    }
     return 0;
 }
 

@@ -495,161 +495,23 @@ void ush_prompt_override(const char *prompt) {
 }
 
 int read_line_chars(struct ush_editor *editor, char *line, uint32_t max_len) {
-    char ch = 0;
-    char esc = 0;
-    char bracket = 0;
-    char tail = 0;
+    ssize_t got;
 
-    if (max_len == 0) {
+    if (editor == NULL || line == NULL || max_len == 0) {
         return 0;
     }
-    editor->len = 0;
-    editor->cursor = 0;
-    editor->rendered_len = 0;
-    editor->line[0] = '\0';
+    do {
+        got = nex_read(STDIN_FILENO, line, max_len, NEX_READ_NONBLOCK);
+        if (got <= 0) {
+            yield();
+        }
+    } while (got <= 0);
+    line[max_len - 1u] = '\0';
+    ush_editor_set_line(editor, line);
+    ush_editor_history_store(editor, line);
     editor->history_index = -1;
     editor->scratch_saved = 0;
-    for (;;) {
-        if (!ush_read_char_nonblock(&ch)) {
-            yield();
-            continue;
-        }
-        if (ch == 0x03) {
-            editor->line[0] = '\0';
-            editor->len = 0;
-            editor->cursor = 0;
-            editor->rendered_len = 0;
-            write_str("^C\n");
-            line[0] = '\0';
-            return 1;
-        }
-        if (ch == 0x01) {
-            ush_editor_move_home(editor);
-            ush_editor_render(editor);
-            ush_editor_sync_rendered_len(editor);
-            continue;
-        }
-        if (ch == 0x05) {
-            ush_editor_move_end(editor);
-            ush_editor_render(editor);
-            ush_editor_sync_rendered_len(editor);
-            continue;
-        }
-        if (ch == 0x0c) {
-            clear();
-            ush_editor_render(editor);
-            ush_editor_sync_rendered_len(editor);
-            continue;
-        }
-        if (ch == '\r' || ch == '\n') {
-            copy_line_local(line, editor->line, max_len);
-            ush_editor_history_store(editor, line);
-            editor->history_index = -1;
-            editor->scratch_saved = 0;
-            write_str("\n");
-            return 1;
-        }
-        if (ch == '\b' || ch == 0x7f) {
-            ush_editor_backspace(editor);
-            ush_editor_render(editor);
-            ush_editor_sync_rendered_len(editor);
-            continue;
-        }
-        if (ch == '\t') {
-            ush_editor_complete(editor);
-            ush_editor_render(editor);
-            ush_editor_sync_rendered_len(editor);
-            continue;
-        }
-        if (ch == '\x1b') {
-            if (!ush_read_escape_char(&esc)) {
-                continue;
-            }
-            if (esc == 'O') {
-                if (!ush_read_escape_char(&bracket)) {
-                    continue;
-                }
-                switch (bracket) {
-                    case 'H':
-                        ush_editor_move_home(editor);
-                        break;
-                    case 'F':
-                        ush_editor_move_end(editor);
-                        break;
-                    default:
-                        break;
-                }
-                ush_editor_render(editor);
-                ush_editor_sync_rendered_len(editor);
-                continue;
-            }
-            if (esc != '[') {
-                continue;
-            }
-            if (!ush_read_escape_char(&bracket)) {
-                continue;
-            }
-            if (bracket >= '0' && bracket <= '9') {
-                if (!ush_read_escape_char(&tail)) {
-                    continue;
-                }
-                if (tail == '~') {
-                    switch (bracket) {
-                        case '1':
-                        case '7':
-                            ush_editor_move_home(editor);
-                            break;
-                        case '3':
-                            ush_editor_delete(editor);
-                            break;
-                        case '4':
-                        case '8':
-                            ush_editor_move_end(editor);
-                            break;
-                        default:
-                            break;
-                    }
-                }
-                ush_editor_render(editor);
-                ush_editor_sync_rendered_len(editor);
-                continue;
-            }
-            switch (bracket) {
-                case 'A':
-                    ush_editor_history_up(editor);
-                    break;
-                case 'B':
-                    ush_editor_history_down(editor);
-                    break;
-                case 'C':
-                    if (editor->cursor < editor->len) {
-                        editor->cursor++;
-                    }
-                    break;
-                case 'D':
-                    if (editor->cursor != 0) {
-                        editor->cursor--;
-                    }
-                    break;
-                case 'H':
-                    ush_editor_move_home(editor);
-                    break;
-                case 'F':
-                    ush_editor_move_end(editor);
-                    break;
-                default:
-                    break;
-            }
-            ush_editor_render(editor);
-            ush_editor_sync_rendered_len(editor);
-            continue;
-        }
-        if (ch >= ' ' && ch <= '~' && editor->len + 1u < max_len) {
-            ush_editor_insert_char(editor, ch);
-            ush_editor_render(editor);
-            ush_editor_sync_rendered_len(editor);
-        }
-    }
+    return 1;
 }
 
 void ush_history_list(void) {

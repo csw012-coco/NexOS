@@ -36,6 +36,12 @@ void hal_display_end_update(void) {
     }
 }
 
+void hal_display_service_pending(void) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_service_pending();
+    }
+}
+
 void hal_display_load_font(const struct bootx_boot_info *boot_info) {
     framebuffer_display_load_font_from_boot_modules(boot_info);
 }
@@ -58,6 +64,16 @@ void hal_paging_switch_root(uint64_t cr3) {
 
 uint64_t hal_paging_create_user_root(void) {
     return hal_x86_paging_create_user_root_impl();
+}
+
+uint64_t hal_paging_clone_root_cow(uint64_t source_cr3) {
+    return hal_x86_paging_clone_root_cow_impl(source_cr3);
+}
+
+int hal_paging_resolve_cow_fault(uint64_t root_cr3,
+                                 uint64_t fault_addr,
+                                 uint64_t error_code) {
+    return hal_x86_paging_resolve_cow_fault_impl(root_cr3, fault_addr, error_code);
 }
 
 void hal_paging_destroy_user_root(uint64_t cr3) {
@@ -86,6 +102,10 @@ int hal_paging_map_page_with_exec(uint64_t virt_addr,
                                   int writable,
                                   int executable) {
     return hal_x86_paging_map_page_with_exec_impl(virt_addr, phys_addr, user_accessible, writable, executable);
+}
+
+int hal_paging_set_write_combining(uint64_t virt_addr, uint64_t size) {
+    return hal_x86_paging_set_write_combining_impl(virt_addr, size);
 }
 
 int hal_paging_unmap_page(uint64_t virt_addr, uint64_t *phys_addr) {
@@ -307,6 +327,17 @@ void hal_display_blit_surface(const struct surface *surface,
     }
 }
 
+void hal_display_blit_xrgb8888(const uint32_t *pixels,
+                               uint32_t pitch,
+                               uint32_t width,
+                               uint32_t height,
+                               int32_t dst_x,
+                               int32_t dst_y) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_blit_xrgb8888(pixels, pitch, width, height, dst_x, dst_y);
+    }
+}
+
 void hal_display_draw_pixel(int32_t x, int32_t y, uint32_t rgb) {
     if (framebuffer_display_active()) {
         framebuffer_display_draw_pixel(x, y, rgb);
@@ -418,6 +449,34 @@ void hal_cpu_sti(void) {
 
 void hal_cpu_halt(void) {
     hal_x86_cpu_halt_impl();
+}
+
+void hal_cpu_wait_for_interrupt(void) {
+    hal_x86_cpu_wait_for_interrupt_impl();
+}
+
+void hal_cpu_wait_for_event(void) {
+    hal_x86_cpu_wait_for_event_impl();
+}
+
+void hal_cpu_relax(void) {
+    hal_x86_cpu_relax_impl();
+}
+
+void hal_cpu_enable_sse(void) {
+    hal_x86_cpu_enable_sse_impl();
+}
+
+void hal_fpu_state_init(void *state) {
+    hal_x86_fpu_state_init_impl(state);
+}
+
+void hal_fpu_state_save(void *state) {
+    hal_x86_fpu_state_save_impl(state);
+}
+
+void hal_fpu_state_restore(const void *state) {
+    hal_x86_fpu_state_restore_impl(state);
 }
 
 uint64_t hal_cpu_current_sp(void) {

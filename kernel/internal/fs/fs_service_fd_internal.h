@@ -20,6 +20,7 @@ uint64_t fs_service_write(struct process *proc,
                           const void *buffer,
                           uint32_t size);
 uint64_t fs_service_close(struct process *proc, uint32_t fd);
+int64_t fs_service_seek(struct process *proc, uint32_t fd, int64_t offset, uint32_t whence);
 uint64_t fs_service_dup2(struct process *proc, uint32_t src_fd, uint32_t dst_fd);
 uint64_t fs_service_pipe(struct process *proc, uint32_t pair_out[2]);
 uint64_t fs_service_readdir(struct process *proc,

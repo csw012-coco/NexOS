@@ -1,17 +1,233 @@
 #include "kernel/internal/core/tty_internal.h"
 #include "drivers/input/keyboard.h"
+#include "hal/hal.h"
 #include "kernel/internal/core/clipboard_internal.h"
+#include "kernel/public/core/profile.h"
 #include "kernel/public/proc/job_control.h"
 
 static struct tty g_virtual_ttys[TTY_VIRTUAL_COUNT];
 static uint32_t g_active_tty_index;
 static uint8_t g_virtual_ttys_ready;
+static uint32_t g_tty_profile_write;
 
 enum {
     TTY_ANSI_STATE_NONE = 0,
     TTY_ANSI_STATE_ESC = 1,
     TTY_ANSI_STATE_CSI = 2
 };
+
+#define TTY_TAB_WIDTH 8u
+
+static uint8_t tty_codepoint_width(uint32_t codepoint) {
+    return ((codepoint >= 0x1100u && codepoint <= 0x115fu) ||
+            (codepoint >= 0x2e80u && codepoint <= 0xa4cfu) ||
+            (codepoint >= 0xac00u && codepoint <= 0xd7a3u) ||
+            (codepoint >= 0xf900u && codepoint <= 0xfaffu) ||
+            (codepoint >= 0xff00u && codepoint <= 0xff60u)) ? 2u : 1u;
+}
+
+static uint8_t tty_utf8_encode(uint32_t codepoint, char out[4]) {
+    if (codepoint <= 0x7fu) {
+        out[0] = (char)codepoint;
+        return 1u;
+    }
+    if (codepoint <= 0x7ffu) {
+        out[0] = (char)(0xc0u | (codepoint >> 6));
+        out[1] = (char)(0x80u | (codepoint & 0x3fu));
+        return 2u;
+    }
+    out[0] = (char)(0xe0u | (codepoint >> 12));
+    out[1] = (char)(0x80u | ((codepoint >> 6) & 0x3fu));
+    out[2] = (char)(0x80u | (codepoint & 0x3fu));
+    return 3u;
+}
+
+static uint32_t tty_hangul_codepoint(const struct tty *tty) {
+    static const uint16_t initial_jamo[19] = {
+        0x3131, 0x3132, 0x3134, 0x3137, 0x3138, 0x3139, 0x3141, 0x3142, 0x3143,
+        0x3145, 0x3146, 0x3147, 0x3148, 0x3149, 0x314a, 0x314b, 0x314c, 0x314d, 0x314e
+    };
+    static const uint16_t medial_jamo[21] = {
+        0x314f, 0x3150, 0x3151, 0x3152, 0x3153, 0x3154, 0x3155, 0x3156, 0x3157,
+        0x3158, 0x3159, 0x315a, 0x315b, 0x315c, 0x315d, 0x315e, 0x315f, 0x3160,
+        0x3161, 0x3162, 0x3163
+    };
+
+    if (tty->hangul_initial >= 0 && tty->hangul_medial >= 0) {
+        uint32_t final = tty->hangul_final >= 0 ? (uint32_t)tty->hangul_final : 0u;
+        return 0xac00u + ((uint32_t)tty->hangul_initial * 21u +
+                          (uint32_t)tty->hangul_medial) * 28u + final;
+    }
+    if (tty->hangul_initial >= 0) {
+        return initial_jamo[(uint8_t)tty->hangul_initial];
+    }
+    if (tty->hangul_medial >= 0) {
+        return medial_jamo[(uint8_t)tty->hangul_medial];
+    }
+    return 0u;
+}
+
+static void tty_hangul_clear(struct tty *tty) {
+    tty->hangul_initial = -1;
+    tty->hangul_medial = -1;
+    tty->hangul_final = -1;
+    tty->hangul_bytes = 0u;
+}
+
+static void tty_hangul_commit(struct tty *tty) {
+    tty_hangul_clear(tty);
+    tty->hangul_start = tty->input_cursor;
+}
+
+static void tty_hangul_render_mode(const struct tty *tty) {
+    uint16_t width = console_width();
+
+    if (tty == NULL || width < 4u || !console_is_visible(&tty->console)) {
+        return;
+    }
+    console_write_at(&tty->console,
+                     tty->console.top_row,
+                     (uint16_t)(width - 3u),
+                     tty->hangul_mode ? "KO " : "EN ",
+                     tty->text_color);
+}
+
+static int tty_replace_input_range(struct tty *tty,
+                                   uint8_t start,
+                                   uint8_t old_len,
+                                   const char *text,
+                                   uint8_t text_len) {
+    int32_t delta = (int32_t)text_len - (int32_t)old_len;
+
+    if (start > tty->input_len || start + old_len > tty->input_len ||
+        (delta > 0 && tty->input_len + (uint32_t)delta > TTY_LINE_MAX)) {
+        return 0;
+    }
+    if (delta > 0) {
+        for (int32_t i = tty->input_len; i >= (int32_t)(start + old_len); i--) {
+            tty->input[i + delta] = tty->input[i];
+        }
+    } else if (delta < 0) {
+        for (uint32_t i = start + old_len; i <= tty->input_len; i++) {
+            tty->input[i + delta] = tty->input[i];
+        }
+    }
+    for (uint8_t i = 0; i < text_len; i++) {
+        tty->input[start + i] = text[i];
+    }
+    tty->input_len = (uint8_t)((int32_t)tty->input_len + delta);
+    tty->input_cursor = (uint8_t)(start + text_len);
+    tty->input[tty->input_len] = '\0';
+    return 1;
+}
+
+static int tty_hangul_update(struct tty *tty) {
+    char encoded[4];
+    uint8_t len = tty_utf8_encode(tty_hangul_codepoint(tty), encoded);
+
+    if (tty->hangul_bytes == 0u) {
+        tty->hangul_start = tty->input_cursor;
+    }
+    if (!tty_replace_input_range(tty, tty->hangul_start, tty->hangul_bytes, encoded, len)) {
+        return 0;
+    }
+    tty->hangul_bytes = len;
+    return 1;
+}
+
+static int8_t tty_hangul_combine_medial(int8_t a, int8_t b) {
+    if (a == 8 && b == 0) return 9;
+    if (a == 8 && b == 1) return 10;
+    if (a == 8 && b == 20) return 11;
+    if (a == 13 && b == 4) return 14;
+    if (a == 13 && b == 5) return 15;
+    if (a == 13 && b == 20) return 16;
+    if (a == 18 && b == 20) return 19;
+    return -1;
+}
+
+static int8_t tty_hangul_split_medial(int8_t value) {
+    if (value >= 9 && value <= 11) return 8;
+    if (value >= 14 && value <= 16) return 13;
+    if (value == 19) return 18;
+    return -1;
+}
+
+static int8_t tty_hangul_final_for_initial(int8_t initial) {
+    static const int8_t map[19] = {1, 2, 4, 7, -1, 8, 16, 17, -1, 19, 20, 21, 22, -1, 23, 24, 25, 26, 27};
+    return initial >= 0 && initial < 19 ? map[(uint8_t)initial] : -1;
+}
+
+static int8_t tty_hangul_initial_for_final(int8_t final) {
+    static const int8_t map[28] = {-1, 0, 1, -1, 2, -1, -1, 3, 5, -1, -1, -1, -1, -1,
+                                   -1, -1, 6, 7, -1, 9, 10, 11, 12, 14, 15, 16, 17, 18};
+    return final >= 0 && final < 28 ? map[(uint8_t)final] : -1;
+}
+
+static int8_t tty_hangul_combine_final(int8_t a, int8_t b) {
+    if (a == 1 && b == 19) return 3;
+    if (a == 4 && b == 22) return 5;
+    if (a == 4 && b == 27) return 6;
+    if (a == 8 && b == 1) return 9;
+    if (a == 8 && b == 16) return 10;
+    if (a == 8 && b == 17) return 11;
+    if (a == 8 && b == 19) return 12;
+    if (a == 8 && b == 25) return 13;
+    if (a == 8 && b == 26) return 14;
+    if (a == 8 && b == 27) return 15;
+    if (a == 17 && b == 19) return 18;
+    return -1;
+}
+
+static int8_t tty_hangul_split_final(int8_t value, int8_t *second) {
+    switch (value) {
+        case 3: *second = 19; return 1;
+        case 5: *second = 22; return 4;
+        case 6: *second = 27; return 4;
+        case 9: *second = 1; return 8;
+        case 10: *second = 16; return 8;
+        case 11: *second = 17; return 8;
+        case 12: *second = 19; return 8;
+        case 13: *second = 25; return 8;
+        case 14: *second = 26; return 8;
+        case 15: *second = 27; return 8;
+        case 18: *second = 19; return 17;
+        default: *second = value; return 0;
+    }
+}
+
+static int tty_hangul_map_key(const struct keyboard_event *event, int8_t *value, int *vowel) {
+    *vowel = 0;
+    switch (event->keycode) {
+        case KEYBOARD_KEY_R: *value = event->shift ? 1 : 0; return 1;
+        case KEYBOARD_KEY_S: *value = 2; return 1;
+        case KEYBOARD_KEY_E: *value = event->shift ? 4 : 3; return 1;
+        case KEYBOARD_KEY_F: *value = 5; return 1;
+        case KEYBOARD_KEY_A: *value = 6; return 1;
+        case KEYBOARD_KEY_Q: *value = event->shift ? 8 : 7; return 1;
+        case KEYBOARD_KEY_T: *value = event->shift ? 10 : 9; return 1;
+        case KEYBOARD_KEY_D: *value = 11; return 1;
+        case KEYBOARD_KEY_W: *value = event->shift ? 13 : 12; return 1;
+        case KEYBOARD_KEY_C: *value = 14; return 1;
+        case KEYBOARD_KEY_Z: *value = 15; return 1;
+        case KEYBOARD_KEY_X: *value = 16; return 1;
+        case KEYBOARD_KEY_V: *value = 17; return 1;
+        case KEYBOARD_KEY_G: *value = 18; return 1;
+        case KEYBOARD_KEY_K: *value = 0; *vowel = 1; return 1;
+        case KEYBOARD_KEY_O: *value = event->shift ? 3 : 1; *vowel = 1; return 1;
+        case KEYBOARD_KEY_I: *value = 2; *vowel = 1; return 1;
+        case KEYBOARD_KEY_J: *value = 4; *vowel = 1; return 1;
+        case KEYBOARD_KEY_P: *value = event->shift ? 7 : 5; *vowel = 1; return 1;
+        case KEYBOARD_KEY_U: *value = 6; *vowel = 1; return 1;
+        case KEYBOARD_KEY_H: *value = 8; *vowel = 1; return 1;
+        case KEYBOARD_KEY_Y: *value = 12; *vowel = 1; return 1;
+        case KEYBOARD_KEY_N: *value = 13; *vowel = 1; return 1;
+        case KEYBOARD_KEY_B: *value = 17; *vowel = 1; return 1;
+        case KEYBOARD_KEY_M: *value = 18; *vowel = 1; return 1;
+        case KEYBOARD_KEY_L: *value = 20; *vowel = 1; return 1;
+        default: return 0;
+    }
+}
 
 static uint8_t tty_ansi_effective_color(const struct tty *tty, uint8_t color) {
     if (tty->ansi_active && color == tty->text_color) {
@@ -321,6 +537,22 @@ static int tty_utf8_is_continuation(uint8_t ch) {
     return (ch & 0xc0u) == 0x80u;
 }
 
+static uint8_t tty_utf8_expected_length(uint8_t first) {
+    if (first < 0x80u) {
+        return 1u;
+    }
+    if ((first & 0xe0u) == 0xc0u) {
+        return 2u;
+    }
+    if ((first & 0xf0u) == 0xe0u) {
+        return 3u;
+    }
+    if ((first & 0xf8u) == 0xf0u) {
+        return 4u;
+    }
+    return 0u;
+}
+
 static uint32_t tty_utf8_decode_next(const char *data, uint32_t len, uint32_t offset, uint32_t *codepoint) {
     uint8_t first;
     uint32_t needed = 0;
@@ -375,6 +607,33 @@ static uint32_t tty_utf8_decode_next(const char *data, uint32_t len, uint32_t of
     return needed;
 }
 
+static uint8_t tty_utf8_previous_offset(const char *data, uint8_t offset) {
+    uint8_t previous;
+
+    if (data == NULL || offset == 0u) {
+        return 0u;
+    }
+    previous = (uint8_t)(offset - 1u);
+    while (previous > 0u && tty_utf8_is_continuation((uint8_t)data[previous])) {
+        previous--;
+    }
+    return previous;
+}
+
+static uint8_t tty_utf8_next_offset(const char *data, uint8_t len, uint8_t offset) {
+    uint32_t codepoint;
+    uint32_t consumed;
+
+    if (data == NULL || offset >= len) {
+        return len;
+    }
+    consumed = tty_utf8_decode_next(data, len, offset, &codepoint);
+    if (consumed == 0u || consumed > (uint32_t)(len - offset)) {
+        consumed = 1u;
+    }
+    return (uint8_t)(offset + consumed);
+}
+
 static void tty_write_parsed_codepoint(struct tty *tty, uint32_t codepoint, uint8_t color) {
     if (codepoint < 0x80u) {
         tty_write_parsed_char(tty, (char)codepoint, color);
@@ -398,6 +657,123 @@ static void tty_queue_char(struct tty *tty, char ch) {
     tty->char_queue[tty->char_tail] = ch;
     tty->char_tail = (uint8_t)((tty->char_tail + 1u) % TTY_CHAR_QUEUE_SIZE);
     tty->char_count++;
+}
+
+static void tty_raw_hangul_update(struct tty *tty) {
+    uint32_t codepoint = tty_hangul_codepoint(tty);
+    char encoded[4];
+    uint8_t len;
+    uint8_t needed;
+
+    if (codepoint == 0u) {
+        return;
+    }
+    len = tty_utf8_encode(codepoint, encoded);
+    needed = (uint8_t)(len + (tty->hangul_bytes != 0u ? 1u : 0u));
+    if (!tty_can_queue_chars(tty, needed)) {
+        return;
+    }
+    if (tty->hangul_bytes != 0u) {
+        tty_queue_char(tty, '\b');
+    }
+    for (uint8_t i = 0u; i < len; i++) {
+        tty_queue_char(tty, encoded[i]);
+    }
+    tty->hangul_bytes = len;
+}
+
+static void tty_raw_hangul_commit(struct tty *tty) {
+    tty_hangul_clear(tty);
+}
+
+static int tty_raw_hangul_backspace(struct tty *tty) {
+    int8_t split;
+
+    if (tty->hangul_bytes == 0u) {
+        return 0;
+    }
+    if (tty->hangul_final > 0) {
+        int8_t remaining;
+
+        split = 0;
+        remaining = tty_hangul_split_final(tty->hangul_final, &split);
+        tty->hangul_final = remaining != 0 ? remaining : -1;
+    } else if (tty->hangul_medial >= 0) {
+        tty->hangul_medial = tty_hangul_split_medial(tty->hangul_medial);
+    } else {
+        tty_queue_char(tty, '\b');
+        tty_hangul_clear(tty);
+        return 1;
+    }
+    if (tty->hangul_initial < 0 && tty->hangul_medial < 0) {
+        tty_queue_char(tty, '\b');
+        tty_hangul_clear(tty);
+    } else {
+        tty_raw_hangul_update(tty);
+    }
+    return 1;
+}
+
+static int tty_raw_hangul_feed(struct tty *tty, const struct keyboard_event *event) {
+    int8_t value;
+    int vowel;
+
+    if (!tty_hangul_map_key(event, &value, &vowel)) {
+        tty_raw_hangul_commit(tty);
+        return 0;
+    }
+    if (vowel) {
+        if (tty->hangul_medial < 0) {
+            tty->hangul_medial = value;
+        } else if (tty->hangul_final > 0) {
+            int8_t moved_final;
+            int8_t remaining_final = tty_hangul_split_final(tty->hangul_final, &moved_final);
+            int8_t next_initial = tty_hangul_initial_for_final(moved_final);
+
+            tty->hangul_final = remaining_final > 0 ? remaining_final : -1;
+            tty_raw_hangul_update(tty);
+            tty_raw_hangul_commit(tty);
+            tty->hangul_initial = next_initial;
+            tty->hangul_medial = value;
+        } else {
+            int8_t combined = tty_hangul_combine_medial(tty->hangul_medial, value);
+
+            if (combined >= 0) {
+                tty->hangul_medial = combined;
+            } else {
+                tty_raw_hangul_commit(tty);
+                tty->hangul_medial = value;
+            }
+        }
+    } else {
+        if (tty->hangul_initial < 0 && tty->hangul_medial < 0) {
+            tty->hangul_initial = value;
+        } else if (tty->hangul_medial < 0 || tty->hangul_initial < 0) {
+            tty_raw_hangul_commit(tty);
+            tty->hangul_initial = value;
+        } else if (tty->hangul_final < 0) {
+            int8_t final = tty_hangul_final_for_initial(value);
+
+            if (final > 0) {
+                tty->hangul_final = final;
+            } else {
+                tty_raw_hangul_commit(tty);
+                tty->hangul_initial = value;
+            }
+        } else {
+            int8_t second = tty_hangul_final_for_initial(value);
+            int8_t combined = tty_hangul_combine_final(tty->hangul_final, second);
+
+            if (combined > 0) {
+                tty->hangul_final = combined;
+            } else {
+                tty_raw_hangul_commit(tty);
+                tty->hangul_initial = value;
+            }
+        }
+    }
+    tty_raw_hangul_update(tty);
+    return 1;
 }
 
 static void tty_queue_escape_bracket(struct tty *tty, char suffix) {
@@ -451,6 +827,41 @@ static uint16_t tty_prompt_render_rows(uint16_t width, uint16_t origin_col, uint
     return (uint16_t)(((cells - 1u) / width) + 1u);
 }
 
+static uint16_t tty_input_cell_offset(const struct tty *tty,
+                                      uint8_t byte_limit,
+                                      uint16_t width,
+                                      uint16_t origin_col) {
+    uint16_t cells = 0u;
+    uint32_t offset = 0u;
+
+    while (offset < byte_limit && offset < tty->input_len) {
+        uint32_t codepoint;
+        uint32_t consumed = tty_utf8_decode_next(tty->input, tty->input_len, offset, &codepoint);
+        uint16_t col;
+        uint8_t cell_width;
+
+        if (consumed == 0u || offset + consumed > byte_limit) {
+            consumed = 1u;
+            codepoint = (uint8_t)tty->input[offset];
+        }
+        col = width != 0u
+                  ? (uint16_t)(((uint32_t)origin_col + cells) % width)
+                  : 0u;
+        if (codepoint == '\t') {
+            cells = (uint16_t)(cells + TTY_TAB_WIDTH - (col % TTY_TAB_WIDTH));
+            offset += consumed;
+            continue;
+        }
+        cell_width = tty_codepoint_width(codepoint);
+        if (width != 0u && cell_width > 1u && col + cell_width > width) {
+            cells = (uint16_t)(cells + width - col);
+        }
+        cells = (uint16_t)(cells + cell_width);
+        offset += consumed;
+    }
+    return cells;
+}
+
 static void tty_render_prompt(struct tty *tty) {
     uint16_t width;
     uint16_t height;
@@ -476,9 +887,10 @@ static void tty_render_prompt(struct tty *tty) {
     origin_row = tty->input_origin_row;
     origin_col = tty->input_origin_col;
     previous_rows = tty->input_render_rows != 0u ? tty->input_render_rows : 1u;
-    required_rows = tty_prompt_render_rows(width,
-                                           origin_col,
-                                           tty->input_len > tty->input_cursor ? tty->input_len : tty->input_cursor);
+    required_rows = tty_prompt_render_rows(
+        width,
+        origin_col,
+        tty_input_cell_offset(tty, tty->input_len, width, origin_col));
     visible_rows = required_rows;
     if ((uint32_t)(origin_row - tty->console.top_row) + visible_rows > height) {
         visible_rows = (uint16_t)(height - (origin_row - tty->console.top_row));
@@ -499,19 +911,22 @@ static void tty_render_prompt(struct tty *tty) {
         }
     }
 
-    for (i = 0; i < tty->input_len; i++) {
-        uint32_t absolute = (uint32_t)origin_col + i;
-        uint16_t row = (uint16_t)(origin_row + (uint16_t)(absolute / width));
-        uint16_t col = (uint16_t)(absolute % width);
+    console_set_cursor(&tty->console, origin_row, origin_col);
+    for (i = 0; i < tty->input_len;) {
+        uint32_t codepoint;
+        uint32_t consumed = tty_utf8_decode_next(tty->input, tty->input_len, i, &codepoint);
 
-        if (row > tty->console.bottom_row) {
+        if (consumed == 0u) {
             break;
         }
-        tty_put_at(tty, row, col, tty->input[i], tty->text_color);
+        console_put_codepoint(&tty->console, codepoint, tty->text_color);
+        i = (uint16_t)(i + consumed);
     }
 
     {
-        uint32_t cursor_absolute = (uint32_t)origin_col + tty->input_cursor;
+        uint32_t cursor_absolute =
+            (uint32_t)origin_col +
+            tty_input_cell_offset(tty, tty->input_cursor, width, origin_col);
         uint16_t cursor_row = (uint16_t)(origin_row + (uint16_t)(cursor_absolute / width));
         uint16_t cursor_col = (uint16_t)(cursor_absolute % width);
 
@@ -535,6 +950,9 @@ static void tty_emit_ctrl_c_local(struct tty *tty) {
     tty->ready_line[0] = '\0';
     tty->line_ready = 1;
     tty->input_origin_valid = 0u;
+    tty->history_index = -1;
+    tty->history_scratch_saved = 0u;
+    tty_hangul_commit(tty);
     tty_write_str(tty, "^C\n", tty->text_color);
 }
 
@@ -557,6 +975,145 @@ static void tty_insert_input_char(struct tty *tty, char ch) {
     tty->input_len++;
     tty->input_cursor++;
     tty->input[tty->input_len] = '\0';
+}
+
+static void tty_insert_input_tab(struct tty *tty) {
+    uint16_t width;
+    uint16_t origin_col;
+    uint16_t cursor_col;
+    uint16_t spaces;
+
+    if (tty == NULL || tty->input_len >= TTY_LINE_MAX) {
+        return;
+    }
+    width = console_width();
+    origin_col = tty->input_origin_valid
+                     ? tty->input_origin_col
+                     : console_get_cursor_col(&tty->console);
+    cursor_col = width != 0u
+                     ? (uint16_t)(((uint32_t)origin_col +
+                                   tty_input_cell_offset(tty,
+                                                         tty->input_cursor,
+                                                         width,
+                                                         origin_col)) %
+                                  width)
+                     : 0u;
+    spaces = (uint16_t)(TTY_TAB_WIDTH - (cursor_col % TTY_TAB_WIDTH));
+    while (spaces-- != 0u && tty->input_len < TTY_LINE_MAX) {
+        tty_insert_input_char(tty, ' ');
+    }
+}
+
+static void tty_set_input_line(struct tty *tty, const char *text) {
+    uint16_t len = 0u;
+
+    if (tty == NULL) {
+        return;
+    }
+    while (text != NULL && text[len] != '\0' && len < TTY_LINE_MAX) {
+        tty->input[len] = text[len];
+        len++;
+    }
+    tty->input[len] = '\0';
+    tty->input_len = (uint8_t)len;
+    tty->input_cursor = (uint8_t)len;
+    tty_hangul_commit(tty);
+}
+
+static int tty_text_equal(const char *left, const char *right) {
+    uint16_t i = 0u;
+
+    if (left == NULL || right == NULL) {
+        return left == right;
+    }
+    while (left[i] != '\0' && left[i] == right[i]) {
+        i++;
+    }
+    return left[i] == right[i];
+}
+
+static void tty_history_store(struct tty *tty) {
+    uint8_t slot;
+
+    if (tty == NULL || tty->input_len == 0u) {
+        return;
+    }
+    if (tty->history_len != 0u) {
+        uint8_t previous = (uint8_t)((tty->history_next + TTY_HISTORY_MAX - 1u) % TTY_HISTORY_MAX);
+
+        if (tty_text_equal(tty->history[previous], tty->input)) {
+            return;
+        }
+    }
+    slot = tty->history_next;
+    for (uint16_t i = 0u; i <= tty->input_len; i++) {
+        tty->history[slot][i] = tty->input[i];
+    }
+    tty->history_next = (uint8_t)((tty->history_next + 1u) % TTY_HISTORY_MAX);
+    if (tty->history_len < TTY_HISTORY_MAX) {
+        tty->history_len++;
+    }
+}
+
+static void tty_history_load(struct tty *tty, uint8_t index) {
+    uint8_t slot;
+
+    if (tty == NULL || index >= tty->history_len) {
+        return;
+    }
+    slot = (uint8_t)((tty->history_next + TTY_HISTORY_MAX - tty->history_len + index) % TTY_HISTORY_MAX);
+    tty_set_input_line(tty, tty->history[slot]);
+}
+
+static void tty_history_up(struct tty *tty) {
+    if (tty == NULL || tty->history_len == 0u) {
+        return;
+    }
+    tty_hangul_commit(tty);
+    if (tty->history_index < 0) {
+        for (uint16_t i = 0u; i <= tty->input_len; i++) {
+            tty->history_scratch[i] = tty->input[i];
+        }
+        tty->history_scratch_saved = 1u;
+        tty->history_index = (int8_t)(tty->history_len - 1u);
+    } else if (tty->history_index > 0) {
+        tty->history_index--;
+    } else {
+        return;
+    }
+    tty_history_load(tty, (uint8_t)tty->history_index);
+}
+
+static void tty_history_down(struct tty *tty) {
+    if (tty == NULL || tty->history_index < 0) {
+        return;
+    }
+    tty_hangul_commit(tty);
+    if ((uint8_t)(tty->history_index + 1) < tty->history_len) {
+        tty->history_index++;
+        tty_history_load(tty, (uint8_t)tty->history_index);
+        return;
+    }
+    tty->history_index = -1;
+    if (tty->history_scratch_saved) {
+        tty_set_input_line(tty, tty->history_scratch);
+    } else {
+        tty_set_input_line(tty, "");
+    }
+}
+
+static void tty_delete_input_range(struct tty *tty, uint8_t start, uint8_t end) {
+    uint8_t removed;
+
+    if (tty == NULL || start >= end || end > tty->input_len) {
+        return;
+    }
+    removed = (uint8_t)(end - start);
+    for (uint16_t i = end; i <= tty->input_len; i++) {
+        tty->input[i - removed] = tty->input[i];
+    }
+    tty->input_len = (uint8_t)(tty->input_len - removed);
+    tty->input_cursor = start;
 }
 
 static void tty_paste_text(struct tty *tty, const char *text, uint32_t len) {
@@ -601,10 +1158,21 @@ void tty_init(struct tty *tty, uint16_t top_row, uint16_t bottom_row, uint8_t co
     tty->char_tail = 0;
     tty->char_count = 0;
     tty->raw_input = 0;
+    tty->history_len = 0u;
+    tty->history_next = 0u;
+    tty->history_index = -1;
+    tty->history_scratch_saved = 0u;
+    tty->history_scratch[0] = '\0';
     tty->input_origin_row = top_row;
     tty->input_origin_col = 0;
     tty->input_render_rows = 1u;
     tty->input_origin_valid = 0;
+    tty->prompt_cache_len = 0u;
+    tty->hangul_mode = 0u;
+    tty_hangul_clear(tty);
+    tty->hangul_start = 0u;
+    tty->output_utf8_len = 0u;
+    tty->output_utf8_expected = 0u;
     tty->ansi_saved_row = top_row;
     tty->ansi_saved_col = 0;
     tty_ansi_reset_output(tty);
@@ -653,6 +1221,7 @@ int tty_switch_active(uint32_t index) {
         g_active_tty_index = index;
     }
     console_set_visible(&new_tty->console, 1);
+    hal_display_present();
     return 1;
 }
 
@@ -683,6 +1252,7 @@ void tty_clear(struct tty *tty) {
     tty->ansi_saved_col = 0;
     tty->input_origin_valid = 0u;
     tty->input_render_rows = 1u;
+    tty->prompt_cache_len = 0u;
 }
 
 void tty_putc(struct tty *tty, char ch, uint8_t color) {
@@ -691,8 +1261,13 @@ void tty_putc(struct tty *tty, char ch, uint8_t color) {
 
 uint32_t tty_write(struct tty *tty, const char *data, uint32_t len, uint8_t color) {
     uint32_t written = 0;
+    uint64_t start;
 
-    hal_display_begin_update();
+    if (g_tty_profile_write == 0u) {
+        g_tty_profile_write = kernel_profile_register("tty.write");
+    }
+    start = kernel_profile_clock();
+
     if (len != 0u) {
         /*
          * Output produced outside the active line editor should break the
@@ -702,24 +1277,56 @@ uint32_t tty_write(struct tty *tty, const char *data, uint32_t len, uint8_t colo
         tty->input_origin_valid = 0u;
         tty->input_render_rows = 1u;
     }
-    while (written < len && data[written] != '\0') {
+    while (written < len) {
         uint8_t ch = (uint8_t)data[written];
+        uint16_t prompt_cache_before = tty->prompt_cache_len;
 
-        if (ch < 0x80u || tty->ansi_state != TTY_ANSI_STATE_NONE) {
+        if (ch == '\n' || ch == '\r') {
+            tty->prompt_cache_len = 0u;
+        } else if (tty->prompt_cache_len < TTY_PROMPT_CACHE_SIZE) {
+            tty->prompt_cache[tty->prompt_cache_len++] = data[written];
+        }
+        if (tty->output_utf8_len != 0u) {
+            if (!tty_utf8_is_continuation(ch)) {
+                tty_write_parsed_codepoint(tty, 0xfffdu, color);
+                tty->output_utf8_len = 0u;
+                tty->output_utf8_expected = 0u;
+                tty->prompt_cache_len = prompt_cache_before;
+                continue;
+            }
+            tty->output_utf8[tty->output_utf8_len++] = (char)ch;
+            written++;
+            if (tty->output_utf8_len == tty->output_utf8_expected) {
+                uint32_t codepoint = 0xfffdu;
+
+                (void)tty_utf8_decode_next(tty->output_utf8,
+                                           tty->output_utf8_len,
+                                           0u,
+                                           &codepoint);
+                tty_write_parsed_codepoint(tty, codepoint, color);
+                tty->output_utf8_len = 0u;
+                tty->output_utf8_expected = 0u;
+            }
+        } else if (ch < 0x80u || tty->ansi_state != TTY_ANSI_STATE_NONE) {
             tty_write_parsed_char(tty, data[written], color);
             written++;
         } else {
-            uint32_t codepoint = 0xfffdu;
-            uint32_t consumed = tty_utf8_decode_next(data, len, written, &codepoint);
+            uint8_t expected = tty_utf8_expected_length(ch);
 
-            if (consumed == 0u) {
-                break;
+            if (expected == 0u) {
+                tty_write_parsed_codepoint(tty, 0xfffdu, color);
+                written++;
+                continue;
             }
-            tty_write_parsed_codepoint(tty, codepoint, color);
-            written += consumed;
+            tty->output_utf8[0] = (char)ch;
+            tty->output_utf8_len = 1u;
+            tty->output_utf8_expected = expected;
+            written++;
         }
     }
-    hal_display_end_update();
+    kernel_profile_record(g_tty_profile_write,
+                          kernel_profile_clock() - start,
+                          written);
     return written;
 }
 
@@ -764,7 +1371,11 @@ void tty_show_prompt(struct tty *tty) {
     tty->input_origin_col = console_get_cursor_col(&tty->console);
     tty->input_render_rows = 1u;
     tty->input_origin_valid = 1u;
+    tty->history_index = -1;
+    tty->history_scratch_saved = 0u;
+    tty_hangul_commit(tty);
     tty_render_prompt(tty);
+    hal_display_present();
 }
 
 void tty_set_raw_input(struct tty *tty, int enabled) {
@@ -773,10 +1384,117 @@ void tty_set_raw_input(struct tty *tty, int enabled) {
     if (tty == NULL) {
         return;
     }
+    if (tty->raw_input != raw_input) {
+        tty_hangul_clear(tty);
+    }
     if (tty->raw_input != 0u && raw_input == 0u) {
         tty_clear_char_queue(tty);
     }
     tty->raw_input = raw_input;
+}
+
+static int tty_hangul_backspace(struct tty *tty) {
+    int8_t split;
+
+    if (tty->hangul_bytes == 0u || tty->input_cursor != tty->hangul_start + tty->hangul_bytes) {
+        return 0;
+    }
+    if (tty->hangul_final > 0) {
+        split = 0;
+        if (tty_hangul_split_final(tty->hangul_final, &split) != 0) {
+            tty->hangul_final = tty_hangul_split_final(tty->hangul_final, &split);
+        } else {
+            tty->hangul_final = -1;
+        }
+    } else if (tty->hangul_medial >= 0) {
+        split = tty_hangul_split_medial(tty->hangul_medial);
+        tty->hangul_medial = split;
+    } else {
+        (void)tty_replace_input_range(tty, tty->hangul_start, tty->hangul_bytes, "", 0u);
+        tty_hangul_clear(tty);
+        return 1;
+    }
+    if (tty->hangul_initial < 0 && tty->hangul_medial < 0) {
+        (void)tty_replace_input_range(tty, tty->hangul_start, tty->hangul_bytes, "", 0u);
+        tty_hangul_clear(tty);
+    } else {
+        (void)tty_hangul_update(tty);
+    }
+    return 1;
+}
+
+static int tty_hangul_feed(struct tty *tty, const struct keyboard_event *event) {
+    int8_t value;
+    int vowel;
+
+    if (!tty_hangul_map_key(event, &value, &vowel)) {
+        tty_hangul_commit(tty);
+        return 0;
+    }
+    if (tty->input_cursor != tty->hangul_start + tty->hangul_bytes) {
+        tty_hangul_commit(tty);
+    }
+    if (vowel) {
+        if (tty->hangul_medial < 0) {
+            tty->hangul_medial = value;
+        } else if (tty->hangul_final > 0) {
+            int8_t moved_final;
+            int8_t remaining_final = tty_hangul_split_final(tty->hangul_final, &moved_final);
+            int8_t next_initial = tty_hangul_initial_for_final(moved_final);
+
+            tty->hangul_final = remaining_final > 0 ? remaining_final : -1;
+            (void)tty_hangul_update(tty);
+            tty_hangul_commit(tty);
+            tty->hangul_initial = next_initial;
+            tty->hangul_medial = value;
+        } else {
+            int8_t combined = tty_hangul_combine_medial(tty->hangul_medial, value);
+
+            if (combined >= 0) {
+                tty->hangul_medial = combined;
+            } else {
+                (void)tty_hangul_update(tty);
+                tty_hangul_commit(tty);
+                tty->hangul_medial = value;
+            }
+        }
+    } else {
+        if (tty->hangul_initial < 0 && tty->hangul_medial < 0) {
+            tty->hangul_initial = value;
+        } else if (tty->hangul_medial < 0) {
+            (void)tty_hangul_update(tty);
+            tty_hangul_commit(tty);
+            tty->hangul_initial = value;
+        } else if (tty->hangul_initial < 0) {
+            (void)tty_hangul_update(tty);
+            tty_hangul_commit(tty);
+            tty->hangul_initial = value;
+        } else if (tty->hangul_final < 0) {
+            int8_t final = tty_hangul_final_for_initial(value);
+
+            if (final > 0) {
+                tty->hangul_final = final;
+            } else {
+                (void)tty_hangul_update(tty);
+                tty_hangul_commit(tty);
+                tty->hangul_initial = value;
+            }
+        } else {
+            int8_t second = tty_hangul_final_for_initial(value);
+            int8_t combined = tty_hangul_combine_final(tty->hangul_final, second);
+
+            if (combined > 0) {
+                tty->hangul_final = combined;
+            } else {
+                (void)tty_hangul_update(tty);
+                tty_hangul_commit(tty);
+                tty->hangul_initial = value;
+            }
+        }
+    }
+    (void)tty_hangul_update(tty);
+    tty_render_prompt(tty);
+    return 1;
 }
 
 void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
@@ -788,41 +1506,60 @@ void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
     }
 
     had_readable_input = tty->line_ready != 0 || tty->char_count > 0;
+    if (event->keycode == KEYBOARD_KEY_RIGHT_ALT ||
+        event->keycode == KEYBOARD_KEY_HANGUL ||
+        event->keycode == KEYBOARD_KEY_F4 ||
+        (event->ctrl && event->keycode == KEYBOARD_KEY_SPACE)) {
+        tty_hangul_commit(tty);
+        tty->hangul_mode ^= 1u;
+        tty_hangul_render_mode(tty);
+        return;
+    }
     if (tty->raw_input) {
+        if (event->keycode == KEYBOARD_KEY_BACKSPACE &&
+            tty->hangul_mode &&
+            tty_raw_hangul_backspace(tty)) {
+            goto done;
+        }
+        if (tty->hangul_mode && !event->ctrl && tty_raw_hangul_feed(tty, event)) {
+            goto done;
+        }
+        tty_raw_hangul_commit(tty);
+
         switch (event->keycode) {
             case KEYBOARD_KEY_ESC:
                 tty_queue_char(tty, '\x1b');
-                break;
+                goto done;
             case KEYBOARD_KEY_TAB:
                 tty_queue_char(tty, '\t');
-                break;
+                goto done;
             case KEYBOARD_KEY_PAGE_UP:
                 console_scroll_page_up(&tty->console);
-                break;
+                goto done;
             case KEYBOARD_KEY_PAGE_DOWN:
                 console_scroll_page_down(&tty->console);
-                break;
+                goto done;
             case KEYBOARD_KEY_UP:
                 tty_queue_escape_bracket(tty, 'A');
-                break;
+                goto done;
             case KEYBOARD_KEY_DOWN:
                 tty_queue_escape_bracket(tty, 'B');
-                break;
+                goto done;
             case KEYBOARD_KEY_RIGHT:
                 tty_queue_escape_bracket(tty, 'C');
-                break;
+                goto done;
             case KEYBOARD_KEY_LEFT:
                 tty_queue_escape_bracket(tty, 'D');
-                break;
+                goto done;
             case KEYBOARD_KEY_HOME:
                 tty_queue_escape_bracket(tty, 'H');
-                break;
+                goto done;
             case KEYBOARD_KEY_END:
                 tty_queue_escape_bracket(tty, 'F');
-                break;
+                goto done;
             case KEYBOARD_KEY_DELETE:
                 tty_queue_escape_bracket_tilde(tty, '3');
-                break;
+                goto done;
             default:
                 break;
         }
@@ -872,6 +1609,7 @@ void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
     }
 
     if (event->ctrl) {
+        tty_hangul_commit(tty);
         if (event->shift && event->keycode == KEYBOARD_KEY_C) {
             tty_copy_selection(tty);
             goto done;
@@ -890,6 +1628,20 @@ void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
             tty_render_prompt(tty);
             goto done;
         }
+        if (event->keycode == KEYBOARD_KEY_L) {
+            char prompt[TTY_PROMPT_CACHE_SIZE];
+            uint16_t prompt_len = tty->prompt_cache_len;
+
+            for (uint16_t i = 0u; i < prompt_len; i++) {
+                prompt[i] = tty->prompt_cache[i];
+            }
+            tty_clear(tty);
+            if (prompt_len != 0u) {
+                tty_write(tty, prompt, prompt_len, tty->text_color);
+            }
+            tty_render_prompt(tty);
+            goto done;
+        }
         if (event->keycode == KEYBOARD_KEY_C) {
             tty_emit_ctrl_c_local(tty);
             goto done;
@@ -897,7 +1649,9 @@ void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
     }
 
     if (event->keycode == KEYBOARD_KEY_ENTER) {
-        for (uint8_t i = 0; i <= tty->input_len; i++) {
+        tty_hangul_commit(tty);
+        tty_history_store(tty);
+        for (uint16_t i = 0; i <= tty->input_len; i++) {
             tty->ready_line[i] = tty->input[i];
         }
         tty->line_ready = 1;
@@ -906,29 +1660,91 @@ void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
         tty->input_cursor = 0;
         tty->input[0] = '\0';
         tty->input_origin_valid = 0u;
+        tty->history_index = -1;
+        tty->history_scratch_saved = 0u;
         goto done;
     }
 
     if (event->keycode == KEYBOARD_KEY_BACKSPACE) {
+        uint8_t previous;
+
+        if (tty_hangul_backspace(tty)) {
+            tty_render_prompt(tty);
+            goto done;
+        }
         if (tty->input_len == 0 || tty->input_cursor == 0) {
             goto done;
         }
-        for (uint8_t i = tty->input_cursor - 1u; i < tty->input_len; i++) {
-            tty->input[i] = tty->input[i + 1u];
-        }
-        tty->input_cursor--;
-        tty->input_len--;
-        tty->input[tty->input_len] = '\0';
+        previous = tty_utf8_previous_offset(tty->input, tty->input_cursor);
+        tty_delete_input_range(tty, previous, tty->input_cursor);
         tty_render_prompt(tty);
         goto done;
     }
 
+    switch (event->keycode) {
+        case KEYBOARD_KEY_UP:
+            tty_history_up(tty);
+            tty_render_prompt(tty);
+            goto done;
+        case KEYBOARD_KEY_DOWN:
+            tty_history_down(tty);
+            tty_render_prompt(tty);
+            goto done;
+        case KEYBOARD_KEY_LEFT:
+            tty_hangul_commit(tty);
+            tty->input_cursor = tty_utf8_previous_offset(tty->input, tty->input_cursor);
+            tty_render_prompt(tty);
+            goto done;
+        case KEYBOARD_KEY_RIGHT:
+            tty_hangul_commit(tty);
+            tty->input_cursor = tty_utf8_next_offset(tty->input, tty->input_len, tty->input_cursor);
+            tty_render_prompt(tty);
+            goto done;
+        case KEYBOARD_KEY_HOME:
+            tty_hangul_commit(tty);
+            tty->input_cursor = 0u;
+            tty_render_prompt(tty);
+            goto done;
+        case KEYBOARD_KEY_END:
+            tty_hangul_commit(tty);
+            tty->input_cursor = tty->input_len;
+            tty_render_prompt(tty);
+            goto done;
+        case KEYBOARD_KEY_PAGE_UP:
+            tty_hangul_commit(tty);
+            console_scroll_page_up(&tty->console);
+            goto done;
+        case KEYBOARD_KEY_PAGE_DOWN:
+            tty_hangul_commit(tty);
+            console_scroll_page_down(&tty->console);
+            goto done;
+        case KEYBOARD_KEY_DELETE: {
+            uint8_t next;
+
+            tty_hangul_commit(tty);
+            next = tty_utf8_next_offset(tty->input, tty->input_len, tty->input_cursor);
+            tty_delete_input_range(tty, tty->input_cursor, next);
+            tty_render_prompt(tty);
+            goto done;
+        }
+        default:
+            break;
+    }
+
+    if (tty->hangul_mode && !event->ctrl && tty_hangul_feed(tty, event)) {
+        goto done;
+    }
+    tty_hangul_commit(tty);
     ch = event->ascii;
     if (ch == 0 || tty->input_len >= TTY_LINE_MAX) {
         goto done;
     }
 
-    tty_insert_input_char(tty, ch);
+    if (ch == '\t') {
+        tty_insert_input_tab(tty);
+    } else {
+        tty_insert_input_char(tty, ch);
+    }
     tty_render_prompt(tty);
 
 done:

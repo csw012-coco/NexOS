@@ -14,6 +14,13 @@ void hal_x86_paging_init_impl(uint64_t kernel_phys_addr);
 void hal_x86_cpu_cli_impl(void);
 void hal_x86_cpu_sti_impl(void);
 void hal_x86_cpu_halt_impl(void);
+void hal_x86_cpu_wait_for_interrupt_impl(void);
+void hal_x86_cpu_wait_for_event_impl(void);
+void hal_x86_cpu_relax_impl(void);
+void hal_x86_cpu_enable_sse_impl(void);
+void hal_x86_fpu_state_init_impl(void *state);
+void hal_x86_fpu_state_save_impl(void *state);
+void hal_x86_fpu_state_restore_impl(const void *state);
 uint64_t hal_x86_cpu_current_sp_impl(void);
 uint64_t hal_x86_cpu_read_tsc_impl(void);
 void hal_x86_cpu_cpuid_impl(uint32_t leaf,
@@ -34,6 +41,10 @@ void hal_x86_io_out16_impl(uint16_t port, uint16_t value);
 uint64_t hal_x86_paging_current_root_impl(void);
 void hal_x86_paging_switch_root_impl(uint64_t cr3);
 uint64_t hal_x86_paging_create_user_root_impl(void);
+uint64_t hal_x86_paging_clone_root_cow_impl(uint64_t source_cr3);
+int hal_x86_paging_resolve_cow_fault_impl(uint64_t root_cr3,
+                                          uint64_t fault_addr,
+                                          uint64_t error_code);
 void hal_x86_paging_destroy_user_root_impl(uint64_t cr3);
 void hal_x86_paging_allow_user_page_impl(uint64_t addr);
 void hal_x86_paging_allow_user_range_impl(uint64_t start, uint64_t end);
@@ -44,6 +55,7 @@ int hal_x86_paging_map_page_with_exec_impl(uint64_t virt_addr,
                                            int user_accessible,
                                            int writable,
                                            int executable);
+int hal_x86_paging_set_write_combining_impl(uint64_t virt_addr, uint64_t size);
 int hal_x86_paging_unmap_page_impl(uint64_t virt_addr, uint64_t *phys_addr);
 int hal_x86_paging_get_mapping_impl(uint64_t virt_addr, uint64_t *phys_addr);
 int hal_x86_paging_get_mapping_info_impl(uint64_t virt_addr, uint64_t *phys_addr, uint64_t *flags);
