@@ -96,10 +96,94 @@ static int map_image_page(uint32_t root,
     return 1;
 }
 
-int i386_user_load_elf_space(struct early_vfs *vfs,
-                             const char *path,
-                             uint32_t stack_top,
-                             struct i386_user_image *image) {
+static int prepare_initial_stack(uint32_t root,
+                                 uint32_t stack_top,
+                                 int argc,
+                                 const char *const argv[],
+                                 const char *const envp[],
+                                 uint32_t *stack_pointer_out) {
+    uint32_t physical;
+    uint8_t *page;
+    uint32_t sp = I386_PAGE_SIZE;
+    uint32_t argv_addresses[I386_USER_ARG_MAX];
+    uint32_t env_addresses[I386_USER_ENV_MAX];
+    uint32_t envc = 0u;
+
+    if (argc < 0 || argc > I386_USER_ARG_MAX ||
+        stack_pointer_out == 0 ||
+        !i386_paging_translate_in(root, stack_top - I386_PAGE_SIZE, &physical) ||
+        !i386_paging_temporary_map(physical & ~(I386_PAGE_SIZE - 1u),
+                                   2u,
+                                   (void **)&page)) {
+        return 0;
+    }
+    for (int i = argc - 1; i >= 0; i--) {
+        uint32_t length = 0u;
+
+        if (argv == 0 || argv[i] == 0) {
+            i386_paging_temporary_unmap(2u);
+            return 0;
+        }
+        while (argv[i][length] != '\0') {
+            length++;
+        }
+        length++;
+        if (length > sp) {
+            i386_paging_temporary_unmap(2u);
+            return 0;
+        }
+        sp -= length;
+        memcpy(page + sp, argv[i], length);
+        argv_addresses[i] = stack_top - I386_PAGE_SIZE + sp;
+    }
+    while (envp != 0 && envp[envc] != 0 && envc < I386_USER_ENV_MAX) {
+        uint32_t length = 0u;
+
+        while (envp[envc][length] != '\0') {
+            length++;
+        }
+        length++;
+        if (length > sp) {
+            i386_paging_temporary_unmap(2u);
+            return 0;
+        }
+        sp -= length;
+        memcpy(page + sp, envp[envc], length);
+        env_addresses[envc] = stack_top - I386_PAGE_SIZE + sp;
+        envc++;
+    }
+    sp &= ~3u;
+#define PUSH32(value) \
+    do { \
+        if (sp < 4u) { \
+            i386_paging_temporary_unmap(2u); \
+            return 0; \
+        } \
+        sp -= 4u; \
+        *(uint32_t *)(page + sp) = (uint32_t)(value); \
+    } while (0)
+    PUSH32(0u);
+    for (int i = (int)envc - 1; i >= 0; i--) {
+        PUSH32(env_addresses[i]);
+    }
+    PUSH32(0u);
+    for (int i = argc - 1; i >= 0; i--) {
+        PUSH32(argv_addresses[i]);
+    }
+    PUSH32((uint32_t)argc);
+#undef PUSH32
+    *stack_pointer_out = stack_top - I386_PAGE_SIZE + sp;
+    i386_paging_temporary_unmap(2u);
+    return 1;
+}
+
+int i386_user_load_elf_space_args(struct early_vfs *vfs,
+                                  const char *path,
+                                  uint32_t stack_top,
+                                  int argc,
+                                  const char *const argv[],
+                                  const char *const envp[],
+                                  struct i386_user_image *image) {
     struct early_vfs_node node;
     struct elf32_header header;
     struct elf32_program_header programs[ELF_MAX_PROGRAM_HEADERS];
@@ -214,8 +298,30 @@ int i386_user_load_elf_space(struct early_vfs *vfs,
 
     image->root = root;
     image->entry = header.entry;
-    image->stack_top = stack_top;
+    if (!prepare_initial_stack(root,
+                               stack_top,
+                               argc,
+                               argv,
+                               envp,
+                               &image->stack_top)) {
+        return 0;
+    }
     return 1;
+}
+
+int i386_user_load_elf_space(struct early_vfs *vfs,
+                             const char *path,
+                             uint32_t stack_top,
+                             struct i386_user_image *image) {
+    const char *argv[] = {path, 0};
+
+    return i386_user_load_elf_space_args(vfs,
+                                         path,
+                                         stack_top,
+                                         1,
+                                         argv,
+                                         0,
+                                         image);
 }
 
 int i386_user_load_elf(struct early_vfs *vfs,

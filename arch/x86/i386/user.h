@@ -11,6 +11,11 @@ struct i386_user_image {
 };
 
 enum {
+    I386_USER_ARG_MAX = 16,
+    I386_USER_ENV_MAX = 8
+};
+
+enum {
     I386_USER_STACK_TOP = 0xc0000000u,
     I386_USER_STACK_PAGE = I386_USER_STACK_TOP - 4096u
 };
@@ -24,3 +29,10 @@ int i386_user_load_elf_space(struct early_vfs *vfs,
                              const char *path,
                              uint32_t stack_top,
                              struct i386_user_image *image);
+int i386_user_load_elf_space_args(struct early_vfs *vfs,
+                                  const char *path,
+                                  uint32_t stack_top,
+                                  int argc,
+                                  const char *const argv[],
+                                  const char *const envp[],
+                                  struct i386_user_image *image);

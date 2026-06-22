@@ -7,15 +7,20 @@
 #include "fs/vfs_internal.h"
 #include "hal/hal.h"
 #include "kernel/internal/core/tty_internal.h"
+#include "kernel/internal/fs/file_internal.h"
 #include "kernel/public/core/tty.h"
 #include "kernel/public/proc/process.h"
 #include "lib/string.h"
 
 static struct vfs i386_vfs;
 static struct tty *i386_tty;
+static int i386_pop_keyboard_event(struct keyboard_event *event);
 
 extern int kernel_i386_run_test32(struct process_snapshot *process0,
                                   struct process_snapshot *process1);
+extern int kernel_i386_run_command(const char *command,
+                                   struct process_snapshot *process);
+extern int32_t kernel_i386_spawn_command(const char *command);
 
 static int i386_user_buffer_valid(uint32_t address,
                                   uint32_t size,
@@ -87,16 +92,183 @@ uint32_t kernel_i386_syscall_read(void *opaque,
         !i386_user_buffer_valid(user_address, size, 1)) {
         return (uint32_t)-1;
     }
-    return (uint32_t)i386_scheduler_read(&i386_vfs,
-                                         fd,
-                                         (void *)user_address,
-                                         size,
-                                         flags);
+    {
+        int32_t scheduled = i386_scheduler_read(&i386_vfs,
+                                                fd,
+                                                (void *)user_address,
+                                                size,
+                                                flags);
+
+        if (scheduled != -2) {
+            return (uint32_t)scheduled;
+        }
+    }
+    if (i386_scheduler_fd_kind(fd) == KERNEL_FILE_TTY_STDIN) {
+        char *buffer = (char *)user_address;
+        uint32_t mode =
+            (flags & SYS_READ_CHAR) != 0u ? TTY_READ_CHAR : TTY_READ_LINE;
+
+        if (i386_tty == 0) {
+            return (uint32_t)-1;
+        }
+        if ((flags & SYS_READ_NONBLOCK) == 0u) {
+            while ((mode == TTY_READ_LINE && !tty_has_line(i386_tty)) ||
+                   (mode == TTY_READ_CHAR &&
+                    tty_read(i386_tty, buffer, size, mode) == 0u)) {
+                struct keyboard_event event;
+
+                __asm__ volatile("sti; hlt" : : : "memory");
+                while (i386_pop_keyboard_event(&event)) {
+                    tty_feed_key_event(i386_tty, &event);
+                }
+            }
+            if (mode == TTY_READ_CHAR) {
+                return 1u;
+            }
+        } else if (mode == TTY_READ_LINE && !tty_has_line(i386_tty)) {
+            return 0u;
+        }
+        {
+            uint32_t count = tty_read(i386_tty, buffer, size, mode);
+
+            if (mode == TTY_READ_LINE) {
+                if (count == 1u && buffer[0] == '\0') {
+                    buffer[0] = '\n';
+                    return 1u;
+                }
+                if (count < size) {
+                    buffer[count] = '\n';
+                    count++;
+                }
+            }
+            return count;
+        }
+    }
+    return (uint32_t)-2;
 }
 
 uint32_t kernel_i386_syscall_close(void *opaque, uint32_t fd) {
     (void)opaque;
     return (uint32_t)i386_scheduler_close(fd);
+}
+
+uint32_t kernel_i386_syscall_page_alloc(void *opaque) {
+    (void)opaque;
+    return i386_scheduler_page_alloc();
+}
+
+uint32_t kernel_i386_syscall_page_free(void *opaque, uint32_t user_page) {
+    (void)opaque;
+    return (uint32_t)i386_scheduler_page_free(user_page);
+}
+
+int kernel_i386_copy_user_string(uint32_t user_address,
+                                 char *buffer,
+                                 uint32_t size) {
+    if (buffer == 0 || size == 0u) {
+        return 0;
+    }
+    for (uint32_t i = 0; i + 1u < size; i++) {
+        if (!i386_user_buffer_valid(user_address + i, 1u, 0)) {
+            return 0;
+        }
+        buffer[i] = ((const char *)user_address)[i];
+        if (buffer[i] == '\0') {
+            return 1;
+        }
+    }
+    buffer[size - 1u] = '\0';
+    return 0;
+}
+
+uint32_t kernel_i386_syscall_spawn(void *opaque,
+                                   uint32_t user_command,
+                                   uint32_t mode,
+                                   uint32_t flags) {
+    char command[512];
+
+    (void)opaque;
+    if ((mode != SYS_SPAWN_AUTO && mode != SYS_SPAWN_ELF) ||
+        flags != 0u ||
+        !kernel_i386_copy_user_string(user_command,
+                                      command,
+                                      sizeof(command))) {
+        return (uint32_t)-1;
+    }
+    return (uint32_t)kernel_i386_spawn_command(command);
+}
+
+uint32_t kernel_i386_syscall_exec(void *opaque, uint32_t user_command) {
+    return kernel_i386_syscall_spawn(opaque,
+                                     user_command,
+                                     SYS_SPAWN_AUTO,
+                                     0u);
+}
+
+uint32_t kernel_i386_syscall_chdir(void *opaque, uint32_t user_path) {
+    char path[NOS_PATH_BUFFER_SIZE];
+
+    (void)opaque;
+    if (!kernel_i386_copy_user_string(user_path, path, sizeof(path))) {
+        return (uint32_t)-1;
+    }
+    return (uint32_t)i386_scheduler_chdir(&i386_vfs, path);
+}
+
+uint32_t kernel_i386_syscall_getcwd(void *opaque,
+                                    uint32_t user_buffer,
+                                    uint32_t size) {
+    (void)opaque;
+    if (size == 0u || size > NOS_PATH_BUFFER_SIZE ||
+        !i386_user_buffer_valid(user_buffer, size, 1)) {
+        return (uint32_t)-1;
+    }
+    return (uint32_t)i386_scheduler_getcwd((char *)user_buffer, size);
+}
+
+uint32_t kernel_i386_syscall_opendir(void *opaque, uint32_t user_path) {
+    char path[NOS_PATH_BUFFER_SIZE];
+
+    (void)opaque;
+    if (!kernel_i386_copy_user_string(user_path, path, sizeof(path))) {
+        return (uint32_t)-1;
+    }
+    return (uint32_t)i386_scheduler_opendir(&i386_vfs, path);
+}
+
+uint32_t kernel_i386_syscall_readdir(void *opaque,
+                                     uint32_t fd,
+                                     uint32_t user_entry) {
+    (void)opaque;
+    if (!i386_user_buffer_valid(user_entry,
+                                sizeof(struct syscall_dirent),
+                                1)) {
+        return (uint32_t)-1;
+    }
+    return (uint32_t)i386_scheduler_readdir(
+        &i386_vfs,
+        fd,
+        (struct syscall_dirent *)user_entry);
+}
+
+uint32_t kernel_i386_syscall_dup2(void *opaque,
+                                  uint32_t src_fd,
+                                  uint32_t dst_fd) {
+    (void)opaque;
+    return (uint32_t)i386_scheduler_dup2(src_fd, dst_fd);
+}
+
+uint32_t kernel_i386_syscall_pipe(void *opaque, uint32_t user_pair) {
+    uint32_t pair[2];
+
+    (void)opaque;
+    if (!i386_user_buffer_valid(user_pair, sizeof(pair), 1) ||
+        i386_scheduler_pipe(pair) != 0) {
+        return (uint32_t)-1;
+    }
+    ((uint32_t *)user_pair)[0] = pair[0];
+    ((uint32_t *)user_pair)[1] = pair[1];
+    return 0u;
 }
 
 uint32_t kernel_i386_syscall_write(void *opaque,
@@ -106,9 +278,7 @@ uint32_t kernel_i386_syscall_write(void *opaque,
     const char *text = (const char *)user_address;
 
     (void)opaque;
-    if (i386_tty == 0 ||
-        (fd != SYS_FD_STDOUT && fd != SYS_FD_STDERR) ||
-        text == 0 ||
+    if (text == 0 ||
         size == 0u ||
         size > 4096u ||
         user_address < I386_PAGING_IDENTITY_LIMIT ||
@@ -118,10 +288,30 @@ uint32_t kernel_i386_syscall_write(void *opaque,
         !i386_user_buffer_valid(user_address, size, 0)) {
         return (uint32_t)-1;
     }
-    return tty_write(i386_tty,
-                     text,
-                     size,
-                     fd == SYS_FD_STDERR ? 0x0cu : 0x0fu);
+    {
+        int32_t scheduled = i386_scheduler_write(&i386_vfs,
+                                                 fd,
+                                                 text,
+                                                 size);
+
+        if (scheduled != -2) {
+            return (uint32_t)scheduled;
+        }
+    }
+    if (i386_scheduler_fd_kind(fd) == KERNEL_FILE_TTY_STDOUT ||
+        i386_scheduler_fd_kind(fd) == KERNEL_FILE_TTY_STDERR) {
+        if (i386_tty == 0) {
+            return (uint32_t)-1;
+        }
+        return tty_write(i386_tty,
+                         text,
+                         size,
+                         i386_scheduler_fd_kind(fd) ==
+                                 KERNEL_FILE_TTY_STDERR
+                             ? 0x0cu
+                             : 0x0fu);
+    }
+    return (uint32_t)-1;
 }
 
 static int command_starts_with(const char *line, const char *command) {
@@ -257,7 +447,7 @@ static void i386_command_cat(const char *path) {
 }
 
 static void i386_command_ps(void) {
-    for (uint32_t slot = 0; slot < 2u; slot++) {
+    for (uint32_t slot = 0; slot < 8u; slot++) {
         struct process_snapshot snapshot;
 
         if (!i386_scheduler_process_snapshot(slot, &snapshot)) {
@@ -291,13 +481,34 @@ static void i386_command_test32(void) {
     tty_write_str(i386_tty, "\n", 0x0fu);
 }
 
+static void i386_command_run(const char *command) {
+    struct process_snapshot process;
+
+    if (command == 0 || command[0] == '\0') {
+        tty_write_str(i386_tty,
+                      "usage: run <path> [args...]\n",
+                      0x0eu);
+        return;
+    }
+    tty_write_str(i386_tty, "run: ", 0x0eu);
+    tty_write_str(i386_tty, command, 0x0fu);
+    tty_write_str(i386_tty, "\n", 0x0fu);
+    if (!kernel_i386_run_command(command, &process)) {
+        tty_write_str(i386_tty, "run: failed\n", 0x0cu);
+        return;
+    }
+    tty_write_str(i386_tty, "run: exit=", 0x0au);
+    tty_write_dec(i386_tty, (uint32_t)process.exit_code, 0x0fu);
+    tty_write_str(i386_tty, "\n", 0x0fu);
+}
+
 static void i386_execute_command(const char *line) {
     if (line[0] == '\0') {
         return;
     }
     if (streq(line, "help")) {
         tty_write_str(i386_tty,
-                      "commands: help clear ps test32 ls [path] cat <path>\n",
+                      "commands: help clear ps test32 run <elf> [args] ls [path] cat <path>\n",
                       0x0fu);
     } else if (streq(line, "clear")) {
         tty_clear(i386_tty);
@@ -309,6 +520,8 @@ static void i386_execute_command(const char *line) {
         i386_command_ps();
     } else if (streq(line, "test32")) {
         i386_command_test32();
+    } else if (command_starts_with(line, "run")) {
+        i386_command_run(command_argument(line));
     } else {
         tty_write_str(i386_tty, "unknown command: ", 0x0cu);
         tty_write_str(i386_tty, line, 0x0fu);

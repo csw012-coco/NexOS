@@ -45,6 +45,10 @@ static volatile uint32_t user_syscall_number;
 static volatile uint32_t user_syscall_argument;
 static struct block_device early_test_block;
 static struct early_vfs early_filesystem;
+static int i386_load_command(const char *command,
+                             struct i386_user_image *image,
+                             char *name_out,
+                             uint32_t name_size);
 
 extern uint32_t kernel_i386_syscall_write(void *opaque,
                                           uint32_t fd,
@@ -59,6 +63,33 @@ extern uint32_t kernel_i386_syscall_read(void *opaque,
                                          uint32_t size,
                                          uint32_t flags);
 extern uint32_t kernel_i386_syscall_close(void *opaque, uint32_t fd);
+extern uint32_t kernel_i386_syscall_page_alloc(void *opaque);
+extern uint32_t kernel_i386_syscall_page_free(void *opaque,
+                                              uint32_t user_page);
+extern uint32_t kernel_i386_syscall_spawn(void *opaque,
+                                          uint32_t user_command,
+                                          uint32_t mode,
+                                          uint32_t flags);
+extern uint32_t kernel_i386_syscall_exec(void *opaque,
+                                         uint32_t user_command);
+extern uint32_t kernel_i386_syscall_chdir(void *opaque,
+                                          uint32_t user_path);
+extern uint32_t kernel_i386_syscall_getcwd(void *opaque,
+                                           uint32_t user_buffer,
+                                           uint32_t size);
+extern uint32_t kernel_i386_syscall_opendir(void *opaque,
+                                            uint32_t user_path);
+extern uint32_t kernel_i386_syscall_readdir(void *opaque,
+                                            uint32_t fd,
+                                            uint32_t user_entry);
+extern uint32_t kernel_i386_syscall_dup2(void *opaque,
+                                         uint32_t src_fd,
+                                         uint32_t dst_fd);
+extern uint32_t kernel_i386_syscall_pipe(void *opaque,
+                                         uint32_t user_pair);
+extern int kernel_i386_copy_user_string(uint32_t user_address,
+                                        char *buffer,
+                                        uint32_t size);
 
 static int early_test_block_read(struct block_device *dev,
                                  uint64_t lba,
@@ -246,10 +277,70 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
         .open = kernel_i386_syscall_open,
         .read = kernel_i386_syscall_read,
         .write = kernel_i386_syscall_write,
-        .close = kernel_i386_syscall_close
+        .close = kernel_i386_syscall_close,
+        .page_alloc = kernel_i386_syscall_page_alloc,
+        .page_free = kernel_i386_syscall_page_free,
+        .spawn = kernel_i386_syscall_spawn,
+        .exec = kernel_i386_syscall_exec,
+        .chdir = kernel_i386_syscall_chdir,
+        .getcwd = kernel_i386_syscall_getcwd,
+        .opendir = kernel_i386_syscall_opendir,
+        .readdir = kernel_i386_syscall_readdir,
+        .dup2 = kernel_i386_syscall_dup2,
+        .pipe = kernel_i386_syscall_pipe
     };
-    struct syscall_common_result result =
-        syscall_dispatch_common(&request, &context);
+    struct syscall_common_result result;
+
+    if (request.number == SYS_EXEC ||
+        request.number == SYS_EXEC_REPLACE) {
+        char command[512];
+        struct i386_user_image image;
+        char name[NOS_NAME_BUFFER_SIZE];
+        uint32_t current_root = i386_paging_root();
+        uint32_t action;
+
+        user_syscall_count++;
+        user_syscall_number = request.number;
+        user_syscall_argument = request.arg0;
+        if (!kernel_i386_copy_user_string(request.arg0,
+                                          command,
+                                          sizeof(command))) {
+            frame->eax = (uint32_t)-1;
+            return 0u;
+        }
+        i386_paging_switch(i386_paging_kernel_root());
+        if (!i386_load_command(command, &image, name, sizeof(name))) {
+            i386_paging_switch(current_root);
+            frame->eax = (uint32_t)-1;
+            return 0u;
+        }
+        i386_paging_switch(current_root);
+        action = i386_scheduler_exec((struct i386_irq_frame *)frame,
+                                     image.entry,
+                                     image.stack_top,
+                                     image.root,
+                                     name);
+        return action != 0u ? action : 0u;
+    }
+    if (request.number == SYS_WAIT) {
+        int32_t status = -1;
+        int blocked = 0;
+        uint32_t action = i386_scheduler_wait(
+            (struct i386_irq_frame *)frame,
+            request.arg0,
+            &status,
+            &blocked);
+
+        user_syscall_count++;
+        user_syscall_number = request.number;
+        user_syscall_argument = request.arg0;
+        if (blocked && action != 0u) {
+            return action;
+        }
+        frame->eax = (uint32_t)status;
+        return 0u;
+    }
+    result = syscall_dispatch_common(&request, &context);
 
     user_syscall_count++;
     user_syscall_number = request.number;
@@ -801,6 +892,108 @@ int kernel_i386_run_test32(struct process_snapshot *process0,
            process1->state == PROCESS_STATE_EXITED &&
            process0->exit_code == 0 &&
            process1->exit_code == 0;
+}
+
+static int i386_parse_command(char *command,
+                              const char *argv[],
+                              int *argc_out) {
+    int argc = 0;
+    char *cursor = command;
+
+    while (*cursor != '\0' && argc < I386_USER_ARG_MAX) {
+        while (*cursor == ' ') {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            break;
+        }
+        argv[argc++] = cursor;
+        while (*cursor != '\0' && *cursor != ' ') {
+            cursor++;
+        }
+        if (*cursor != '\0') {
+            *cursor++ = '\0';
+        }
+    }
+    *argc_out = argc;
+    return argc != 0;
+}
+
+static int i386_load_command(const char *command,
+                             struct i386_user_image *image,
+                             char *name_out,
+                             uint32_t name_size) {
+    char copy[512];
+    const char *argv[I386_USER_ARG_MAX + 1];
+    static const char *const envp[] = {
+        "ARCH=i386",
+        "OS=NexOS",
+        0
+    };
+    int argc;
+    uint32_t length = 0u;
+
+    if (command == 0 || image == 0) {
+        return 0;
+    }
+    while (command[length] != '\0' && length + 1u < sizeof(copy)) {
+        copy[length] = command[length];
+        length++;
+    }
+    copy[length] = '\0';
+    if (!i386_parse_command(copy, argv, &argc)) {
+        return 0;
+    }
+    argv[argc] = 0;
+    if (name_out != 0 && name_size != 0u) {
+        uint32_t i = 0u;
+
+        while (argv[0][i] != '\0' && i + 1u < name_size) {
+            name_out[i] = argv[0][i];
+            i++;
+        }
+        name_out[i] = '\0';
+    }
+    return i386_user_load_elf_space_args(&early_filesystem,
+                                          argv[0],
+                                          0xbfffe000u,
+                                          argc,
+                                          argv,
+                                          envp,
+                                          image);
+}
+
+int32_t kernel_i386_spawn_command(const char *command) {
+    struct i386_user_image image;
+    char name[NOS_NAME_BUFFER_SIZE];
+    uint32_t current_root = i386_paging_root();
+
+    i386_paging_switch(i386_paging_kernel_root());
+    if (!i386_load_command(command, &image, name, sizeof(name))) {
+        i386_paging_switch(current_root);
+        return -1;
+    }
+    i386_paging_switch(current_root);
+    return i386_scheduler_spawn(image.entry,
+                                image.stack_top,
+                                image.root,
+                                name);
+}
+
+int kernel_i386_run_command(const char *command,
+                            struct process_snapshot *process) {
+    struct i386_user_image image;
+    char name[NOS_NAME_BUFFER_SIZE];
+
+    if (!i386_load_command(command, &image, name, sizeof(name)) ||
+        !i386_scheduler_run_one(image.entry,
+                                image.stack_top,
+                                image.root,
+                                name) ||
+        !i386_scheduler_process_snapshot(0u, process)) {
+        return 0;
+    }
+    return process->state == PROCESS_STATE_EXITED;
 }
 
 static int i386_prepare_shared_kernel(const struct bootx_boot_info *boot_info) {

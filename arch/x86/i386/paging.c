@@ -344,6 +344,43 @@ int i386_paging_map_page_in(uint32_t root,
     return 1;
 }
 
+int i386_paging_unmap_page_in(uint32_t root,
+                              uint32_t virtual_address,
+                              uint32_t *physical_address) {
+    uint32_t *directory;
+    uint32_t *table;
+    uint32_t directory_entry;
+    uint32_t table_entry;
+
+    if (root == 0u ||
+        (virtual_address & (I386_PAGE_SIZE - 1u)) != 0u ||
+        i386_paging_root() != kernel_page_directory_root ||
+        !i386_paging_temporary_map(root, 0u, (void **)&directory)) {
+        return 0;
+    }
+    directory_entry = directory[virtual_address >> 22];
+    if ((directory_entry & PAGING_ENTRY_PRESENT) == 0u ||
+        !i386_paging_temporary_map(directory_entry & PAGING_ENTRY_ADDRESS_MASK,
+                                   1u,
+                                   (void **)&table)) {
+        i386_paging_temporary_unmap(0u);
+        return 0;
+    }
+    table_entry = table[(virtual_address >> 12) & 0x3ffu];
+    if ((table_entry & PAGING_ENTRY_PRESENT) == 0u) {
+        i386_paging_temporary_unmap(1u);
+        i386_paging_temporary_unmap(0u);
+        return 0;
+    }
+    table[(virtual_address >> 12) & 0x3ffu] = 0u;
+    if (physical_address != 0) {
+        *physical_address = table_entry & PAGING_ENTRY_ADDRESS_MASK;
+    }
+    i386_paging_temporary_unmap(1u);
+    i386_paging_temporary_unmap(0u);
+    return 1;
+}
+
 int i386_paging_translate_in(uint32_t root,
                              uint32_t virtual_address,
                              uint32_t *physical_address) {

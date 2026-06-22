@@ -47,6 +47,19 @@ struct syscall_common_result syscall_dispatch_common(
                 result.value = context->close(context->opaque, request->arg0);
             }
             break;
+        case SYS_DUP2:
+            if (context->dup2 != 0) {
+                result.value = context->dup2(context->opaque,
+                                             request->arg0,
+                                             request->arg1);
+            }
+            break;
+        case SYS_PIPE:
+            if (context->pipe != 0) {
+                result.value = context->pipe(context->opaque,
+                                             request->arg0);
+            }
+            break;
         case SYS_TICKS:
             result.value = context->ticks;
             break;
@@ -56,6 +69,63 @@ struct syscall_common_result syscall_dispatch_common(
         case SYS_YIELD:
             result.value = 0;
             result.action = SYSCALL_COMMON_YIELD;
+            break;
+        case SYS_PAGE_ALLOC:
+            if (context->page_alloc != 0) {
+                result.value = context->page_alloc(context->opaque);
+            }
+            break;
+        case SYS_PAGE_FREE:
+            if (context->page_free != 0) {
+                result.value = context->page_free(context->opaque,
+                                                  request->arg0);
+            }
+            break;
+        case SYS_SPAWN:
+            if (context->spawn != 0) {
+                result.value = context->spawn(context->opaque,
+                                              request->arg0,
+                                              request->arg1,
+                                              request->arg2);
+            }
+            break;
+        case SYS_EXEC:
+        case SYS_EXEC_REPLACE:
+            if (context->exec != 0) {
+                uint32_t spawned =
+                    context->exec(context->opaque, request->arg0);
+
+                if ((int32_t)spawned >= 0) {
+                    result.value = 0u;
+                    result.action = SYSCALL_COMMON_EXIT;
+                }
+            }
+            break;
+        case SYS_CHDIR:
+            if (context->chdir != 0) {
+                result.value = context->chdir(context->opaque,
+                                              request->arg0);
+            }
+            break;
+        case SYS_GETCWD:
+            if (context->getcwd != 0) {
+                result.value = context->getcwd(context->opaque,
+                                               request->arg0,
+                                               request->arg1);
+            }
+            break;
+        case SYS_OPENDIR:
+            if (context->opendir != 0) {
+                result.value = context->opendir(context->opaque,
+                                                request->arg0);
+            }
+            break;
+        case SYS_READDIR:
+            if (context->readdir != 0) {
+                result.value = context->readdir(context->opaque,
+                                                request->arg0,
+                                                request->arg1);
+            }
             break;
         default:
             break;

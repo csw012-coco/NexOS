@@ -35,6 +35,25 @@ struct syscall_common_context {
                       uint32_t user_address,
                       uint32_t size);
     uint32_t (*close)(void *opaque, uint32_t fd);
+    uint32_t (*page_alloc)(void *opaque);
+    uint32_t (*page_free)(void *opaque, uint32_t user_page);
+    uint32_t (*spawn)(void *opaque,
+                      uint32_t user_command,
+                      uint32_t mode,
+                      uint32_t flags);
+    uint32_t (*exec)(void *opaque, uint32_t user_command);
+    uint32_t (*chdir)(void *opaque, uint32_t user_path);
+    uint32_t (*getcwd)(void *opaque,
+                       uint32_t user_buffer,
+                       uint32_t size);
+    uint32_t (*opendir)(void *opaque, uint32_t user_path);
+    uint32_t (*readdir)(void *opaque,
+                        uint32_t fd,
+                        uint32_t user_entry);
+    uint32_t (*dup2)(void *opaque,
+                     uint32_t src_fd,
+                     uint32_t dst_fd);
+    uint32_t (*pipe)(void *opaque, uint32_t user_pair);
 };
 
 struct syscall_common_result {

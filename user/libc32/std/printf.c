@@ -166,6 +166,40 @@ int snprintf(char *buffer, size_t size, const char *format, ...) {
     return result;
 }
 
+int vfprintf(FILE *stream, const char *format, va_list args) {
+    char buffer[256];
+    int result;
+    size_t length;
+
+    if (stream == 0) {
+        return -1;
+    }
+    result = vsnprintf(buffer, sizeof(buffer), format, args);
+    if (result < 0) {
+        stream->error = 1;
+        return result;
+    }
+    length = (size_t)result;
+    if (length >= sizeof(buffer)) {
+        length = sizeof(buffer) - 1u;
+    }
+    if (write(stream->fd, buffer, length) != (ssize_t)length) {
+        stream->error = 1;
+        return -1;
+    }
+    return result;
+}
+
+int fprintf(FILE *stream, const char *format, ...) {
+    va_list args;
+    int result;
+
+    va_start(args, format);
+    result = vfprintf(stream, format, args);
+    va_end(args);
+    return result;
+}
+
 int vprintf(const char *format, va_list args) {
     char buffer[256];
     int result = vsnprintf(buffer, sizeof(buffer), format, args);

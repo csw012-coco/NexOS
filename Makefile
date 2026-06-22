@@ -47,6 +47,8 @@ I386_KERNEL := $(I386_BUILD)/kernel-i386.elf
 I386_USER := $(I386_BUILD)/USER32.ELF
 I386_SCHED_USER := $(I386_BUILD)/SCHED32.ELF
 I386_TEST_USER := $(I386_BUILD)/TEST32.ELF
+I386_APP_USER := $(I386_BUILD)/APP32.ELF
+I386_NEXBOX_USER := $(I386_BUILD)/NEXBOX32.ELF
 I386_NLIBC := $(I386_BUILD)/libnlibc32.a
 I386_CRT0 := $(I386_BUILD)/libc32_crt0.o
 I386_IMAGE := $(IMAGE_DIR)/NexOS-i386.img
@@ -707,7 +709,40 @@ $(I386_TEST_USER): $(I386_CRT0) $(I386_BUILD)/user_test32.o \
 	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
 		-o $@ $(I386_CRT0) $(I386_BUILD)/user_test32.o $(I386_NLIBC)
 
-check-i386: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER)
+$(I386_BUILD)/user_app32.o: $(ROOT)/user/i386/app32.c \
+		$(ROOT)/user/libc32/include/nlibc.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_APP_USER): $(I386_CRT0) $(I386_BUILD)/user_app32.o \
+		$(I386_NLIBC) $(ROOT)/user/i386/test32.ld
+	$(call log_cmd,LD32,$@)
+	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
+		-o $@ $(I386_CRT0) $(I386_BUILD)/user_app32.o $(I386_NLIBC)
+
+$(I386_BUILD)/user_nexbox_lite.o: $(ROOT)/user/i386/nexbox_lite.c \
+		$(ROOT)/user/libc32/include/nlibc.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_NEXBOX_USER): $(I386_CRT0) $(I386_BUILD)/user_nexbox_lite.o \
+		$(I386_NLIBC) $(ROOT)/user/i386/test32.ld
+	$(call log_cmd,LD32,$@)
+	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
+		-o $@ $(I386_CRT0) $(I386_BUILD)/user_nexbox_lite.o $(I386_NLIBC)
+
+.PHONY: app32
+app32: $(I386_CRT0) $(I386_NLIBC) | $(I386_BUILD)
+	@if [ -z "$(SRC)" ]; then echo "usage: make app32 SRC=path/to/app.c OUT=APP32.ELF"; exit 1; fi
+	@if [ -z "$(OUT)" ]; then echo "usage: make app32 SRC=path/to/app.c OUT=APP32.ELF"; exit 1; fi
+	$(call log_cmd,CC32,$(I386_BUILD)/app32_oneoff.o)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $(SRC) -o $(I386_BUILD)/app32_oneoff.o
+	$(call log_cmd,LD32,$(I386_BUILD)/$(OUT))
+	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
+		-o $(I386_BUILD)/$(OUT) $(I386_CRT0) \
+		$(I386_BUILD)/app32_oneoff.o $(I386_NLIBC)
+
+check-i386: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER) $(I386_APP_USER) $(I386_NEXBOX_USER)
 	$(call log_cmd,CHECK,$<)
 	$(Q)readelf -h $< | grep -q 'Class:.*ELF32'
 	$(Q)readelf -h $< | grep -q 'Machine:.*Intel 80386'
@@ -721,10 +756,16 @@ check-i386: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER)
 	$(Q)readelf -h $(I386_TEST_USER) | grep -q 'Class:.*ELF32'
 	$(Q)readelf -h $(I386_TEST_USER) | grep -q 'Machine:.*Intel 80386'
 	$(Q)readelf -h $(I386_TEST_USER) | grep -q 'Entry point address:.*0x40020000'
+	$(Q)readelf -h $(I386_APP_USER) | grep -q 'Class:.*ELF32'
+	$(Q)readelf -h $(I386_APP_USER) | grep -q 'Machine:.*Intel 80386'
+	$(Q)readelf -h $(I386_NEXBOX_USER) | grep -q 'Class:.*ELF32'
+	$(Q)readelf -h $(I386_NEXBOX_USER) | grep -q 'Machine:.*Intel 80386'
 	$(Q)echo "i386 boot/x ELF32 kernel checks passed"
 
 $(I386_IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3) \
 		$(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER) \
+		$(I386_APP_USER) \
+		$(I386_NEXBOX_USER) \
 		$(I386_BOOTX_CONFIG) | $(IMAGE_DIR)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
@@ -742,6 +783,8 @@ $(I386_IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3) \
 	$(Q)mcopy -i $@@@1048576 $(I386_USER) ::/BOOT/USER32.ELF
 	$(Q)mcopy -i $@@@1048576 $(I386_SCHED_USER) ::/BOOT/SCHED32.ELF
 	$(Q)mcopy -i $@@@1048576 $(I386_TEST_USER) ::/BOOT/TEST32.ELF
+	$(Q)mcopy -i $@@@1048576 $(I386_APP_USER) ::/BOOT/APP32.ELF
+	$(Q)mcopy -i $@@@1048576 $(I386_NEXBOX_USER) ::/BOOT/NEXBOX32.ELF
 	$(Q)mcopy -i $@@@1048576 $(I386_BOOTX_CONFIG) ::/BOOT/BOOTX.CFG
 
 run-i386: check-i386 $(I386_IMAGE)

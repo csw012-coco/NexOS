@@ -13,11 +13,27 @@ static const char *i386_vfs_path(const char *path) {
 int vfs_open(struct vfs *vfs, const char *path, uint32_t flags, struct vfs_node *out) {
     struct fat32_file file;
     const char *relative = i386_vfs_path(path);
+    int found;
 
     if (vfs == 0 || out == 0 || relative == 0 || relative[0] == '\0' ||
-        flags != 0u || vfs->root_kind != VFS_MOUNT_FAT32 ||
-        fat32_find_path(&vfs->fat32, relative, &file) != 0 ||
-        (file.attributes & VFS_ATTR_DIR) != 0u) {
+        (flags & ~(VFS_OPEN_CREATE |
+                   VFS_OPEN_TRUNCATE |
+                   VFS_OPEN_APPEND)) != 0u ||
+        vfs->root_kind != VFS_MOUNT_FAT32) {
+        return -1;
+    }
+    found = fat32_find_path(&vfs->fat32, relative, &file) == 0;
+    if (!found) {
+        if ((flags & VFS_OPEN_CREATE) == 0u ||
+            fat32_create_path(&vfs->fat32, relative, &file) != 0) {
+            return -1;
+        }
+    }
+    if ((file.attributes & VFS_ATTR_DIR) != 0u) {
+        return -1;
+    }
+    if ((flags & VFS_OPEN_TRUNCATE) != 0u &&
+        fat32_truncate_file(&vfs->fat32, &file) != 0) {
         return -1;
     }
     vfs_set_fat32_file_node(out, 0u, &file);
@@ -64,6 +80,31 @@ int64_t vfs_read(struct vfs *vfs,
     }
     *offset_io += bytes_read;
     return bytes_read;
+}
+
+int64_t vfs_write(struct vfs *vfs,
+                  struct vfs_node *node,
+                  uint32_t *offset_io,
+                  const void *buffer,
+                  uint32_t size,
+                  const char *opened_path) {
+    uint32_t bytes_written = 0u;
+
+    (void)opened_path;
+    if (vfs == 0 || node == 0 || offset_io == 0 || buffer == 0 ||
+        node->kind != VFS_NODE_FILE ||
+        node->mount_kind != VFS_MOUNT_FAT32 ||
+        fat32_write_file_range(&vfs->fat32,
+                               &node->handle.fat32_file,
+                               *offset_io,
+                               buffer,
+                               size,
+                               &bytes_written) != 0 ||
+        blockdev_flush(vfs->fat32.bdev) != 0) {
+        return -1;
+    }
+    *offset_io += bytes_written;
+    return (int64_t)bytes_written;
 }
 
 int64_t vfs_readdir(struct vfs *vfs,
