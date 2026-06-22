@@ -99,6 +99,7 @@ void fat32_log_file_failure(const struct fat32_volume *vol,
                             const char *op,
                             const char *reason);
 int fat32_read_sector(struct fat32_volume *vol, uint32_t lba, void *buffer);
+int fat32_read_sectors(struct fat32_volume *vol, uint32_t lba, uint32_t count, void *buffer);
 int fat32_write_sector(struct fat32_volume *vol, uint32_t lba, const void *buffer);
 int fat32_cluster_is_data(const struct fat32_volume *vol, uint32_t cluster);
 uint32_t fat32_cluster_lba(struct fat32_volume *vol, uint32_t cluster);

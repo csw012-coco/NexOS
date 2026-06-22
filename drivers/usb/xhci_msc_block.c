@@ -25,15 +25,31 @@ static int xhci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
     if (!xhci_try_begin_busy()) {
         return -1;
     }
+    if (count == 1u && dev->read_cache_valid &&
+        lba >= dev->read_cache_lba &&
+        lba < dev->read_cache_lba + dev->read_cache_count) {
+        memcpy(out,
+               dev->read_cache + (uint32_t)(lba - dev->read_cache_lba) * XHCI_SECTOR_SIZE,
+               XHCI_SECTOR_SIZE);
+        xhci_end_busy();
+        return 0;
+    }
     while (done < count) {
         uint8_t cmd[10];
         uint8_t ok = 0u;
         uint8_t failed_phase = 0u;
         uint8_t failed_status = 0u;
         uint32_t chunk = count - done;
+        uint8_t *chunk_out = out + done * XHCI_SECTOR_SIZE;
 
-        if (chunk > XHCI_PAGE_SIZE / XHCI_SECTOR_SIZE) {
-            chunk = XHCI_PAGE_SIZE / XHCI_SECTOR_SIZE;
+        if (count == 1u && dev->read_cache != 0) {
+            chunk = XHCI_MSC_READAHEAD_SECTORS;
+            if ((uint64_t)chunk > dev->sector_count - lba) {
+                chunk = (uint32_t)(dev->sector_count - lba);
+            }
+            chunk_out = dev->read_cache;
+        } else if (chunk > XHCI_MSC_READAHEAD_SECTORS) {
+            chunk = XHCI_MSC_READAHEAD_SECTORS;
         }
 
         memset(cmd, 0, sizeof(cmd));
@@ -45,7 +61,7 @@ static int xhci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
             if (xhci_msc_command(dev,
                                  cmd,
                                  10u,
-                                 out + done * XHCI_SECTOR_SIZE,
+                                 chunk_out,
                                  chunk * XHCI_SECTOR_SIZE,
                                  1u)) {
                 ok = 1u;
@@ -71,6 +87,14 @@ static int xhci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
             result = -1;
             break;
         }
+        if (count == 1u && chunk_out == dev->read_cache) {
+            dev->read_cache_lba = lba;
+            dev->read_cache_count = (uint8_t)chunk;
+            dev->read_cache_valid = 1u;
+            memcpy(out, dev->read_cache, XHCI_SECTOR_SIZE);
+            done = count;
+            break;
+        }
         done += chunk;
     }
     xhci_end_busy();
@@ -90,6 +114,7 @@ static int xhci_msc_write_impl(struct block_device *bdev, uint64_t lba, uint32_t
     if (!xhci_try_begin_busy()) {
         return -1;
     }
+    dev->read_cache_valid = 0u;
     while (done < count) {
         uint8_t cmd[10];
         uint8_t ok = 0u;

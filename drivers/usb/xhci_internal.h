@@ -16,6 +16,7 @@
 enum {
     XHCI_PAGE_SIZE = 4096u,
     XHCI_SECTOR_SIZE = 512u,
+    XHCI_MSC_READAHEAD_SECTORS = XHCI_PAGE_SIZE / XHCI_SECTOR_SIZE,
     XHCI_TRB_SIZE = 16u,
     XHCI_RING_TRBS = 64u,
     XHCI_ERST_ENTRIES = 1u,
@@ -255,14 +256,19 @@ struct xhci_enum_device {
     uint64_t bulk_out_ring_phys;
     uint64_t descriptor_phys;
     uint64_t data_phys;
+    uint64_t read_cache_phys;
     uint64_t cbw_phys;
     uint64_t csw_phys;
     uint8_t *input_context;
     uint8_t *device_context;
     uint8_t *descriptor;
     uint8_t *data;
+    uint8_t *read_cache;
     uint8_t *cbw;
     uint8_t *csw;
+    uint64_t read_cache_lba;
+    uint8_t read_cache_count;
+    uint8_t read_cache_valid;
     struct xhci_trb *ep0_ring;
     struct xhci_trb *bulk_in_ring;
     struct xhci_trb *bulk_out_ring;

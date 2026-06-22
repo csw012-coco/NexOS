@@ -27,10 +27,25 @@ int fat32_read_file(struct fat32_volume *vol, const struct fat32_file *file, voi
     cluster = file->first_cluster;
     while (fat32_cluster_is_data(vol, cluster) && written < file->size) {
         uint32_t cluster_lba = fat32_cluster_lba(vol, cluster);
-        for (uint32_t sec = 0; sec < vol->sectors_per_cluster && written < file->size; sec++) {
-            uint32_t remaining = file->size - written;
-            uint32_t copy_size = remaining < 512 ? remaining : 512;
-            if (fat32_read_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
+        uint32_t remaining = file->size - written;
+        uint32_t full_sectors = remaining / FAT32_SECTOR_SIZE;
+
+        if (full_sectors > vol->sectors_per_cluster) {
+            full_sectors = vol->sectors_per_cluster;
+        }
+        if (full_sectors != 0u) {
+            if (fat32_read_sectors(vol, cluster_lba, full_sectors, out + written) != 0) {
+                return -1;
+            }
+            written += full_sectors * FAT32_SECTOR_SIZE;
+        }
+        if (full_sectors < vol->sectors_per_cluster && written < file->size) {
+            uint32_t copy_size = file->size - written;
+
+            if (copy_size > FAT32_SECTOR_SIZE) {
+                copy_size = FAT32_SECTOR_SIZE;
+            }
+            if (fat32_read_sector(vol, cluster_lba + full_sectors, vol->sector_buffer) != 0) {
                 return -1;
             }
             mem_copy(out + written, vol->sector_buffer, copy_size);
@@ -57,7 +72,9 @@ int fat32_read_file_range(struct fat32_volume *vol,
                           uint32_t *bytes_read) {
     uint8_t *out = (uint8_t *)buffer;
     uint32_t cluster;
-    uint32_t file_offset = 0;
+    uint32_t cluster_offset;
+    uint32_t cluster_bytes;
+    uint32_t remaining;
     uint32_t written = 0;
 
     if (vol == 0 || !vol->mounted || file == 0 || buffer == 0 || bytes_read == 0) {
@@ -75,43 +92,80 @@ int fat32_read_file_range(struct fat32_volume *vol,
         return -1;
     }
 
+    cluster_bytes = vol->sectors_per_cluster * FAT32_SECTOR_SIZE;
     cluster = file->first_cluster;
-    while (fat32_cluster_is_data(vol, cluster) && file_offset < file->size && written < buffer_size) {
-        uint32_t cluster_lba = fat32_cluster_lba(vol, cluster);
-        for (uint32_t sec = 0; sec < vol->sectors_per_cluster && file_offset < file->size && written < buffer_size; sec++) {
-            uint32_t sector_start = file_offset;
-            uint32_t sector_end = sector_start + 512u;
-            uint32_t sector_copy_start;
-            uint32_t copy_size;
-
-            if (fat32_read_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
-                return -1;
-            }
-            if (!fat32_calc_sector_window(sector_start,
-                                          sector_end,
-                                          file->size,
-                                          offset,
-                                          offset + buffer_size,
-                                          &sector_copy_start,
-                                          &copy_size)) {
-                file_offset += 512u;
-                continue;
-            }
-            mem_copy(out + written,
-                     vol->sector_buffer + (sector_copy_start - sector_start),
-                     copy_size);
-            written += copy_size;
-            file_offset += 512u;
-        }
-        if (written >= buffer_size) {
-            break;
-        }
-        if (file_offset >= file->size) {
-            break;
-        }
-        if (fat32_next_cluster(vol, cluster, &cluster) != 0) {
+    cluster_offset = offset;
+    while (cluster_offset >= cluster_bytes) {
+        cluster_offset -= cluster_bytes;
+        if (fat32_next_cluster(vol, cluster, &cluster) != 0 ||
+            !fat32_cluster_is_data(vol, cluster)) {
             fat32_log_file_failure(vol, file, "read", "bad cluster chain");
             return -1;
+        }
+    }
+    remaining = file->size - offset;
+    if (remaining > buffer_size) {
+        remaining = buffer_size;
+    }
+
+    while (fat32_cluster_is_data(vol, cluster) && remaining != 0u) {
+        uint32_t cluster_lba = fat32_cluster_lba(vol, cluster);
+        uint32_t sector = cluster_offset / FAT32_SECTOR_SIZE;
+        uint32_t sector_offset = cluster_offset % FAT32_SECTOR_SIZE;
+
+        if (sector_offset != 0u) {
+            uint32_t copy_size = FAT32_SECTOR_SIZE - sector_offset;
+
+            if (copy_size > remaining) {
+                copy_size = remaining;
+            }
+            if (fat32_read_sector(vol, cluster_lba + sector, vol->sector_buffer) != 0) {
+                return -1;
+            }
+            mem_copy(out + written, vol->sector_buffer + sector_offset, copy_size);
+            written += copy_size;
+            remaining -= copy_size;
+            sector++;
+        }
+
+        if (remaining >= FAT32_SECTOR_SIZE && sector < vol->sectors_per_cluster) {
+            uint32_t full_sectors = remaining / FAT32_SECTOR_SIZE;
+            uint32_t available = vol->sectors_per_cluster - sector;
+
+            if (full_sectors > available) {
+                full_sectors = available;
+            }
+            if (fat32_read_sectors(vol,
+                                   cluster_lba + sector,
+                                   full_sectors,
+                                   out + written) != 0) {
+                return -1;
+            }
+            written += full_sectors * FAT32_SECTOR_SIZE;
+            remaining -= full_sectors * FAT32_SECTOR_SIZE;
+            sector += full_sectors;
+        }
+
+        if (remaining != 0u && sector < vol->sectors_per_cluster) {
+            uint32_t copy_size = remaining < FAT32_SECTOR_SIZE
+                ? remaining
+                : FAT32_SECTOR_SIZE;
+
+            if (fat32_read_sector(vol, cluster_lba + sector, vol->sector_buffer) != 0) {
+                return -1;
+            }
+            mem_copy(out + written, vol->sector_buffer, copy_size);
+            written += copy_size;
+            remaining -= copy_size;
+        }
+
+        cluster_offset = 0u;
+        if (remaining != 0u) {
+            if (fat32_next_cluster(vol, cluster, &cluster) != 0 ||
+                !fat32_cluster_is_data(vol, cluster)) {
+                fat32_log_file_failure(vol, file, "read", "bad cluster chain");
+                return -1;
+            }
         }
     }
 

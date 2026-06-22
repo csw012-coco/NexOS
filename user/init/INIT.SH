@@ -21,4 +21,5 @@ echo "九	구	아홉"
 echo "十	십	열"
 switch_root /dev/root
 service boot
+cd home
 exec /cmd/ush --tty /dev/tty

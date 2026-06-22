@@ -92,6 +92,24 @@ int audio_default_output_device(uint32_t *index_out) {
     return 0;
 }
 
+int audio_default_tone_device(uint32_t *index_out) {
+    uint32_t index;
+
+    for (index = 0; index < AUDIO_MAX_DEVICES; index++) {
+        if (!g_audio_slots[index].used ||
+            (g_audio_slots[index].info.caps & AUDIO_CAP_TONE) == 0 ||
+            g_audio_slots[index].ops == 0 ||
+            g_audio_slots[index].ops->play_tone == 0) {
+            continue;
+        }
+        if (index_out != 0) {
+            *index_out = index;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 int audio_play_tone(uint32_t index, uint32_t hz, uint32_t duration_ms) {
     if (index >= AUDIO_MAX_DEVICES || !g_audio_slots[index].used) {
         return 0;

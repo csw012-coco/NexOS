@@ -8,7 +8,7 @@ _start:
 .wait_for_timer:
     dec ecx
     jnz .wait_for_timer
-    mov eax, 0x4e585533
+    mov eax, 0
     mov ebx, 0x52494e47
     int 0x40
     ud2

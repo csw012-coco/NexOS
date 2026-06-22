@@ -12,6 +12,8 @@ typedef unsigned int uint32_t;
 #include "idt.h"
 #include "kernel/public/core/early_boot.h"
 #include "kernel/public/core/early_console.h"
+#include "kernel/public/proc/process.h"
+#include "kernel/public/sys/syscall_dispatch.h"
 #include "keyboard.h"
 #include "lib/string.h"
 #include "paging.h"
@@ -43,6 +45,20 @@ static volatile uint32_t user_syscall_number;
 static volatile uint32_t user_syscall_argument;
 static struct block_device early_test_block;
 static struct early_vfs early_filesystem;
+
+extern uint32_t kernel_i386_syscall_write(void *opaque,
+                                          uint32_t fd,
+                                          uint32_t user_address,
+                                          uint32_t size);
+extern uint32_t kernel_i386_syscall_open(void *opaque,
+                                         uint32_t user_path,
+                                         uint32_t flags);
+extern uint32_t kernel_i386_syscall_read(void *opaque,
+                                         uint32_t fd,
+                                         uint32_t user_address,
+                                         uint32_t size,
+                                         uint32_t flags);
+extern uint32_t kernel_i386_syscall_close(void *opaque, uint32_t fd);
 
 static int early_test_block_read(struct block_device *dev,
                                  uint64_t lba,
@@ -98,6 +114,15 @@ static void serial_putc(char ch) {
     while ((in8(COM1 + 5) & 0x20u) == 0u) {
     }
     out8(COM1, (uint8_t)ch);
+}
+
+static void serial_write(const char *text) {
+    while (text != 0 && *text != '\0') {
+        if (*text == '\n') {
+            serial_putc('\r');
+        }
+        serial_putc(*text++);
+    }
 }
 
 static void i386_console_putc(char ch) {
@@ -205,16 +230,49 @@ void i386_exception_handler(uint32_t vector, struct i386_exception_frame *frame)
 }
 
 uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
-    uint32_t scheduler_action =
-        i386_scheduler_syscall((struct i386_irq_frame *)frame);
+    struct syscall_register_request request = {
+        .number = frame->eax,
+        .arg0 = frame->ebx,
+        .arg1 = frame->ecx,
+        .arg2 = frame->edx,
+        .arg3 = frame->esi,
+        .instruction_pointer = frame->eip,
+        .stack_pointer = frame->user_esp
+    };
+    struct syscall_common_context context = {
+        .pid = i386_scheduler_current_pid(),
+        .ticks = irq_line_count[0],
+        .opaque = 0,
+        .open = kernel_i386_syscall_open,
+        .read = kernel_i386_syscall_read,
+        .write = kernel_i386_syscall_write,
+        .close = kernel_i386_syscall_close
+    };
+    struct syscall_common_result result =
+        syscall_dispatch_common(&request, &context);
 
-    if (scheduler_action != 0u) {
-        return scheduler_action;
-    }
     user_syscall_count++;
-    user_syscall_number = frame->eax;
-    user_syscall_argument = frame->ebx;
-    return 1;
+    user_syscall_number = request.number;
+    user_syscall_argument = request.arg0;
+    frame->eax = result.value;
+
+    if (result.action == SYSCALL_COMMON_EXIT) {
+        uint32_t action =
+            i386_scheduler_exit((struct i386_irq_frame *)frame,
+                                (int)result.value);
+
+        return action != 0u ? action : 1u;
+    }
+    if (result.action == SYSCALL_COMMON_YIELD) {
+        uint32_t action =
+            i386_scheduler_yield((struct i386_irq_frame *)frame);
+
+        if (action != 0u) {
+            return action;
+        }
+    }
+    frame->eax = result.value;
+    return 0;
 }
 
 struct i386_irq_frame *i386_irq_handler(uint32_t irq,
@@ -603,7 +661,7 @@ static int i386_usermode_test(struct kernel_early_boot_report *report) {
         return 0;
     }
     if (user_syscall_count != 1u ||
-        user_syscall_number != 0x4e585533u ||
+        user_syscall_number != 0u ||
         user_syscall_argument != 0x52494e47u ||
         irq_user_count == 0u) {
         return 0;
@@ -628,6 +686,8 @@ static int i386_scheduler_test(struct kernel_early_boot_report *report) {
     struct i386_user_image task1;
     uint32_t task0_counter_frame;
     uint32_t task1_counter_frame;
+    struct process_snapshot process0;
+    struct process_snapshot process1;
 
     if (!i386_user_load_elf_space(&early_filesystem,
                                   "/BOOT/SCHED32.ELF",
@@ -652,7 +712,9 @@ static int i386_scheduler_test(struct kernel_early_boot_report *report) {
                             task1.entry,
                             task1.stack_top,
                             task1.root) ||
-        i386_paging_root() != i386_paging_kernel_root()) {
+        i386_paging_root() != i386_paging_kernel_root() ||
+        !i386_scheduler_process_snapshot(0u, &process0) ||
+        !i386_scheduler_process_snapshot(1u, &process1)) {
         return 0;
     }
 
@@ -671,10 +733,18 @@ static int i386_scheduler_test(struct kernel_early_boot_report *report) {
            report->scheduler_task1_ticks != 0u &&
            report->scheduler_task0_root != report->scheduler_task1_root &&
            report->scheduler_task0_result == SCHEDULER_EXPECTED_RESULT &&
-           report->scheduler_task1_result == SCHEDULER_EXPECTED_RESULT;
+           report->scheduler_task1_result == SCHEDULER_EXPECTED_RESULT &&
+           process0.pid != 0u &&
+           process1.pid != 0u &&
+           process0.pid != process1.pid &&
+           process0.state == PROCESS_STATE_EXITED &&
+           process1.state == PROCESS_STATE_EXITED &&
+           process0.exit_code == (int32_t)process0.pid &&
+           process1.exit_code == (int32_t)process1.pid;
 }
 
-static const struct kernel_early_boot_ops i386_early_boot_ops = {
+static const struct kernel_early_boot_ops i386_early_boot_ops
+    __attribute__((unused)) = {
     .architecture = "i386",
     .segments_init = i386_segments_init,
     .interrupts_init = i386_interrupts_init,
@@ -698,24 +768,75 @@ static const struct hal_early_ops i386_hal_early_ops = {
     .halt = i386_halt,
 };
 
+extern int kernel_i386_shared_services_init(void);
+extern void kernel_i386_shared_services_run(void);
+
+int kernel_i386_run_test32(struct process_snapshot *process0,
+                           struct process_snapshot *process1) {
+    enum {
+        TEST_STACK_TOP = 0xbfffe000u
+    };
+    struct i386_user_image task0;
+    struct i386_user_image task1;
+
+    if (!i386_user_load_elf_space(&early_filesystem,
+                                  "/BOOT/TEST32.ELF",
+                                  TEST_STACK_TOP,
+                                  &task0) ||
+        !i386_user_load_elf_space(&early_filesystem,
+                                  "/BOOT/TEST32.ELF",
+                                  TEST_STACK_TOP,
+                                  &task1) ||
+        !i386_scheduler_run(task0.entry,
+                            task0.stack_top,
+                            task0.root,
+                            task1.entry,
+                            task1.stack_top,
+                            task1.root) ||
+        !i386_scheduler_process_snapshot(0u, process0) ||
+        !i386_scheduler_process_snapshot(1u, process1)) {
+        return 0;
+    }
+    return process0->state == PROCESS_STATE_EXITED &&
+           process1->state == PROCESS_STATE_EXITED &&
+           process0->exit_code == 0 &&
+           process1->exit_code == 0;
+}
+
+static int i386_prepare_shared_kernel(const struct bootx_boot_info *boot_info) {
+    struct kernel_early_boot_report report = {0};
+
+    string_runtime_init();
+    if (boot_info == 0 ||
+        boot_info->hdr.magic != BOOTX_MAGIC ||
+        !i386_segments_init() ||
+        !i386_interrupts_init() ||
+        !i386_paging_stage(boot_info, &report) ||
+        !i386_pmm_stage(boot_info, &report) ||
+        !i386_devices_init(&report) ||
+        !i386_filesystem_init(&report) ||
+        !i386_scheduler_test(&report)) {
+        return 0;
+    }
+    return 1;
+}
+
 void kernel_main32(const struct bootx_boot_info *boot_info) {
     (void)boot_info;
-    early_console_init();
-    early_console_clear();
-    early_console_write("================================================================================\n");
-    early_console_write("                              NexOS i386 Port\n");
-    early_console_write("================================================================================\n");
-    early_console_write("Architecture early boot complete. Entering kernel_main32()...\n");
-    early_console_write("\nTODO: The next step is to integrate the shared kernel services.\n");
-    early_console_write("Please add the shared kernel files (VFS, TTY, etc.) to I386_COMMON_C_SRCS\n");
-    early_console_write("in the Makefile, and implement the 32-bit HAL layer functions.\n");
-    
-    for (;;) {
-        __asm__ volatile("cli; hlt");
+    if (!kernel_i386_shared_services_init()) {
+        early_console_write("kernel_main32: shared service initialization failed\n");
+        i386_halt();
     }
+    serial_write("kernel_main32: common VFS/TTY/HAL services online\n");
+    kernel_i386_shared_services_run();
 }
 
 void i386_kernel_main(const struct bootx_boot_info *boot_info) {
     hal_early_bind(&i386_hal_early_ops);
+    serial_init();
+    if (!i386_prepare_shared_kernel(boot_info)) {
+        early_console_write("i386: architecture bootstrap failed\n");
+        i386_halt();
+    }
     kernel_main32(boot_info);
 }

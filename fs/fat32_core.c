@@ -132,11 +132,24 @@ void fat32_log_file_failure(const struct fat32_volume *vol,
 }
 
 int fat32_read_sector(struct fat32_volume *vol, uint32_t lba, void *buffer) {
-    if (vol == 0 || buffer == 0 || !fat32_lba_in_volume(vol, lba)) {
+    return fat32_read_sectors(vol, lba, 1u, buffer);
+}
+
+int fat32_read_sectors(struct fat32_volume *vol, uint32_t lba, uint32_t count, void *buffer) {
+    uint64_t last_lba;
+
+    if (vol == 0 || buffer == 0 || count == 0u) {
         fat32_log_io_failure(vol, "read", lba, "bounds");
         return -1;
     }
-    if (blockdev_read(vol->bdev, lba, 1, buffer) != 0) {
+    last_lba = (uint64_t)lba + (uint64_t)count - 1u;
+    if (!fat32_lba_in_volume(vol, lba) ||
+        last_lba > 0xffffffffull ||
+        !fat32_lba_in_volume(vol, (uint32_t)last_lba)) {
+        fat32_log_io_failure(vol, "read", lba, "bounds");
+        return -1;
+    }
+    if (blockdev_read(vol->bdev, lba, count, buffer) != 0) {
         fat32_log_io_failure(vol, "read", lba, "block");
         return -1;
     }
@@ -152,6 +165,7 @@ int fat32_write_sector(struct fat32_volume *vol, uint32_t lba, const void *buffe
         fat32_log_io_failure(vol, "write", lba, "block");
         return -1;
     }
+    vol->fat_cache_valid = 0u;
     return 0;
 }
 
@@ -167,7 +181,7 @@ int fat32_next_cluster(struct fat32_volume *vol, uint32_t cluster, uint32_t *nex
     uint32_t fat_offset;
     uint32_t fat_sector;
     uint32_t fat_index;
-    uint32_t *entries;
+    const uint32_t *entries;
 
     if (!fat32_cluster_is_data(vol, cluster) || next == 0) {
         return -1;
@@ -175,10 +189,14 @@ int fat32_next_cluster(struct fat32_volume *vol, uint32_t cluster, uint32_t *nex
     fat_offset = cluster * 4u;
     fat_sector = vol->fat_start_lba + (fat_offset / 512u);
     fat_index = (fat_offset % 512u) / 4u;
-    if (fat32_read_sector(vol, fat_sector, vol->sector_buffer) != 0) {
-        return -1;
+    if (!vol->fat_cache_valid || vol->fat_cache_lba != fat_sector) {
+        if (fat32_read_sector(vol, fat_sector, vol->fat_cache) != 0) {
+            return -1;
+        }
+        vol->fat_cache_lba = fat_sector;
+        vol->fat_cache_valid = 1u;
     }
-    entries = (uint32_t *)vol->sector_buffer;
+    entries = (const uint32_t *)vol->fat_cache;
     *next = entries[fat_index] & 0x0fffffffu;
     if (*next != 0u && *next < FAT32_CLUSTER_END && !fat32_cluster_is_data(vol, *next)) {
         return -1;

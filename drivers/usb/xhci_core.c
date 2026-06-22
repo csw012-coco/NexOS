@@ -301,6 +301,7 @@ int xhci_alloc_msc_resources(struct xhci_enum_device *dev) {
     if (!xhci_alloc_page(&dev->bulk_in_ring_phys, (void **)&dev->bulk_in_ring) ||
         !xhci_alloc_page(&dev->bulk_out_ring_phys, (void **)&dev->bulk_out_ring) ||
         !xhci_alloc_page(&dev->data_phys, (void **)&dev->data) ||
+        !xhci_alloc_page(&dev->read_cache_phys, (void **)&dev->read_cache) ||
         !xhci_alloc_page(&dev->cbw_phys, (void **)&dev->cbw) ||
         !xhci_alloc_page(&dev->csw_phys, (void **)&dev->csw)) {
         return 0;

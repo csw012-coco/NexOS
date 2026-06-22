@@ -21,7 +21,10 @@ struct fat32_volume {
     uint32_t cluster_count;
     uint8_t table_count;
     uint8_t mounted;
+    uint8_t fat_cache_valid;
+    uint32_t fat_cache_lba;
     uint8_t sector_buffer[FAT32_SECTOR_SIZE];
+    uint8_t fat_cache[FAT32_SECTOR_SIZE];
 };
 
 int fat32_mount(struct fat32_volume *vol, struct block_device *bdev, uint32_t partition_lba);

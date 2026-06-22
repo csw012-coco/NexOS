@@ -1,6 +1,7 @@
 #include "fs/vfs_internal.h"
 #include "fs/vfs_text.h"
 #include "block/blockdev.h"
+#include "drivers/audio/audio.h"
 #include "drivers/video/framebuffer.h"
 #include "drivers/rtc/cmos.h"
 #include "kernel/public/driver/driver.h"
@@ -265,6 +266,26 @@ static uint32_t vfs_format_proc_devices(char *text, uint32_t size) {
     pos = vfs_format_proc_device_line(text, pos, size, "stdin", VFS_DEV_MAJOR_MISC, 0u, "r-", "device.read", "standard input");
     pos = vfs_format_proc_device_line(text, pos, size, "stdout", VFS_DEV_MAJOR_MISC, 1u, "-w", "device.write", "standard output");
     pos = vfs_format_proc_device_line(text, pos, size, "stderr", VFS_DEV_MAJOR_MISC, 2u, "-w", "device.write", "standard error");
+    if (audio_device_count() != 0u) {
+        pos = vfs_format_proc_device_line(text,
+                                          pos,
+                                          size,
+                                          "audio",
+                                          VFS_DEV_MAJOR_AUDIO,
+                                          0u,
+                                          "-w",
+                                          "device.write audio.play",
+                                          "48 kHz 16-bit stereo PCM output");
+    }
+    pos = vfs_format_proc_device_line(text,
+                                      pos,
+                                      size,
+                                      "speaker",
+                                      VFS_DEV_MAJOR_AUDIO,
+                                      1u,
+                                      "-w",
+                                      "device.write",
+                                      "PC speaker tone: write HZ DURATION_MS");
     pos = vfs_format_proc_device_line(text, pos, size, "ttyS0", VFS_DEV_MAJOR_TTY, 64u, "rw", "device.read device.write", "COM1 UART tty");
     if (framebuffer_display_active()) {
         pos = vfs_format_proc_device_line(text,

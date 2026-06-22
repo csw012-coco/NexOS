@@ -59,6 +59,7 @@ int audio_register_device(const struct audio_device_info *info,
 uint32_t audio_device_count(void);
 int audio_query_device(uint32_t index, struct audio_device_info *out);
 int audio_default_output_device(uint32_t *index_out);
+int audio_default_tone_device(uint32_t *index_out);
 int audio_play_tone(uint32_t index, uint32_t hz, uint32_t duration_ms);
 int audio_play_pcm(uint32_t index,
                    const void *data,

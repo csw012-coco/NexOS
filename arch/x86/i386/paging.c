@@ -379,6 +379,39 @@ int i386_paging_translate_in(uint32_t root,
     return 1;
 }
 
+int i386_paging_user_accessible_in(uint32_t root,
+                                   uint32_t virtual_address,
+                                   int writable) {
+    uint32_t *directory;
+    uint32_t *table;
+    uint32_t directory_entry;
+    uint32_t table_entry;
+    int accessible;
+
+    if (root == 0u ||
+        i386_paging_root() != kernel_page_directory_root ||
+        !i386_paging_temporary_map(root, 0u, (void **)&directory)) {
+        return 0;
+    }
+    directory_entry = directory[virtual_address >> 22];
+    if ((directory_entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) !=
+            (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER) ||
+        !i386_paging_temporary_map(directory_entry & PAGING_ENTRY_ADDRESS_MASK,
+                                   1u,
+                                   (void **)&table)) {
+        i386_paging_temporary_unmap(0u);
+        return 0;
+    }
+    table_entry = table[(virtual_address >> 12) & 0x3ffu];
+    accessible =
+        (table_entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) ==
+            (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER) &&
+        (!writable || (table_entry & PAGING_ENTRY_WRITABLE) != 0u);
+    i386_paging_temporary_unmap(1u);
+    i386_paging_temporary_unmap(0u);
+    return accessible;
+}
+
 void i386_paging_switch(uint32_t root) {
     if (root != 0u && (root & (I386_PAGE_SIZE - 1u)) == 0u) {
         __asm__ volatile("mov %0, %%cr3" : : "r"(root) : "memory");

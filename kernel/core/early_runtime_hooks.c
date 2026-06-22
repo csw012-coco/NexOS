@@ -70,3 +70,11 @@ void kernel_profile_record(uint32_t handle, uint64_t cycles, uint64_t units) {
     (void)cycles;
     (void)units;
 }
+
+struct tty;
+
+__attribute__((weak))
+int job_tty_wake_waiting_processes(struct tty *tty) {
+    (void)tty;
+    return 0;
+}

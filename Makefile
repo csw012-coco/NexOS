@@ -4,6 +4,12 @@
 ROOT := $(CURDIR)
 BUILD := $(ROOT)/build
 ASSETS := $(ROOT)/assets
+DOOM_ASSETS := $(ASSETS)/doom
+DOOM1_WAD := $(DOOM_ASSETS)/DOOM1.WAD
+DOOM2_WAD := $(DOOM_ASSETS)/DOOM2.WAD
+TEST_C_SOURCE := $(ASSETS)/c/test.c
+TEST_WAV := $(ASSETS)/audio/test.wav
+TEST2_WAV := $(ASSETS)/audio/test2.wav
 FONT_HEX := $(ASSETS)/fonts/font.hex
 IMAGE_DIR := $(BUILD)/images
 CMD_SUITE_WRAPPER_DIR := $(BUILD)/cmd-wrappers
@@ -14,6 +20,7 @@ BOOTX_CONFIG := $(ROOT)/config/bootx.cfg
 IMAGE := $(IMAGE_DIR)/NexOS.img
 BIOS_IMAGE := $(IMAGE_DIR)/NexOS-bios.img
 UEFI_IMAGE := $(IMAGE_DIR)/NexOS-uefi.img
+OS_IMAGE_SIZE ?= 256M
 NXFS_IMAGE := $(IMAGE_DIR)/nxfs.img
 RAMDISK_IMAGE := $(BUILD)/ramdisk.img
 RAMDISK_SIZE ?= 36M
@@ -34,23 +41,36 @@ Q ?= @
 
 I386_CC ?= cc
 I386_LD ?= ld
+I386_AR ?= ar
 I386_BUILD := $(BUILD)/i386
 I386_KERNEL := $(I386_BUILD)/kernel-i386.elf
 I386_USER := $(I386_BUILD)/USER32.ELF
 I386_SCHED_USER := $(I386_BUILD)/SCHED32.ELF
+I386_TEST_USER := $(I386_BUILD)/TEST32.ELF
+I386_NLIBC := $(I386_BUILD)/libnlibc32.a
+I386_CRT0 := $(I386_BUILD)/libc32_crt0.o
 I386_IMAGE := $(IMAGE_DIR)/NexOS-i386.img
 I386_BOOTX_CONFIG := $(ROOT)/config/bootx-i386.cfg
 I386_CFLAGS := -m32 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
 	-mno-mmx -mno-sse -mno-sse2 -fno-tree-vectorize \
-	-fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Wextra -O2 \
+	-fno-asynchronous-unwind-tables -fno-unwind-tables -ffunction-sections \
+	-fdata-sections -Wall -Wextra -O2 \
 	-I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/include
-I386_LDFLAGS := -m elf_i386 -nostdlib -static
+I386_LDFLAGS := -m elf_i386 -nostdlib -static --gc-sections
+I386_USER_CFLAGS := -I$(ROOT)/user/libc32/include \
+	$(I386_CFLAGS) -fno-builtin
 I386_COMMON_C_SRCS := \
 	hal/early.c \
 	kernel/core/early_console.c \
 	kernel/core/early_kprint.c \
 	kernel/core/early_boot.c \
 	kernel/core/early_runtime_hooks.c \
+	kernel/core/clipboard.c \
+	kernel/core/console.c \
+	kernel/core/tty.c \
+	kernel/core/i386_shared_services.c \
+	kernel/sys/syscall_dispatch.c \
+	drivers/input/keyboard.c \
 	drivers/bus/pci.c \
 	block/block_event.c \
 	block/blockdev.c \
@@ -60,6 +80,8 @@ I386_COMMON_C_SRCS := \
 	fs/fat32_file.c \
 	fs/fat32.c \
 	fs/early_vfs.c \
+	fs/vfs.c \
+	fs/vfs_i386.c \
 	lib/string.c
 I386_ARCH_C_SRCS := \
 	arch/x86/i386/gdt.c \
@@ -70,6 +92,7 @@ I386_ARCH_C_SRCS := \
 	arch/x86/i386/pmm.c \
 	arch/x86/i386/scheduler.c \
 	arch/x86/i386/user.c \
+	hal/i386/platform.c \
 	arch/x86/i386/platform_boot.c
 I386_ARCH_ASM_SRCS := \
 	arch/x86/i386/entry.asm \
@@ -81,6 +104,12 @@ I386_COMMON_OBJS := \
 	$(I386_BUILD)/early_kprint.o \
 	$(I386_BUILD)/early_boot.o \
 	$(I386_BUILD)/early_runtime_hooks.o \
+	$(I386_BUILD)/clipboard.o \
+	$(I386_BUILD)/console.o \
+	$(I386_BUILD)/tty.o \
+	$(I386_BUILD)/i386_shared_services.o \
+	$(I386_BUILD)/syscall_dispatch.o \
+	$(I386_BUILD)/input_keyboard.o \
 	$(I386_BUILD)/pci.o \
 	$(I386_BUILD)/block_event.o \
 	$(I386_BUILD)/blockdev.o \
@@ -91,6 +120,8 @@ I386_COMMON_OBJS := \
 	$(I386_BUILD)/fat32_file.o \
 	$(I386_BUILD)/fat32.o \
 	$(I386_BUILD)/early_vfs.o \
+	$(I386_BUILD)/vfs.o \
+	$(I386_BUILD)/vfs_i386.o \
 	$(I386_BUILD)/io.o \
 	$(I386_BUILD)/string.o
 I386_ARCH_C_OBJS := \
@@ -102,6 +133,7 @@ I386_ARCH_C_OBJS := \
 	$(I386_BUILD)/pmm.o \
 	$(I386_BUILD)/scheduler.o \
 	$(I386_BUILD)/user.o \
+	$(I386_BUILD)/hal_i386.o \
 	$(I386_BUILD)/platform_boot.o
 I386_ARCH_ASM_OBJS := \
 	$(I386_BUILD)/entry.o \
@@ -112,9 +144,9 @@ I386_OBJS := $(I386_ARCH_ASM_OBJS) $(I386_ARCH_C_OBJS) $(I386_COMMON_OBJS)
 
 CFLAGS64 := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -Wall -Wextra -O2 -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include
 DRV_CFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Wextra -O2 -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include
-USERCFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -Wall -Wextra -O2 -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include
+USERCFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -Wall -Wextra -O2 -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT)/user/libc/include -I$(ROOT)/user/libc/include/sys -I$(ROOT)/user/libc/include/nexos -I$(ROOT)/user/public -I$(ROOT)/abi
 LDFLAGS64 := -nostdlib -static -m elf_x86_64
-USER_ELF_BINS := $(BUILD)/IPCDEMO.ELF $(BUILD)/IMGVIEW.ELF $(BUILD)/NCC.ELF $(BUILD)/HELLO.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/GUIDEMO.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
+USER_ELF_BINS := $(BUILD)/DOOM.ELF $(BUILD)/IPCDEMO.ELF $(BUILD)/IMGVIEW.ELF $(BUILD)/NCC.ELF $(BUILD)/HELLO.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/GUIDEMO.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
 INIT_SCRIPT := $(ROOT)/user/init/INIT.SH
 OS_CONFIG := $(ROOT)/config/NOS.CFG
 DUMMY_AC97_DRIVER_SRC := $(ROOT)/drivers/dummy/ac97_drv.c
@@ -210,6 +242,7 @@ KERNEL_C_SRCS := \
 	block/block_event.c \
 	block/blockdev.c \
 	drivers/audio/audio.c \
+	drivers/audio/pc_speaker.c \
 	drivers/bus/pci.c \
 	drivers/audio/ac97.c \
 	drivers/audio/hda.c \
@@ -469,7 +502,8 @@ $(I386_BUILD)/pmm.o: $(ROOT)/arch/x86/i386/pmm.c \
 
 $(I386_BUILD)/scheduler.o: $(ROOT)/arch/x86/i386/scheduler.c \
 		$(ROOT)/arch/x86/i386/scheduler.h $(ROOT)/arch/x86/i386/idt.h \
-		$(ROOT)/arch/x86/i386/gdt.h $(ROOT)/arch/x86/i386/paging.h | $(I386_BUILD)
+		$(ROOT)/arch/x86/i386/gdt.h $(ROOT)/arch/x86/i386/paging.h \
+		$(ROOT)/kernel/internal/proc/process_types_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
@@ -505,6 +539,41 @@ $(I386_BUILD)/early_runtime_hooks.o: $(ROOT)/kernel/core/early_runtime_hooks.c |
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
 
+$(I386_BUILD)/clipboard.o: $(ROOT)/kernel/core/clipboard.c \
+		$(ROOT)/kernel/internal/core/clipboard_internal.h \
+		$(ROOT)/kernel/public/core/console.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/console.o: $(ROOT)/kernel/core/console.c \
+		$(ROOT)/kernel/internal/core/console_internal.h $(ROOT)/hal/hal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/tty.o: $(ROOT)/kernel/core/tty.c \
+		$(ROOT)/kernel/internal/core/tty_internal.h \
+		$(ROOT)/kernel/internal/core/clipboard_internal.h $(ROOT)/hal/hal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/i386_shared_services.o: $(ROOT)/kernel/core/i386_shared_services.c \
+		$(ROOT)/kernel/internal/core/tty_internal.h $(ROOT)/fs/vfs_internal.h \
+		$(ROOT)/fs/fat32.h $(ROOT)/block/blockdev.h \
+		$(ROOT)/drivers/input/keyboard.h $(ROOT)/arch/x86/i386/keyboard.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/syscall_dispatch.o: $(ROOT)/kernel/sys/syscall_dispatch.c \
+		$(ROOT)/kernel/public/sys/syscall_dispatch.h $(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/input_keyboard.o: $(ROOT)/drivers/input/keyboard.c \
+		$(ROOT)/drivers/input/keyboard.h \
+		$(ROOT)/kernel/public/input/keyboard_types.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
 $(I386_BUILD)/pci.o: $(ROOT)/drivers/bus/pci.c $(ROOT)/drivers/bus/pci.h \
 		$(ROOT)/arch/x86/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
@@ -539,6 +608,22 @@ $(I386_BUILD)/early_vfs.o: $(ROOT)/fs/early_vfs.c $(ROOT)/fs/early_vfs.h \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
 
+$(I386_BUILD)/vfs.o: $(ROOT)/fs/vfs.c $(ROOT)/fs/vfs_internal.h \
+		$(ROOT)/fs/vfs.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/vfs_i386.o: $(ROOT)/fs/vfs_i386.c $(ROOT)/fs/vfs_internal.h \
+		$(ROOT)/fs/vfs.h $(ROOT)/fs/fat32.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/hal_i386.o: $(ROOT)/hal/i386/platform.c $(ROOT)/hal/hal.h \
+		$(ROOT)/arch/x86/i386/paging.h $(ROOT)/arch/x86/i386/pic.h \
+		$(ROOT)/arch/x86/i386/keyboard.h $(ROOT)/arch/x86/i386/gdt.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
 $(I386_BUILD)/io.o: $(ROOT)/arch/x86/io.c $(ROOT)/arch/x86/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
@@ -570,7 +655,59 @@ $(I386_SCHED_USER): $(I386_BUILD)/user_scheduler.o $(ROOT)/user/i386/scheduler.l
 	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/scheduler.ld \
 		-o $@ $(I386_BUILD)/user_scheduler.o
 
-check-i386: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER)
+$(I386_CRT0): $(ROOT)/user/libc32/crt/crt0.asm | $(I386_BUILD)
+	$(call log_cmd,AS,$@)
+	$(Q)$(AS) -f elf32 $< -o $@
+
+$(I386_BUILD)/libc32_syscall_asm.o: $(ROOT)/user/libc32/sys/syscall.asm | $(I386_BUILD)
+	$(call log_cmd,AS,$@)
+	$(Q)$(AS) -f elf32 $< -o $@
+
+$(I386_BUILD)/libc32_syscall.o: $(ROOT)/user/libc32/sys/syscall.c \
+		$(ROOT)/user/libc32/include/unistd.h $(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/libc32_string.o: $(ROOT)/user/libc32/std/string.c \
+		$(ROOT)/user/libc32/include/string.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/libc32_io.o: $(ROOT)/user/libc32/std/io.c \
+		$(ROOT)/user/libc32/include/stdio.h $(ROOT)/user/libc32/include/unistd.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/libc32_malloc.o: $(ROOT)/user/libc32/std/malloc.c \
+		$(ROOT)/user/libc32/include/stdlib.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/libc32_printf.o: $(ROOT)/user/libc32/std/printf.c \
+		$(ROOT)/user/libc32/include/stdio.h $(ROOT)/user/libc32/include/stdarg.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_NLIBC): $(I386_BUILD)/libc32_syscall_asm.o \
+		$(I386_BUILD)/libc32_syscall.o $(I386_BUILD)/libc32_string.o \
+		$(I386_BUILD)/libc32_io.o $(I386_BUILD)/libc32_malloc.o \
+		$(I386_BUILD)/libc32_printf.o | $(I386_BUILD)
+	$(call log_cmd,AR32,$@)
+	$(Q)rm -f $@
+	$(Q)$(I386_AR) rcs $@ $^
+
+$(I386_BUILD)/user_test32.o: $(ROOT)/user/i386/test32.c \
+		$(ROOT)/user/libc32/include/nlibc.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_TEST_USER): $(I386_CRT0) $(I386_BUILD)/user_test32.o \
+		$(I386_NLIBC) $(ROOT)/user/i386/test32.ld
+	$(call log_cmd,LD32,$@)
+	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
+		-o $@ $(I386_CRT0) $(I386_BUILD)/user_test32.o $(I386_NLIBC)
+
+check-i386: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER)
 	$(call log_cmd,CHECK,$<)
 	$(Q)readelf -h $< | grep -q 'Class:.*ELF32'
 	$(Q)readelf -h $< | grep -q 'Machine:.*Intel 80386'
@@ -581,10 +718,14 @@ check-i386: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER)
 	$(Q)readelf -h $(I386_SCHED_USER) | grep -q 'Class:.*ELF32'
 	$(Q)readelf -h $(I386_SCHED_USER) | grep -q 'Machine:.*Intel 80386'
 	$(Q)readelf -h $(I386_SCHED_USER) | grep -q 'Entry point address:.*0x40010000'
+	$(Q)readelf -h $(I386_TEST_USER) | grep -q 'Class:.*ELF32'
+	$(Q)readelf -h $(I386_TEST_USER) | grep -q 'Machine:.*Intel 80386'
+	$(Q)readelf -h $(I386_TEST_USER) | grep -q 'Entry point address:.*0x40020000'
 	$(Q)echo "i386 boot/x ELF32 kernel checks passed"
 
 $(I386_IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3) \
-		$(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_BOOTX_CONFIG) | $(IMAGE_DIR)
+		$(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER) \
+		$(I386_BOOTX_CONFIG) | $(IMAGE_DIR)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s 64M $@
@@ -600,6 +741,7 @@ $(I386_IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3) \
 	$(Q)mcopy -i $@@@1048576 $(I386_KERNEL) ::/BOOT/NEX386.ELF
 	$(Q)mcopy -i $@@@1048576 $(I386_USER) ::/BOOT/USER32.ELF
 	$(Q)mcopy -i $@@@1048576 $(I386_SCHED_USER) ::/BOOT/SCHED32.ELF
+	$(Q)mcopy -i $@@@1048576 $(I386_TEST_USER) ::/BOOT/TEST32.ELF
 	$(Q)mcopy -i $@@@1048576 $(I386_BOOTX_CONFIG) ::/BOOT/BOOTX.CFG
 
 run-i386: check-i386 $(I386_IMAGE)
@@ -724,12 +866,13 @@ $(BOOT_FS_IMAGE): $(BOOTX_STAGE3) $(BOOTX_UEFI) $(BUILD)/kernel64.elf $(RAMDISK_
 	$(Q)mcopy -i $@ $(FONT_HEX) ::/BOOT/FONT.HEX
 	$(Q)mcopy -i $@ $(BOOTX_CONFIG) ::/BOOT/BOOTX.CFG
 
-$(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/apps/elf/user.ld $(BOOTX_CONFIG) $(FONT_HEX) $(INIT_SCRIPT) $(OS_CONFIG) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
+$(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(DOOM1_WAD) $(DOOM2_WAD) $(TEST_C_SOURCE) $(TEST_WAV) $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/apps/elf/user.ld $(BOOTX_CONFIG) $(FONT_HEX) $(INIT_SCRIPT) $(OS_CONFIG) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)$(NXFS_TOOL) mkfs $@
 	$(Q)$(NXFS_TOOL) mkdir $@ /cmd
 	$(Q)$(NXFS_TOOL) mkdir $@ /home
+	$(Q)$(NXFS_TOOL) mkdir $@ /home/doom
 	$(Q)$(NXFS_TOOL) mkdir $@ /system
 	$(Q)$(NXFS_TOOL) mkdir $@ /system/devel
 	$(Q)$(NXFS_TOOL) mkdir $@ /system/devel/include
@@ -764,20 +907,19 @@ $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(USER_CRT0) $(USER_CRT_START) $
 	$(Q)$(NXFS_TOOL) write $@ $(USER_CRT_START) /system/devel/lib/libc_start.o
 	$(Q)$(NXFS_TOOL) write $@ $(USER_NLIBC) /system/devel/lib/libnlibc.a
 	$(Q)$(NXFS_TOOL) write $@ $(ROOT)/user/apps/elf/user.ld /system/devel/lib/nexos.ld
-	$(Q)$(NXFS_TOOL) write $@ $(BOOTX_CONFIG) /home/bootx.txt
 	$(Q)$(NXFS_TOOL) write $@ $(ROOT)/config/ACTION.CAPS /home/action.caps
 	$(Q)$(NXFS_TOOL) write $@ $(FASM_TEST_SOURCE) /home/test.asm
-	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/HELLO.ELF /home/hello.elf
-	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/GUIDEMO.ELF /home/guidemo.elf
-	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/FORTH.ELF /home/forth.elf
-	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/USH.ELF /home/ush.elf
-	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /home/nexbox.elf
-	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NCC.ELF /home/ncc.elf
-	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/IMGVIEW.ELF /home/imgview.elf
-	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/IPCDEMO.ELF /home/ipcdemo.elf
+	$(Q)$(NXFS_TOOL) write $@ $(TEST_C_SOURCE) /home/test.c
+	$(Q)$(NXFS_TOOL) write $@ $(TEST_WAV) /home/test.wav
+	$(Q)$(NXFS_TOOL) write $@ $(TEST2_WAV) /home/test2.wav
+	$(Q)$(NXFS_TOOL) write $@ $(DOOM1_WAD) /home/doom/doom1.wad
+	$(Q)$(NXFS_TOOL) write $@ $(DOOM2_WAD) /home/doom/doom2.wad
+	$(Q)$(NXFS_TOOL) write $@ assets/b.ppm /home/b.ppm
+	$(Q)$(NXFS_TOOL) write $@ assets/a.ppm /home/a.ppm
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/USH.ELF /cmd/ush
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/nexbox
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NCC.ELF /cmd/ncc
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/DOOM.ELF /cmd/doom
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/IMGVIEW.ELF /cmd/imgview
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/IPCDEMO.ELF /cmd/ipcdemo
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/HELLO.ELF /cmd/hello
@@ -858,6 +1000,97 @@ IPCDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/ipcdemo.o
 $(eval $(call define_user_elf,IMGVIEW.ELF,$(IMGVIEW_ELF_OBJS)))
 $(eval $(call define_user_elf,IPCDEMO.ELF,$(IPCDEMO_ELF_OBJS)))
 
+DOOM_ELF_OBJS := \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric_main.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric_math.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric_platform.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/am_map.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/d_event.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/d_items.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/d_iwad.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/d_loop.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/d_main.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/d_mode.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/d_net.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/doomdef.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/doomgeneric.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/doomstat.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/dstrings.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/dummy.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/f_finale.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/f_wipe.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/g_game.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/gusconf.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/hu_lib.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/hu_stuff.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/i_cdmus.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/i_endoom.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/i_input.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/i_joystick.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/i_nexossound.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/i_scale.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/i_sound.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/i_system.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/i_timer.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/i_video.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/icon.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/info.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/m_argv.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/m_bbox.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/m_cheat.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/m_config.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/m_controls.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/m_fixed.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/m_menu.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/m_misc.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/m_random.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/memio.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/mus2mid.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_ceilng.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_doors.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_enemy.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_floor.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_inter.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_lights.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_map.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_maputl.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_mobj.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_plats.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_pspr.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_saveg.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_setup.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_sight.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_spec.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_switch.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_telept.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_tick.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/p_user.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/r_bsp.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/r_data.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/r_draw.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/r_main.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/r_plane.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/r_segs.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/r_sky.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/r_things.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/s_sound.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/sha1.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/sounds.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/st_lib.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/st_stuff.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/statdump.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/tables.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/v_video.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/w_checksum.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/w_file.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/w_file_stdc.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/w_main.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/w_wad.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/wi_stuff.o \
+	$(BUILD)/user/apps/elf/doomgeneric/doomgeneric/z_zone.o \
+
+$(eval $(call define_user_elf,DOOM.ELF,$(DOOM_ELF_OBJS)))
+
 NCC_ELF_OBJS := \
 	$(BUILD)/user/apps/elf/ncc/ncc_main.o \
 	$(BUILD)/user/apps/elf/ncc/ncc_lexer.o \
@@ -873,7 +1106,7 @@ $(eval $(call define_user_elf,NCC.ELF,$(NCC_ELF_OBJS)))
 $(IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOT_FS_IMAGE) $(ROOT_FS_IMAGE) | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
-	$(Q)truncate -s 128M $@
+	$(Q)truncate -s $(OS_IMAGE_SIZE) $@
 	$(Q)parted -s $@ mklabel msdos
 	$(Q)parted -s $@ mkpart primary fat32 1MiB 49MiB
 	$(Q)parted -s $@ mkpart primary 49MiB 100%
@@ -891,7 +1124,7 @@ $(BIOS_IMAGE): $(IMAGE) | $(BUILD)
 $(UEFI_IMAGE): $(BOOT_FS_IMAGE) $(ROOT_FS_IMAGE) | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
-	$(Q)truncate -s 128M $@
+	$(Q)truncate -s $(OS_IMAGE_SIZE) $@
 	$(Q)parted -s $@ mklabel gpt
 	$(Q)parted -s $@ mkpart ESP fat32 1MiB 49MiB
 	$(Q)parted -s $@ set 1 esp on
@@ -1157,8 +1390,12 @@ check-image: $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE) $(NXFS_IMAGE) $(ROOT_FS_IMAGE)
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/vi
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/nexctl
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/sysinfo
-	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /home/ush.elf
-	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /home/hello.elf
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /home/action.caps
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /home/test.asm
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /home/test.c
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /home/test.wav
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /home/doom/doom1.wad
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /home/doom/doom2.wad
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/config/nos.cfg
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/font/font.hex
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/session/images
@@ -1187,3 +1424,14 @@ bootx-loader:
 	$(Q)$(MAKE) -C $(BOOTX_DIR)
 
 $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3) $(BOOTX_UEFI): bootx-loader
+
+# Doomgeneric uses double math stubs; x86_64 ABI returns double in XMM regs.
+$(BUILD)/user/apps/elf/doomgeneric/doomgeneric_math.o: USERCFLAGS := $(filter-out -mno-sse -mgeneral-regs-only,$(USERCFLAGS)) -msse -mfpmath=sse
+
+# Doomgeneric NexOS port flags
+$(BUILD)/user/apps/elf/doomgeneric/%.o: USERCFLAGS += -D__NEXOS__
+
+# Doomgeneric needs float/double ABI. Keep this limited to Doom objects.
+DOOM_USERCFLAGS := $(filter-out -mno-sse -mgeneral-regs-only,$(USERCFLAGS)) -msse -mfpmath=sse -D__NEXOS__
+
+$(BUILD)/user/apps/elf/doomgeneric/%.o: USERCFLAGS := $(DOOM_USERCFLAGS)

@@ -1,4 +1,6 @@
 #include "fs/vfs_internal.h"
+#include "drivers/audio/audio.h"
+#include "drivers/audio/pc_speaker.h"
 #include "drivers/serial/uart.h"
 #include "drivers/video/framebuffer.h"
 #include "lib/string.h"
@@ -22,6 +24,48 @@ static void vfs_devfs_fill_bytes(void *dest, uint8_t value, uint32_t size) {
 
 static int vfs_devfs_is_decimal_digit(char ch) {
     return ch >= '0' && ch <= '9';
+}
+
+static int vfs_devfs_parse_speaker_command(const void *buffer,
+                                           uint32_t size,
+                                           uint32_t *hz_out,
+                                           uint32_t *duration_ms_out) {
+    const char *text = (const char *)buffer;
+    uint32_t offset = 0;
+    uint32_t values[2] = {0, 0};
+
+    if (buffer == 0 || hz_out == 0 || duration_ms_out == 0) {
+        return 0;
+    }
+    for (uint32_t value_index = 0; value_index < 2u; value_index++) {
+        while (offset < size && (text[offset] == ' ' || text[offset] == '\t' ||
+                                  text[offset] == '\r' || text[offset] == '\n')) {
+            offset++;
+        }
+        if (offset == size || !vfs_devfs_is_decimal_digit(text[offset])) {
+            return 0;
+        }
+        while (offset < size && vfs_devfs_is_decimal_digit(text[offset])) {
+            uint32_t digit = (uint32_t)(text[offset] - '0');
+
+            if (values[value_index] > (0xffffffffu - digit) / 10u) {
+                return 0;
+            }
+            values[value_index] = values[value_index] * 10u + digit;
+            offset++;
+        }
+    }
+    while (offset < size && (text[offset] == ' ' || text[offset] == '\t' ||
+                              text[offset] == '\r' || text[offset] == '\n')) {
+        offset++;
+    }
+    if (offset != size || values[0] < 20u || values[0] > 20000u ||
+        values[1] < 1u || values[1] > 10000u) {
+        return 0;
+    }
+    *hz_out = values[0];
+    *duration_ms_out = values[1];
+    return 1;
 }
 
 static int64_t vfs_devfs_emit_dir_entry(struct vfs_dirent *entry,
@@ -117,6 +161,12 @@ int64_t vfs_read_from_devfs(struct vfs *vfs,
     if (node->aux_index == VFS_DEV_FRAMEBUFFER) {
         return framebuffer_device_read(offset_io, buffer, size);
     }
+    if (node->aux_index == VFS_DEV_AUDIO) {
+        return -1;
+    }
+    if (node->aux_index == VFS_DEV_SPEAKER) {
+        return -1;
+    }
     if (dev == 0) {
         return -1;
     }
@@ -159,6 +209,27 @@ int64_t vfs_write_to_devfs(struct vfs *vfs,
     if (node->aux_index == VFS_DEV_FRAMEBUFFER) {
         return framebuffer_device_write(offset_io, buffer, size);
     }
+    if (node->aux_index == VFS_DEV_AUDIO) {
+        uint32_t device_index;
+
+        if (audio_default_output_device(&device_index) != 0 ||
+            !audio_play_pcm(device_index, buffer, size, 48000u, 2u, 16u, 0u)) {
+            return -1;
+        }
+        *offset_io += size;
+        return (int64_t)size;
+    }
+    if (node->aux_index == VFS_DEV_SPEAKER) {
+        uint32_t hz;
+        uint32_t duration_ms;
+
+        if (!vfs_devfs_parse_speaker_command(buffer, size, &hz, &duration_ms) ||
+            !pc_speaker_beep(hz, duration_ms)) {
+            return -1;
+        }
+        *offset_io += size;
+        return (int64_t)size;
+    }
     if (dev == 0) {
         return -1;
     }
@@ -189,12 +260,25 @@ int64_t vfs_read_dir_devfs(uint32_t *index_io, struct vfs_dirent *entry) {
         return vfs_devfs_emit_dir_entry(entry, index_io, "stdout", 0, 0);
     } else if (*index_io == 7) {
         return vfs_devfs_emit_dir_entry(entry, index_io, "stderr", 0, 0);
-    } else if (*index_io == 8 && framebuffer_display_active()) {
+    } else if (*index_io == 8 && audio_device_count() != 0u) {
+        return vfs_devfs_emit_dir_entry(entry, index_io, "audio", 0, 0);
+    } else if (*index_io == 8u + (audio_device_count() != 0u ? 1u : 0u)) {
+        return vfs_devfs_emit_dir_entry(entry, index_io, "speaker", 0, 0);
+    } else if (*index_io == 8u + (audio_device_count() != 0u ? 1u : 0u) +
+                                    1u &&
+               framebuffer_display_active()) {
         return vfs_devfs_emit_dir_entry(entry, index_io, "fb", framebuffer_device_size(), 0);
-    } else if (*index_io == (framebuffer_display_active() ? 9u : 8u) && uart_is_ready()) {
+    } else if (*index_io == 8u + (audio_device_count() != 0u ? 1u : 0u) +
+                                    1u +
+                                    (framebuffer_display_active() ? 1u : 0u) &&
+               uart_is_ready()) {
         return vfs_devfs_emit_dir_entry(entry, index_io, "ttyS0", 0, 0);
     } else {
-        uint32_t base_index = (framebuffer_display_active() ? 9u : 8u) + (uart_is_ready() ? 1u : 0u);
+        uint32_t base_index = 8u +
+                              (audio_device_count() != 0u ? 1u : 0u) +
+                              1u +
+                              (framebuffer_display_active() ? 1u : 0u) +
+                              (uart_is_ready() ? 1u : 0u);
         uint32_t ordinal = *index_io - base_index;
         uint32_t seen = 0;
 
@@ -392,6 +476,19 @@ int vfs_devfs_lookup(const char *name, struct vfs_node *out) {
     if (streq(name, "stderr")) {
         vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_STDERR);
         vfs_set_node_device_numbers(out, VFS_DEV_MAJOR_MISC, 2u);
+        return 0;
+    }
+    if (streq(name, "audio")) {
+        if (audio_device_count() == 0u) {
+            return -1;
+        }
+        vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_AUDIO);
+        vfs_set_node_device_numbers(out, VFS_DEV_MAJOR_AUDIO, 0u);
+        return 0;
+    }
+    if (streq(name, "speaker")) {
+        vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_SPEAKER);
+        vfs_set_node_device_numbers(out, VFS_DEV_MAJOR_AUDIO, 1u);
         return 0;
     }
     if (streq(name, "fb") || streq(name, "fb0")) {
