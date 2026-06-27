@@ -2,16 +2,123 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "fs/nxfs.h"
 
 enum {
-    NXFS_HOST_TOTAL_BLOCKS = 147456
+    NXFS_HOST_DEFAULT_BLOCKS = 147456
 };
 
 static FILE *g_disk = NULL;
 static struct nxfs_super g_super;
 static struct block_device g_host_bdev;
+
+static uint32_t uuid_prng_next(uint32_t *state) {
+    uint32_t x = *state;
+
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x != 0u ? x : 0x6d2b79f5u;
+    return *state;
+}
+
+static void generate_uuid_local(uint8_t uuid[16]) {
+    FILE *fp;
+    uint32_t state;
+
+    fp = fopen("/dev/urandom", "rb");
+    if (fp != NULL) {
+        if (fread(uuid, 1, 16, fp) == 16) {
+            fclose(fp);
+            uuid[6] = (uint8_t)((uuid[6] & 0x0fu) | 0x40u);
+            uuid[8] = (uint8_t)((uuid[8] & 0x3fu) | 0x80u);
+            return;
+        }
+        fclose(fp);
+    }
+
+    state = (uint32_t)time(NULL) ^ (uint32_t)(uintptr_t)&state ^ 0xa5c3f19du;
+    for (uint32_t i = 0; i < 16u; i++) {
+        uuid[i] = (uint8_t)(uuid_prng_next(&state) >> 24);
+    }
+    uuid[6] = (uint8_t)((uuid[6] & 0x0fu) | 0x40u);
+    uuid[8] = (uint8_t)((uuid[8] & 0x3fu) | 0x80u);
+}
+
+static void print_uuid_local(const uint8_t uuid[16]) {
+    for (uint32_t i = 0; i < 16u; i++) {
+        printf("%02x", (unsigned)uuid[i]);
+        if (i == 3u || i == 5u || i == 7u || i == 9u) {
+            printf("-");
+        }
+    }
+}
+
+static uint32_t host_file_block_count_or_die(FILE *fp, const char *path) {
+    long size;
+
+    if (fp == NULL) {
+        fprintf(stderr, "nxfs_host: null file handle: %s\n", path);
+        exit(EXIT_FAILURE);
+    }
+
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        perror("nxfs_host: fseek");
+        exit(EXIT_FAILURE);
+    }
+
+    size = ftell(fp);
+    if (size < 0) {
+        perror("nxfs_host: ftell");
+        exit(EXIT_FAILURE);
+    }
+
+    if ((uint64_t)size < NXFS_BLOCK_SIZE) {
+        fprintf(stderr, "nxfs_host: image too small: %s (%ld bytes)\n", path, size);
+        exit(EXIT_FAILURE);
+    }
+
+    if (((uint64_t)size % NXFS_BLOCK_SIZE) != 0) {
+        fprintf(stderr,
+                "nxfs_host: image size is not block aligned: %s (%ld bytes, block=%u)\n",
+                path,
+                size,
+                NXFS_BLOCK_SIZE);
+        exit(EXIT_FAILURE);
+    }
+
+    if (((uint64_t)size / NXFS_BLOCK_SIZE) > UINT32_MAX) {
+        fprintf(stderr, "nxfs_host: image too large: %s\n", path);
+        exit(EXIT_FAILURE);
+    }
+
+    return (uint32_t)((uint64_t)size / NXFS_BLOCK_SIZE);
+}
+
+static void host_zero_blocks_or_die(uint32_t total_blocks) {
+    uint8_t zero[NXFS_BLOCK_SIZE];
+
+    memset(zero, 0, sizeof(zero));
+
+    if (fseek(g_disk, 0, SEEK_SET) != 0) {
+        perror("nxfs_host: fseek");
+        exit(EXIT_FAILURE);
+    }
+
+    for (uint32_t i = 0; i < total_blocks; i++) {
+        if (fwrite(zero, NXFS_BLOCK_SIZE, 1, g_disk) != 1) {
+            perror("nxfs_host: fwrite");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (fflush(g_disk) != 0) {
+        perror("nxfs_host: fflush");
+        exit(EXIT_FAILURE);
+    }
+}
 
 int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *buffer) {
     if (dev == NULL || dev->read == NULL || buffer == NULL || count == 0) {
@@ -116,41 +223,81 @@ static void init_root_dir_block(uint32_t block) {
 }
 
 static void mkfs_local(const char *file) {
-    uint8_t zero[NXFS_BLOCK_SIZE];
     struct nxfs_inode root;
     uint32_t bitmap_blocks;
     uint32_t inode_bytes;
     uint32_t inode_blocks;
+    uint32_t total_blocks;
 
-    memset(zero, 0, sizeof(zero));
     memset(&root, 0, sizeof(root));
 
-    g_disk = fopen(file, "wb+");
+    /*
+     * If the image already exists, use its current size.
+     * This lets Makefile do:
+     *
+     *   truncate -s 511M image
+     *   nxfs_host mkfs image
+     *
+     * If it does not exist, create a default-sized image for old workflows.
+     */
+    g_disk = fopen(file, "rb+");
     if (g_disk == NULL) {
-        perror("fopen");
-        exit(1);
+        g_disk = fopen(file, "wb+");
+        if (g_disk == NULL) {
+            perror(file);
+            exit(EXIT_FAILURE);
+        }
+
+        total_blocks = NXFS_HOST_DEFAULT_BLOCKS;
+    } else {
+        total_blocks = host_file_block_count_or_die(g_disk, file);
     }
 
-    for (uint32_t i = 0; i < NXFS_HOST_TOTAL_BLOCKS; i++) {
-        fwrite(zero, NXFS_BLOCK_SIZE, 1, g_disk);
-    }
+    /*
+     * For a newly-created file, extend it to the default size.
+     * For an existing truncated file, rewrite exactly that many blocks.
+     */
+    host_zero_blocks_or_die(total_blocks);
 
     inode_bytes = NXFS_MAX_INODES * sizeof(struct nxfs_inode);
     inode_blocks = (inode_bytes + NXFS_BLOCK_SIZE - 1u) / NXFS_BLOCK_SIZE;
-    bitmap_blocks = (NXFS_HOST_TOTAL_BLOCKS + (NXFS_BLOCK_SIZE * 8u) - 1u) / (NXFS_BLOCK_SIZE * 8u);
+    bitmap_blocks = (total_blocks + (NXFS_BLOCK_SIZE * 8u) - 1u) / (NXFS_BLOCK_SIZE * 8u);
 
     g_super.magic = NXFS_MAGIC;
-    g_super.total_blocks = NXFS_HOST_TOTAL_BLOCKS;
+    g_super.total_blocks = total_blocks;
     g_super.bitmap_start = 1;
     g_super.inode_start = g_super.bitmap_start + bitmap_blocks;
     g_super.data_start = g_super.inode_start + inode_blocks;
+    generate_uuid_local(g_super.uuid);
 
-    fseek(g_disk, 0, SEEK_SET);
-    fwrite(&g_super, sizeof(g_super), 1, g_disk);
+    if (g_super.data_start >= g_super.total_blocks) {
+        fprintf(stderr,
+                "nxfs_host: image too small for metadata: total=%u data_start=%u\n",
+                g_super.total_blocks,
+                g_super.data_start);
+        fclose(g_disk);
+        g_disk = NULL;
+        exit(EXIT_FAILURE);
+    }
+
+    if (fseek(g_disk, 0, SEEK_SET) != 0) {
+        perror("nxfs_host: fseek");
+        fclose(g_disk);
+        g_disk = NULL;
+        exit(EXIT_FAILURE);
+    }
+
+    if (fwrite(&g_super, sizeof(g_super), 1, g_disk) != 1) {
+        perror("nxfs_host: fwrite super");
+        fclose(g_disk);
+        g_disk = NULL;
+        exit(EXIT_FAILURE);
+    }
 
     for (uint32_t b = 0; b < g_super.data_start; b++) {
         bitmap_set_block_local(b, 1);
     }
+
     bitmap_set_block_local(g_super.data_start, 1);
 
     root.used = 1;
@@ -160,9 +307,10 @@ static void mkfs_local(const char *file) {
     root.size = NXFS_BLOCK_SIZE;
     root.extents[0].start = g_super.data_start;
     root.extents[0].len = 1;
-    write_inode_local(0, &root);
 
+    write_inode_local(0, &root);
     init_root_dir_block(root.extents[0].start);
+
     fclose(g_disk);
     g_disk = NULL;
 }
@@ -176,7 +324,7 @@ static void open_disk_local(const char *file) {
     memset(&g_host_bdev, 0, sizeof(g_host_bdev));
     g_host_bdev.name = "host-nxfs";
     g_host_bdev.block_size = NXFS_BLOCK_SIZE;
-    g_host_bdev.block_count = NXFS_HOST_TOTAL_BLOCKS;
+    g_host_bdev.block_count = host_file_block_count_or_die(g_disk, file);
     g_host_bdev.read = host_block_read;
     g_host_bdev.write = host_block_write;
 }
@@ -195,6 +343,7 @@ static void mount_image_local(const char *file, struct nxfs_volume *vol) {
         close_disk_local();
         exit(1);
     }
+    g_super = vol->super;
 }
 
 static void mkdir_local(const char *image, const char *path) {
@@ -351,6 +500,16 @@ static void info_local(const char *image, const char *path) {
     close_disk_local();
 }
 
+static void uuid_local(const char *image) {
+    struct nxfs_volume vol;
+
+    mount_image_local(image, &vol);
+    printf("uuid=");
+    print_uuid_local(vol.super.uuid);
+    printf("\n");
+    close_disk_local();
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s mkfs <image>\n", argv[0]);
@@ -359,6 +518,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "       %s exists <image> <path>\n", argv[0]);
         fprintf(stderr, "       %s ls <image> <path>\n", argv[0]);
         fprintf(stderr, "       %s info <image> <path>\n", argv[0]);
+        fprintf(stderr, "       %s uuid <image>\n", argv[0]);
         return 1;
     }
     if (strcmp(argv[1], "mkfs") == 0 && argc == 3) {
@@ -383,6 +543,10 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "info") == 0 && argc == 4) {
         info_local(argv[2], argv[3]);
+        return 0;
+    }
+    if (strcmp(argv[1], "uuid") == 0 && argc == 3) {
+        uuid_local(argv[2]);
         return 0;
     }
     fprintf(stderr, "nxfs_host: bad command or arguments\n");

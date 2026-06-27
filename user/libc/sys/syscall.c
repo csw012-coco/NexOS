@@ -140,7 +140,37 @@ int sem_post(sem_t sem) {
 }
 
 ssize_t write(int fd, const void *data, size_t len) {
-    return (ssize_t)syscall4(SYS_WRITE, (uint64_t)fd, (uint64_t)(uintptr_t)data, (uint64_t)len, 0);
+    const uint8_t *ptr = (const uint8_t *)data;
+    size_t done = 0;
+
+    if (data == 0 || len == 0) {
+        return 0;
+    }
+
+    while (done < len) {
+        ssize_t rc = (ssize_t)syscall4(SYS_WRITE,
+                                       (uint64_t)fd,
+                                       (uint64_t)(uintptr_t)(ptr + done),
+                                       (uint64_t)(len - done),
+                                       0);
+
+        if (rc == (ssize_t)NEXOS_FILE_IO_WOULD_BLOCK) {
+            //yield();
+            continue;
+        }
+
+        if (rc < 0) {
+            return done != 0 ? (ssize_t)done : rc;
+        }
+
+        if (rc == 0) {
+            return (ssize_t)done;
+        }
+
+        done += (size_t)rc;
+    }
+
+    return (ssize_t)done;
 }
 
 ssize_t write_stdout(const void *data, size_t len) {
@@ -168,7 +198,30 @@ uint32_t write_err_str(const char *text) {
 }
 
 ssize_t nex_read(int fd, void *data, size_t max_len, uint32_t flags) {
-    return (ssize_t)syscall4(SYS_READ, (uint64_t)fd, (uint64_t)(uintptr_t)data, (uint64_t)max_len, flags);
+    ssize_t rc;
+
+    for (;;) {
+        rc = (ssize_t)syscall4(SYS_READ,
+                               (uint64_t)fd,
+                               (uint64_t)(uintptr_t)data,
+                               (uint64_t)max_len,
+                               (uint64_t)flags);
+
+        if (rc == (ssize_t)NEXOS_FILE_IO_WOULD_BLOCK) {
+            if ((flags & SYS_READ_NONBLOCK) != 0) {
+                return 0;
+            }
+
+            /*
+             * 여기가 중요.
+             * blocking read는 -2를 앱으로 넘기면 안 됨.
+             */
+            yield();
+            continue;
+        }
+
+        return rc;
+    }
 }
 
 ssize_t read(int fd, void *data, size_t max_len) {
@@ -236,9 +289,11 @@ int switch_root(const char *target) {
 }
 
 int spawn(const char *name, uint32_t mode, uint32_t flags) {
-    int rc = (int)syscall4(SYS_SPAWN, (uint64_t)(uintptr_t)name, mode, flags, (uint64_t)(uintptr_t)environ);
-
-    return rc < 0 ? rc : 0;
+    return (int)syscall4(SYS_SPAWN,
+                         (uint64_t)(uintptr_t)name,
+                         mode,
+                         flags,
+                         (uint64_t)(uintptr_t)environ);
 }
 
 int exec_replace(const char *name) {

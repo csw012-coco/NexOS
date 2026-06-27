@@ -330,22 +330,22 @@ static void ush_config_apply_line_local(char *line) {
 
 static void ush_load_config_local(void) {
     char line[USH_LINE_MAX + 1];
-    int fd = open("/SYSTEM/CONFIG/NOS.CFG", 0);
+    int fd = open("/system/config/nex.scf", 0);
 
     if (fd < 0) {
-        fd = open("SYSTEM/CONFIG/NOS.CFG", 0);
+        fd = open("system/config/nex.scf", 0);
     }
     if (fd < 0) {
-        fd = open("/NOS.CFG", 0);
+        fd = open("/NEX.SCF", 0);
     }
     if (fd < 0) {
-        fd = open("NOS.CFG", 0);
+        fd = open("NEX.SCF", 0);
     }
     if (fd < 0) {
-        fd = open("/NEXOS.CFG", 0);
+        fd = open("/NEXOS.SCF", 0);
     }
     if (fd < 0) {
-        fd = open("NEXOS.CFG", 0);
+        fd = open("NEXOS.SCF", 0);
     }
     if (fd < 0) {
         return;
@@ -493,13 +493,22 @@ int main(int argc, char **argv) {
     char cwd[64];
     char function_name[USH_VAR_NAME_MAX + 1];
     char function_body[USH_FUNCTION_BODY_MAX + 1];
+    const char *init_path = NULL;
 
     ush_refresh_cwd_local(cwd, sizeof(cwd));
     ush_init_vars_local(cwd);
     ush_load_config_local();
+
     if (argc > 2 && ush_is_direct_shell_invocation(argv[0]) && streq_local(argv[1], "--tty")) {
         if (!ush_bind_interactive_stdio_path(argv[2])) {
             ush_write_error("ush: tty open failed\n");
+            exit_with_code(1);
+        }
+
+        if (argc > 4 && streq_local(argv[3], "--init")) {
+            init_path = argv[4];
+        } else if (argc > 3) {
+            ush_write_error("usage: ush --tty <path> [--init <script>]\n");
             exit_with_code(1);
         }
     } else if (argc > 1 && ush_is_direct_shell_invocation(argv[0])) {
@@ -510,7 +519,17 @@ int main(int argc, char **argv) {
     } else {
         ush_bind_interactive_stdio();
     }
+
+    if (init_path != NULL) {
+        char *init_argv[1];
+
+        init_argv[0] = (char *)init_path;
+        (void)ush_run_script_file(cwd, init_path, 1, init_argv);
+        ush_refresh_cwd_local(cwd, sizeof(cwd));
+    }
+
     ush_prompt_sync(cwd);
+    
     for (;;) {
         ush_prompt_sync(cwd);
         ush_write_prompt();

@@ -65,9 +65,6 @@ static uint64_t syscall_handle_write_chunked(uint32_t fd, const struct syscall_u
     if (buffer == 0 || buffer->user_addr == 0 || buffer->size == 0) {
         return 0;
     }
-    if (!syscall_user_readable(buffer->user_addr, buffer->size)) {
-        return syscall_kill_bad_user_pointer();
-    }
 
     remaining = buffer->size;
     total = 0;
@@ -79,6 +76,7 @@ static uint64_t syscall_handle_write_chunked(uint32_t fd, const struct syscall_u
             return syscall_kill_bad_user_pointer();
         }
         written = fs_service_write(process_current_mut(), g_syscall_vfs, fd, g_syscall_copy_buffer, chunk);
+        
         if ((int64_t)written < 0) {
             return written;
         }
@@ -91,8 +89,31 @@ static uint64_t syscall_handle_write_chunked(uint32_t fd, const struct syscall_u
     return total;
 }
 
-uint64_t syscall_handle_write(const struct syscall_user_buffer *buffer) {
-    return syscall_handle_write_chunked(SYS_FD_STDOUT, buffer);
+static uint64_t syscall_sleep_would_block(const struct syscall_frame *frame, uint64_t result) {
+    struct process *proc = process_current_mut();
+
+    sched_resume_current_syscall(process_current_session(), frame, result);
+
+    if (proc != 0) {
+        proc->state = PROCESS_STATE_WAITING;
+    }
+
+    return SYSCALL_EXIT_TO_KERNEL;
+}
+
+uint64_t syscall_handle_write(const struct syscall_user_buffer *buffer,
+                              const struct syscall_frame *frame) {
+    uint64_t result;
+
+    (void)frame;
+
+    result = syscall_handle_write_chunked(SYS_FD_STDOUT, buffer);
+
+    if ((int64_t)result == KERNEL_FILE_IO_WOULD_BLOCK) {
+        return syscall_sleep_would_block(frame, result);
+    }
+
+    return result;
 }
 
 uint64_t syscall_handle_fd_write(uint32_t fd,
@@ -101,19 +122,25 @@ uint64_t syscall_handle_fd_write(uint32_t fd,
     uint64_t start;
     uint64_t result;
 
+    (void)frame;
+
     if (g_sys_write_profile == 0u) {
         g_sys_write_profile = kernel_profile_register("sys.write");
     }
+
     start = kernel_profile_clock();
     result = syscall_handle_write_chunked(fd, buffer);
     kernel_profile_record(g_sys_write_profile,
                           kernel_profile_clock() - start,
                           (int64_t)result > 0 ? result : 0u);
 
-    if ((int64_t)result > 0 && syscall_fd_is_pipe_write(fd)) {
-        sched_resume_current_syscall(process_current_session(), frame, result);
-        return SYSCALL_EXIT_TO_KERNEL;
+    /*
+     * Only WOULD_BLOCK sleeps. Successful writes return normally.
+     */
+    if ((int64_t)result == KERNEL_FILE_IO_WOULD_BLOCK) {
+        return syscall_sleep_would_block(frame, result);
     }
+
     return result;
 }
 
@@ -141,18 +168,31 @@ uint64_t syscall_handle_clear(void) {
     return 1;
 }
 
-uint64_t syscall_handle_fd_read(uint32_t fd, const struct syscall_user_buffer *buffer, uint32_t flags) {
+uint64_t syscall_handle_fd_read(uint32_t fd,
+                                const struct syscall_user_buffer *buffer,
+                                uint32_t flags,
+                                const struct syscall_frame *frame) {
     uint32_t chunk_size;
     uint32_t copied = 0;
     uint64_t rc;
 
     if (fd == SYS_FD_STDIN) {
-        return syscall_handle_read(buffer, flags);
+        rc = syscall_handle_read(buffer, flags);
+
+        if ((int64_t)rc == KERNEL_FILE_IO_WOULD_BLOCK) {
+            return rc;
+            //return syscall_sleep_would_block(frame, rc);
+        }
+
+        return rc;
     }
+
     if (!syscall_user_writable(buffer->user_addr, buffer->size)) {
         return syscall_kill_bad_user_pointer();
     }
+
     chunk_size = buffer->size > SYSCALL_COPY_CHUNK ? SYSCALL_COPY_CHUNK : buffer->size;
+
     rc = fs_service_read(process_current_mut(),
                          g_syscall_vfs,
                          fd,
@@ -160,12 +200,20 @@ uint64_t syscall_handle_fd_read(uint32_t fd, const struct syscall_user_buffer *b
                          chunk_size,
                          flags,
                          &copied);
+
+    if ((int64_t)rc == KERNEL_FILE_IO_WOULD_BLOCK) {
+        //return syscall_sleep_would_block(frame, rc);
+        return rc;
+    }
+
     if ((int64_t)rc <= 0) {
         return syscall_maybe_abort_interrupted_process(rc);
     }
+
     if (!syscall_copy_to_user(buffer->user_addr, g_syscall_copy_buffer, copied)) {
         return syscall_kill_bad_user_pointer();
     }
+
     return syscall_maybe_abort_interrupted_process(rc);
 }
 

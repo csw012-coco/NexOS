@@ -1,6 +1,6 @@
 #include "drivers/rtc/cmos.h"
 
-#include "arch/x86/io.h"
+#include "arch/x86/common/io.h"
 
 enum {
     CMOS_INDEX_PORT = 0x70u,

@@ -1,4 +1,6 @@
-#include "user/libc/include/nlibc.h"
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 void *memcpy(void *dst, const void *src, size_t count) {
     unsigned char *out = dst;

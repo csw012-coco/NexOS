@@ -2,11 +2,11 @@
 
 #include <stdint.h>
 
-#include "arch/x86/gdt64.h"
-#include "arch/x86/idt64.h"
-#include "arch/x86/io.h"
-#include "arch/x86/paging.h"
-#include "arch/x86/usermode.h"
+#include "arch/x86/x86_64/gdt.h"
+#include "arch/x86/x86_64/idt.h"
+#include "arch/x86/common/io.h"
+#include "arch/x86/x86_64/paging.h"
+#include "arch/x86/x86_64/user.h"
 
 #include "hal/hal.h"
 

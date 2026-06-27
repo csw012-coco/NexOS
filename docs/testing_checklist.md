@@ -68,6 +68,10 @@ service enable demo
 service reconcile
 service list
 service disable demo
+service set demo restart on-failure
+service set demo backoff_ms 250
+service set demo max_retries 3
+service info demo
 echo hello | grep hello | wc
 run sleepdemo
 run badptr

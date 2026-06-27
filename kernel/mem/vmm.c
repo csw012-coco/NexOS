@@ -1,6 +1,6 @@
 #include "kernel/public/mem/vmm.h"
 #include "hal/hal.h"
-#include "arch/x86/paging.h"
+#include "arch/x86/x86_64/paging.h"
 #include "lib/string.h"
 
 enum {

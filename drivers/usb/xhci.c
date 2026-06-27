@@ -681,11 +681,6 @@ int xhci_poll_keyboard_event(struct keyboard_event *out) {
         result = 1;
         goto done;
     }
-    xhci_hotplug_poll();
-    if (xhci_hid_pop_event(out)) {
-        result = 1;
-        goto done;
-    }
     if (g_hid_keyboard_count == 0u) {
         goto done;
     }

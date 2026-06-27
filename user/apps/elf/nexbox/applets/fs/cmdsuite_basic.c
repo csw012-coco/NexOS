@@ -349,7 +349,7 @@ int cmd_run_like(int argc, char **argv, const char *verb, uint32_t mode, uint32_
         return 1;
     }
     rc = use_exec ? exec(command) : spawn(command, mode, flags);
-    if (rc != 0) {
+    if (rc < 0) {
         write_err_str(verb);
         write_err_str(" failed rc=");
         eprintf("%d\n", rc);

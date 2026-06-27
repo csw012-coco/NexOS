@@ -1,3 +1,2 @@
 #!/cmd/ush
-
 echo hello!

@@ -1,9 +1,8 @@
 #pragma once
 
-typedef unsigned int uint32_t;
-typedef signed int int32_t;
+#include <stdint.h>
 
-struct i386_irq_frame;
+struct process_context;
 struct process_snapshot;
 struct syscall_dirent;
 struct vfs;
@@ -22,18 +21,20 @@ int32_t i386_scheduler_spawn(uint32_t entry,
                              uint32_t stack,
                              uint32_t root,
                              const char *name);
-uint32_t i386_scheduler_exec(struct i386_irq_frame *frame,
+uintptr_t i386_scheduler_exec(const struct process_context *context,
                              uint32_t entry,
                              uint32_t stack,
                              uint32_t root,
                              const char *name);
-uint32_t i386_scheduler_wait(struct i386_irq_frame *frame,
+uintptr_t i386_scheduler_wait(const struct process_context *context,
                              uint32_t pid,
                              int32_t *status,
                              int *blocked);
-struct i386_irq_frame *i386_scheduler_tick(struct i386_irq_frame *frame);
-uint32_t i386_scheduler_exit(struct i386_irq_frame *frame, int exit_code);
-uint32_t i386_scheduler_yield(struct i386_irq_frame *frame);
+const struct process_context *i386_scheduler_tick(
+    const struct process_context *context);
+uintptr_t i386_scheduler_exit(const struct process_context *context,
+                              int exit_code);
+uintptr_t i386_scheduler_yield(const struct process_context *context);
 uint32_t i386_scheduler_ticks(void);
 uint32_t i386_scheduler_switches(void);
 uint32_t i386_scheduler_completed(void);

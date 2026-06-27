@@ -77,4 +77,5 @@ int process_spawn_from_user(struct vfs *vfs,
                             char *command_line,
                             const char *const *envp,
                             uint32_t syscall_mode,
-                            uint32_t flags);
+                            uint32_t flags,
+                            uint32_t *pid_out);

@@ -21,7 +21,6 @@ enum {
     FRAMEBUFFER_MOUSE_CURSOR_HEIGHT = 18,
     FRAMEBUFFER_MOUSE_CURSOR_PIXELS = FRAMEBUFFER_MOUSE_CURSOR_WIDTH * FRAMEBUFFER_MOUSE_CURSOR_HEIGHT,
     FRAMEBUFFER_DIRTY_RECT_MAX = 32,
-    FRAMEBUFFER_DIRTY_RECT_COLLAPSE = 8,
     FRAMEBUFFER_PRESENT_HZ = 60
 };
 
@@ -183,6 +182,22 @@ static uint32_t framebuffer_vga_color_to_pixel(const struct framebuffer_display_
     return framebuffer_pack_rgb(state, (uint8_t)rgb[0], (uint8_t)rgb[1], (uint8_t)rgb[2]);
 }
 
+static uint64_t framebuffer_dirty_rect_area(const struct framebuffer_dirty_rect *rect) {
+    return (uint64_t)(rect->x1 - rect->x0) * (uint64_t)(rect->y1 - rect->y0);
+}
+
+static struct framebuffer_dirty_rect framebuffer_dirty_rect_union(
+    const struct framebuffer_dirty_rect *a,
+    const struct framebuffer_dirty_rect *b) {
+    struct framebuffer_dirty_rect result;
+
+    result.x0 = a->x0 < b->x0 ? a->x0 : b->x0;
+    result.y0 = a->y0 < b->y0 ? a->y0 : b->y0;
+    result.x1 = a->x1 > b->x1 ? a->x1 : b->x1;
+    result.y1 = a->y1 > b->y1 ? a->y1 : b->y1;
+    return result;
+}
+
 static void framebuffer_mark_dirty(struct framebuffer_display_state *state,
                                    uint32_t x,
                                    uint32_t y,
@@ -236,29 +251,34 @@ static void framebuffer_mark_dirty(struct framebuffer_display_state *state,
         state->dirty_rects[i] = state->dirty_rects[state->dirty_count];
     }
 
-    if (state->dirty_count < FRAMEBUFFER_DIRTY_RECT_COLLAPSE) {
+    if (state->dirty_count < FRAMEBUFFER_DIRTY_RECT_MAX) {
         state->dirty_rects[state->dirty_count++] = dirty;
         return;
     }
 
+    /*
+     * Keep sparse updates sparse. When the list is full, merge the new
+     * rectangle into the existing rectangle that adds the least copied area
+     * instead of collapsing every dirty rectangle into one screen-sized box.
+     */
+    uint32_t best_index = 0u;
+    uint64_t best_growth = ~(uint64_t)0;
+    struct framebuffer_dirty_rect best_union = dirty;
+
     for (uint32_t i = 0; i < state->dirty_count; i++) {
         const struct framebuffer_dirty_rect *current = &state->dirty_rects[i];
+        struct framebuffer_dirty_rect merged =
+            framebuffer_dirty_rect_union(current, &dirty);
+        uint64_t growth = framebuffer_dirty_rect_area(&merged) -
+                          framebuffer_dirty_rect_area(current);
 
-        if (current->x0 < dirty.x0) {
-            dirty.x0 = current->x0;
-        }
-        if (current->y0 < dirty.y0) {
-            dirty.y0 = current->y0;
-        }
-        if (current->x1 > dirty.x1) {
-            dirty.x1 = current->x1;
-        }
-        if (current->y1 > dirty.y1) {
-            dirty.y1 = current->y1;
+        if (growth < best_growth) {
+            best_growth = growth;
+            best_index = i;
+            best_union = merged;
         }
     }
-    state->dirty_rects[0] = dirty;
-    state->dirty_count = 1u;
+    state->dirty_rects[best_index] = best_union;
 }
 
 static void framebuffer_flush_dirty(struct framebuffer_display_state *state) {

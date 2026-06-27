@@ -150,6 +150,15 @@ Notes:
 - `service boot` starts enabled services and is called by the default `INIT.SH` after `switch_root`.
 - `service reconcile` starts enabled services that are not currently running.
 - `service supervise [interval]` runs a foreground supervisor loop; use `service supervise 1s &` to run it as a daemon.
+- `service remove <name>` stops and deletes a service.
+- `service enable|disable <name> --now` changes enablement and immediately starts or stops it.
+- `service set <name> restart never|on-failure|always` selects the restart policy.
+- `service set <name> backoff_ms <milliseconds>` configures exponential restart delay.
+- `service set <name> max_retries <count>` limits retries; `0` means unlimited.
+- `service set <name> after <a,b>` orders startup after the named services.
+- `service set <name> requires <a,b>` starts required services and fails if one cannot start.
+- `service set <name> stdout|stderr <path>` appends service output to files.
+- `service info <name>` includes PID, start/exit ticks, exit code, and restart count.
 - `config` manages layered settings. Effective lookup order is runtime, user, then system.
 - `config get <key>`, `config set [--user|--system|--runtime] <key> <value>`, `config unset ...`, `config list`, `config source <key>`, `config schema [key]`, and `config validate` are supported.
 - `as table` marks a headered text stream as a NexOS typed table.

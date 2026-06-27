@@ -1,7 +1,7 @@
 #include "kernel/internal/proc/process_lifecycle_internal.h"
 #include "kernel/internal/proc/process_elf_internal.h"
-#include "kernel/public/core/kprint.h"
 #include "kernel/public/mem/vmm.h"
+#include "kernel/public/proc/sched_policy.h"
 #include "hal/hal.h"
 #include "lib/string.h"
 
@@ -38,27 +38,7 @@ static int process_session_has_image(const struct process_session *session) {
 static void process_set_default_state(struct process *proc,
                                       uint32_t slot,
                                       enum process_state state) {
-    if (proc == NULL) {
-        return;
-    }
-    proc->pid = 0;
-    proc->slot = slot;
-    proc->state = state;
-    proc->exit_code = 0;
-    proc->has_saved_frame = 0;
-    proc->wake_tick = 0;
-    proc->name = NULL;
-    proc->name_storage[0] = '\0';
-    proc->cwd_storage[0] = '/';
-    proc->cwd_storage[1] = '\0';
-    proc->image_kind = PROCESS_IMAGE_NONE;
-    proc->entry = 0;
-    proc->stack_top = 0;
-    proc->console_handle = NULL;
-    proc->address_space = NULL;
-    for (uint32_t i = 0; i < PROCESS_FILE_MAX; i++) {
-        file_reset(&proc->files[i]);
-    }
+    process_model_reset(proc, slot, state);
 }
 
 static void job_reset_mapping_table(struct user_page_mapping *mappings) {
@@ -244,90 +224,6 @@ uint32_t sched_current_ticks(void) {
     return g_user_timer_ticks != NULL ? *g_user_timer_ticks : 0;
 }
 
-void process_set_name(struct process *proc, const char *name) {
-    uint32_t i = 0;
-
-    if (proc == NULL) {
-        return;
-    }
-    if (name == NULL) {
-        proc->name_storage[0] = '\0';
-        proc->name = NULL;
-        return;
-    }
-    while (i + 1 < sizeof(proc->name_storage) && name[i] != '\0') {
-        proc->name_storage[i] = name[i];
-        i++;
-    }
-    proc->name_storage[i] = '\0';
-    proc->name = proc->name_storage;
-}
-
-void process_refresh_name_ptr(struct process *proc) {
-    if (proc == NULL) {
-        return;
-    }
-    proc->name = proc->name_storage[0] != '\0' ? proc->name_storage : NULL;
-}
-
-void process_snapshot_fill(struct process_snapshot *out, const struct process *proc) {
-    uint32_t i;
-
-    if (out == NULL) {
-        return;
-    }
-    out->pid = 0;
-    out->slot = 0;
-    out->state = PROCESS_STATE_FREE;
-    out->exit_code = 0;
-    out->wake_tick = 0;
-    out->image_kind = PROCESS_IMAGE_NONE;
-    for (i = 0; i < sizeof(out->name); i++) {
-        out->name[i] = '\0';
-    }
-    if (proc == NULL) {
-        return;
-    }
-    out->pid = proc->pid;
-    out->slot = proc->slot;
-    out->state = (uint32_t)proc->state;
-    out->exit_code = proc->exit_code;
-    out->wake_tick = proc->wake_tick;
-    out->image_kind = (uint32_t)proc->image_kind;
-    for (i = 0; i + 1u < sizeof(out->name) && proc->name_storage[i] != '\0'; i++) {
-        out->name[i] = proc->name_storage[i];
-    }
-}
-
-const char *process_cwd(const struct process *proc) {
-    if (proc == NULL || proc->cwd_storage[0] == '\0') {
-        return "/";
-    }
-    return proc->cwd_storage;
-}
-
-void process_set_cwd(struct process *proc, const char *path) {
-    uint32_t i = 0;
-
-    if (proc == NULL) {
-        return;
-    }
-    if (path == NULL || path[0] == '\0') {
-        proc->cwd_storage[0] = '/';
-        proc->cwd_storage[1] = '\0';
-        return;
-    }
-    while (path[i] != '\0' && i + 1u < sizeof(proc->cwd_storage)) {
-        proc->cwd_storage[i] = path[i];
-        i++;
-    }
-    proc->cwd_storage[i] = '\0';
-    if (proc->cwd_storage[0] == '\0') {
-        proc->cwd_storage[0] = '/';
-        proc->cwd_storage[1] = '\0';
-    }
-}
-
 int job_process_ignores_sigint(const struct process *proc) {
     const char *name;
     const char *base;
@@ -485,16 +381,7 @@ void process_exit_current(struct process_session *session, int32_t exit_code) {
     if (!process_session_has_image(session)) {
         return;
     }
-    if (exit_code < 0) {
-        if (session->process.name != NULL) {
-            kprint("proc: exit pid=%u code=%d name=%s\n",
-                   session->process.pid,
-                   exit_code,
-                   session->process.name);
-        } else {
-            kprint("proc: exit pid=%u code=%d\n", session->process.pid, exit_code);
-        }
-    }
+
     hal_display_present();
     process_mark_exit_pending(&session->process, exit_code);
 }
@@ -516,7 +403,13 @@ void sched_sleep_current(struct process_session *session, const struct syscall_f
     sched_save_process_frame(&session->process, frame, 0);
     now = sched_current_ticks();
     session->process.wake_tick = now + ticks;
+    if (ticks != 0u && session->process.wake_tick == 0u) {
+        session->process.wake_tick = 1u;
+    }
     session->process.state = ticks == 0 ? PROCESS_STATE_READY : PROCESS_STATE_SLEEPING;
+    if (ticks != 0u) {
+        sched_policy_note_sleep(session->process.wake_tick);
+    }
 }
 
 void sched_preempt_current(struct process_session *session, const struct syscall_frame *frame) {

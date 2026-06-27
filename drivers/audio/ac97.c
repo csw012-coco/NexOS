@@ -1,5 +1,5 @@
 #include "drivers/audio/ac97.h"
-#include "arch/x86/io.h"
+#include "arch/x86/common/io.h"
 #include "drivers/audio/audio.h"
 #include "drivers/bus/pci.h"
 #include "hal/hal.h"
@@ -304,7 +304,7 @@ static int ac97_wait_channel_done(uint16_t nabmbar, uint32_t duration_ms) {
         if ((status & AC97_PO_SR_CELV) != 0u) {
             return 1;
         }
-        ac97_delay_local(20000u);
+        hal_cpu_wait_for_event();
     }
 
     /* QEMU AC97 can complete audible playback without ever surfacing DCH. */

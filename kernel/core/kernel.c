@@ -386,6 +386,9 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
         kernel_boot_trace("kernel: core services failed");
         kernel_halt_forever();
     }
+    if (kernel_apply_root_cmdline(vfs, boot_info) > 0) {
+        kernel_boot_trace("kernel: root cmdline applied");
+    }
     kernel_boot_trace("kernel: discover drivers");
     (void)driver_discover_root(vfs, "/DRIVERS");
     (void)driver_load_all(vfs);
@@ -408,4 +411,3 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
         hal_cpu_halt();
     }
 }
-

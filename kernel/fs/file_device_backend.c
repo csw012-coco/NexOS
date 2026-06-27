@@ -75,9 +75,7 @@ static int64_t file_device_tty_write(struct file *file,
     if (tty == NULL || buffer == NULL || size == 0) {
         return 0;
     }
-    if (!file_device_tty_foreground_allowed(tty)) {
-        return (int64_t)size;
-    }
+
     return (int64_t)tty_write(tty, (const char *)buffer, size, 0x0f);
 }
 

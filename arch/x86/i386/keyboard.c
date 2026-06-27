@@ -1,4 +1,4 @@
-#include "arch/x86/io.h"
+#include "arch/x86/common/io.h"
 #include "keyboard.h"
 
 enum {

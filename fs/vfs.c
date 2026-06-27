@@ -364,6 +364,9 @@ void vfs_init(struct vfs *vfs) {
     vfs->nxfs.super.bitmap_start = 0;
     vfs->nxfs.super.inode_start = 0;
     vfs->nxfs.super.data_start = 0;
+    for (uint32_t i = 0; i < 16u; i++) {
+        vfs->nxfs.super.uuid[i] = 0;
+    }
     vfs->nxfs.mounted = 0;
     vfs->root_kind = VFS_MOUNT_NONE;
     vfs->root_slot = 0;

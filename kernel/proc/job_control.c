@@ -455,9 +455,11 @@ int job_fork_current(const struct syscall_frame *frame, uint32_t *child_pid_out)
         job_cleanup_runtime(child);
         return 0;
     }
-    for (uint32_t i = SYS_FD_STDERR + 1u; i < PROCESS_FILE_MAX; i++) {
-        if (file_is_active(&parent->files[i]) &&
-            !file_clone(&child->session.process.files[i], &parent->files[i])) {
+    for (uint32_t i = 0; i < PROCESS_FILE_MAX; i++) {
+        if (!file_is_active(&parent->files[i])) {
+            continue;
+        }
+        if (!file_clone(&child->session.process.files[i], &parent->files[i])) {
             job_cleanup_runtime(child);
             return 0;
         }

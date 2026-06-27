@@ -1,8 +1,8 @@
 #include "arch/x86/i386/gdt.h"
 #include "arch/x86/i386/keyboard.h"
 #include "arch/x86/i386/paging.h"
-#include "arch/x86/i386/pic.h"
-#include "arch/x86/io.h"
+#include "arch/x86/common/pic.h"
+#include "arch/x86/common/io.h"
 #include "hal/hal.h"
 
 enum {

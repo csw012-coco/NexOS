@@ -41,7 +41,7 @@ int pc_speaker_beep(uint32_t hz, uint32_t duration_ms) {
     }
     start_tick = hal_timer_current_ticks();
     while ((uint32_t)(hal_timer_current_ticks() - start_tick) < wait_ticks) {
-        __asm__ volatile("pause");
+        hal_cpu_wait_for_event();
     }
 
     hal_io_out8(PC_SPEAKER_CONTROL, control);

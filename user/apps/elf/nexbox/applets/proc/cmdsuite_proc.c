@@ -284,7 +284,6 @@ int cmd_alarm(int argc, char **argv) {
 
 int cmd_timeout(int argc, char **argv) {
     uint32_t wait_ticks;
-    uint32_t before[NEX_PROC_SLOTS_MAX];
     struct syscall_process_info info;
     char command[CMD_PATH_MAX];
     uint32_t pid = 0u;
@@ -299,21 +298,13 @@ int cmd_timeout(int argc, char **argv) {
         return 1;
     }
 
-    capture_process_ids_local(before);
     rc = spawn(command, SYS_SPAWN_ELF, SYS_SPAWN_BACKGROUND);
-    if (rc != 0) {
+    if (rc < 0) {
         write_err_str("timeout: spawn failed\n");
         return 1;
     }
 
-    start = ticks();
-    while ((uint32_t)(ticks() - start) < 100u) {
-        pid = find_new_process_pid_local(before);
-        if (pid != 0u) {
-            break;
-        }
-        yield();
-    }
+    pid = (uint32_t)rc;
     if (pid == 0u) {
         write_err_str("timeout: could not track child pid\n");
         return 1;

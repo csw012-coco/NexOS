@@ -63,10 +63,37 @@ int nxfs_read_block(struct nxfs_volume *vol, uint32_t block, void *buffer) {
 }
 
 int nxfs_read_blocks(struct nxfs_volume *vol, uint32_t start_block, uint32_t count, void *buffer) {
-    if (vol == 0 || !vol->mounted) {
+    uint8_t *out = (uint8_t *)buffer;
+    uint32_t cached = 0u;
+
+    if (vol == 0 || !vol->mounted || buffer == 0 || count == 0u) {
         return -1;
     }
-    return blockdev_read(vol->bdev, vol->partition_lba + start_block, count, buffer);
+
+    while (cached < count) {
+        uint8_t *entry = nxfs_cache_get(vol, start_block + cached);
+
+        if (entry == 0) {
+            break;
+        }
+        nxfs_mem_copy(out + cached * NXFS_BLOCK_SIZE, entry, NXFS_BLOCK_SIZE);
+        cached++;
+    }
+    if (cached == count) {
+        return 0;
+    }
+    if (blockdev_read(vol->bdev,
+                      vol->partition_lba + start_block + cached,
+                      count - cached,
+                      out + cached * NXFS_BLOCK_SIZE) != 0) {
+        return -1;
+    }
+    for (uint32_t i = cached; i < count; i++) {
+        nxfs_cache_put(vol,
+                       start_block + i,
+                       out + i * NXFS_BLOCK_SIZE);
+    }
+    return 0;
 }
 
 int nxfs_write_block(struct nxfs_volume *vol, uint32_t block, const void *buffer) {

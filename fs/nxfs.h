@@ -19,6 +19,7 @@ struct nxfs_super {
     uint32_t bitmap_start;
     uint32_t inode_start;
     uint32_t data_start;
+    uint8_t uuid[16];
 } __attribute__((packed));
 
 struct nxfs_dir_entry {
@@ -43,6 +44,8 @@ struct nxfs_volume {
 };
 
 int nxfs_mount(struct nxfs_volume *vol, struct block_device *bdev, uint32_t partition_lba);
+int nxfs_uuid_is_zero(const uint8_t uuid[16]);
+int nxfs_get_uuid(struct nxfs_volume *vol, uint8_t uuid_out[16]);
 int nxfs_read_inode(struct nxfs_volume *vol, uint32_t inode_index, struct nxfs_inode *out);
 int nxfs_lookup_root(struct nxfs_volume *vol, const char *name, uint32_t *inode_index, struct nxfs_inode *out);
 int nxfs_lookup_path(struct nxfs_volume *vol, const char *path, uint32_t *inode_index, struct nxfs_inode *out);

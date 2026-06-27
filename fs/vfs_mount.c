@@ -400,6 +400,56 @@ int vfs_find_source_by_boot_partition(uint32_t partition_lba,
              vfs_find_raw_mount_source(0u, disk_index_out, part_index_out)));
 }
 
+static int vfs_nxfs_uuid_matches(struct block_device *dev, uint32_t partition_lba, const uint8_t uuid[16]) {
+    struct nxfs_volume probe;
+
+    if (dev == 0 || uuid == 0 || nxfs_uuid_is_zero(uuid) || nxfs_mount(&probe, dev, partition_lba) != 0) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < 16u; i++) {
+        if (probe.super.uuid[i] != uuid[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int vfs_find_source_by_nxfs_uuid(const uint8_t uuid[16],
+                                 uint32_t *disk_index_out,
+                                 uint32_t *part_index_out) {
+    if (uuid == 0 || nxfs_uuid_is_zero(uuid) || disk_index_out == 0 || part_index_out == 0) {
+        return 0;
+    }
+    for (uint32_t disk_index = 0; disk_index < blockdev_count(); disk_index++) {
+        struct block_device *dev = blockdev_get(disk_index);
+        uint32_t part_count;
+
+        if (dev == 0) {
+            continue;
+        }
+        part_count = blockdev_partition_count(dev);
+        for (uint32_t part_slot = 0; part_slot < part_count; part_slot++) {
+            struct blockdev_partition part;
+            uint32_t partition_lba;
+
+            if (blockdev_partition_get(dev, part_slot, &part) != 0 ||
+                vfs_lba_to_u32(part.start_lba, &partition_lba) != 0 ||
+                !vfs_nxfs_uuid_matches(dev, partition_lba, uuid)) {
+                continue;
+            }
+            *disk_index_out = disk_index;
+            *part_index_out = part.index;
+            return 1;
+        }
+        if (part_count == 0u && vfs_nxfs_uuid_matches(dev, 0u, uuid)) {
+            *disk_index_out = disk_index;
+            *part_index_out = VFS_PARTITION_RAW;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int vfs_get_mount_instance(struct vfs *vfs,
                            uint8_t mount_kind,
                            uint32_t mount_slot,
@@ -718,6 +768,16 @@ int vfs_switch_root_to_source(struct vfs *vfs, uint32_t disk_index, uint32_t par
         return -1;
     }
     return vfs_mount_root_from_source(vfs, kind, dev, partition_lba);
+}
+
+int vfs_switch_root_to_nxfs_uuid(struct vfs *vfs, const uint8_t uuid[16]) {
+    uint32_t disk_index;
+    uint32_t part_index;
+
+    if (!vfs_find_source_by_nxfs_uuid(uuid, &disk_index, &part_index)) {
+        return -1;
+    }
+    return vfs_switch_root_to_source(vfs, disk_index, part_index);
 }
 
 int vfs_switch_root_to_first_kind(struct vfs *vfs, uint8_t kind) {

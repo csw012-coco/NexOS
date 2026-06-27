@@ -1,5 +1,5 @@
 #include "drivers/bus/pci.h"
-#include "arch/x86/io.h"
+#include "arch/x86/common/io.h"
 
 enum {
     PCI_CONFIG_ADDRESS = 0x0cf8,

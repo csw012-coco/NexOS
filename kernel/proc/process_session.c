@@ -229,6 +229,13 @@ void session_finish(struct process_session *session, struct user_page_mapping *m
     proc = &session->process;
     process_bind_session(session, mappings);
 
+    /*
+     * Close process-owned file descriptors at exit time, not at wait/reap time.
+     * Pipes depend on this: when a reader exits, writers must observe
+     * readers == 0 and get BROKEN_PIPE instead of blocking on a full pipe.
+     */
+    process_discard_files(proc);
+
     if (session->address_space.user_cr3 != 0) {
         user_cr3 = session->address_space.user_cr3;
         if (!vmm_switch_root_or_fail(user_cr3)) {

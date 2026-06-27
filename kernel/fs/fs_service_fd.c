@@ -114,19 +114,50 @@ static int fs_service_wait_for_read_local(struct process *proc) {
     if (proc == 0 || fs_service_read_interrupted_local(proc)) {
         return 0;
     }
+
     session = process_current_session();
     mappings = process_current_mappings();
     previous_state = proc->state;
+
     proc->state = PROCESS_STATE_WAITING;
-    sched_tick_excluding_pid(proc->pid);
-    fs_service_restore_process_session_local(session, mappings);
-    if (fs_service_read_interrupted_local(proc)) {
-        return 0;
+
+    /*
+     * Stay blocked until somebody explicitly wakes this process.
+     * The old code ran one scheduler tick and then restored RUNNING even if
+     * the pipe was still not readable. That caused busy retry loops like:
+     *
+     *   pwrite full readers=1 writers=1 count=65536
+     */
+    while (proc->state == PROCESS_STATE_WAITING) {
+        sched_tick_excluding_pid(proc->pid);
+        fs_service_restore_process_session_local(session, mappings);
+
+        if (fs_service_read_interrupted_local(proc)) {
+            return 0;
+        }
+
+        /*
+         * If no runnable process made progress, avoid a tight kernel spin.
+         * Timer/IRQ can still wake sleeping/stopped/killed processes.
+         */
+        if (proc->state == PROCESS_STATE_WAITING) {
+            hal_display_service_pending();
+            hal_cpu_wait_for_interrupt();
+            fs_service_restore_process_session_local(session, mappings);
+
+            if (fs_service_read_interrupted_local(proc)) {
+                return 0;
+            }
+        }
     }
-    if (proc->state == PROCESS_STATE_WAITING || proc->state == PROCESS_STATE_READY) {
-        proc->state = previous_state == PROCESS_STATE_RUNNING ? PROCESS_STATE_RUNNING : previous_state;
+
+    if (proc->state == PROCESS_STATE_READY) {
+        proc->state = previous_state == PROCESS_STATE_RUNNING
+                          ? PROCESS_STATE_RUNNING
+                          : previous_state;
     }
-    return 1;
+
+    return !fs_service_read_interrupted_local(proc);
 }
 
 static int fs_service_wait_for_write_local(struct process *proc) {
@@ -137,19 +168,51 @@ static int fs_service_wait_for_write_local(struct process *proc) {
     if (proc == 0 || fs_service_read_interrupted_local(proc)) {
         return 0;
     }
+
     session = process_current_session();
     mappings = process_current_mappings();
     previous_state = proc->state;
+
     proc->state = PROCESS_STATE_WAITING;
-    sched_tick_excluding_pid(proc->pid);
-    fs_service_restore_process_session_local(session, mappings);
-    if (fs_service_read_interrupted_local(proc)) {
-        return 0;
+
+    /*
+     * Stay blocked until a reader drains the pipe and wakes us.
+     * Do not restore RUNNING after only one scheduler tick.
+     */
+    while (proc->state == PROCESS_STATE_WAITING) {
+        sched_tick_excluding_pid(proc->pid);
+        fs_service_restore_process_session_local(session, mappings);
+
+        if (fs_service_read_interrupted_local(proc)) {
+            return 0;
+        }
+
+        if (proc->state == PROCESS_STATE_WAITING) {
+            hal_display_service_pending();
+            hal_cpu_wait_for_interrupt();
+            fs_service_restore_process_session_local(session, mappings);
+
+            if (fs_service_read_interrupted_local(proc)) {
+                return 0;
+            }
+        }
     }
-    if (proc->state == PROCESS_STATE_WAITING || proc->state == PROCESS_STATE_READY) {
-        proc->state = previous_state == PROCESS_STATE_RUNNING ? PROCESS_STATE_RUNNING : previous_state;
+
+    if (proc->state == PROCESS_STATE_READY) {
+        proc->state = previous_state == PROCESS_STATE_RUNNING
+                          ? PROCESS_STATE_RUNNING
+                          : previous_state;
     }
-    return 1;
+
+    return !fs_service_read_interrupted_local(proc);
+}
+
+static int fs_service_is_pipe_read_local(const struct file *file) {
+    return file != 0 && file->kind == KERNEL_FILE_PIPE_READ;
+}
+
+static int fs_service_is_pipe_write_local(const struct file *file) {
+    return file != 0 && file->kind == KERNEL_FILE_PIPE_WRITE;
 }
 
 uint64_t fs_service_read(struct process *proc,
@@ -169,11 +232,14 @@ uint64_t fs_service_read(struct process *proc,
     if (buffer == 0 || size == 0) {
         return 0;
     }
+
     file = fs_service_active_file(proc, fd);
     if (file == 0) {
         return 0;
     }
+
     file_flags = fs_service_map_read_flags(flags);
+
     if (fd == SYS_FD_STDIN) {
         if ((file_flags & KERNEL_FILE_READ_NONBLOCK) != 0) {
             int64_t bytes = file_read(file, vfs, buffer, size, file_flags);
@@ -184,10 +250,12 @@ uint64_t fs_service_read(struct process *proc,
             if (bytes < 0) {
                 return (uint64_t)-1;
             }
+
             copy_size = fs_service_stdin_copied_size(file, size, file_flags, bytes);
             fs_service_set_copied(copied_out, copy_size);
             return (uint64_t)bytes;
         }
+
         for (;;) {
             int64_t bytes = file_read(file, vfs, buffer, size, file_flags);
 
@@ -196,21 +264,36 @@ uint64_t fs_service_read(struct process *proc,
                 fs_service_set_copied(copied_out, copy_size);
                 return (uint64_t)bytes;
             }
+
             if (fs_service_read_would_block_local(file, bytes)) {
                 if (fs_service_read_interrupted_local(proc)) {
                     return 0;
                 }
+
+                /*
+                 * Pipes must not block by recursively running the scheduler
+                 * inside this syscall. Return WOULD_BLOCK to syscall/libc so
+                 * userspace can yield and retry without nested kernel-stack
+                 * re-entry.
+                 */
+                if (fs_service_is_pipe_read_local(file)) {
+                    return (uint64_t)KERNEL_FILE_IO_WOULD_BLOCK;
+                }
+
                 if (!fs_service_wait_for_read_local(proc)) {
                     return 0;
                 }
                 continue;
             }
+
             if (bytes < 0) {
                 return (uint64_t)-1;
             }
+
             return 0;
         }
     }
+
     for (;;) {
         int64_t bytes = file_read(file, vfs, buffer, size, file_flags);
 
@@ -221,17 +304,29 @@ uint64_t fs_service_read(struct process *proc,
             if (fs_service_read_interrupted_local(proc)) {
                 return 0;
             }
+
+            /*
+             * Same rule for fd reads: pipe empty means WOULD_BLOCK, not
+             * recursive scheduler wait.
+             */
+            if (fs_service_is_pipe_read_local(file)) {
+                return (uint64_t)KERNEL_FILE_IO_WOULD_BLOCK;
+            }
+
             if (!fs_service_wait_for_read_local(proc)) {
                 return 0;
             }
             continue;
         }
+
         if (bytes < 0) {
             return (uint64_t)-1;
         }
+
         if (bytes == 0) {
             return 0;
         }
+
         fs_service_set_copied(copied_out, (uint32_t)bytes);
         return (uint64_t)bytes;
     }
@@ -249,51 +344,96 @@ uint64_t fs_service_write(struct process *proc,
     if (buffer == 0 || size == 0) {
         return 0;
     }
+
     file = fs_service_active_file(proc, fd);
     if (file == 0) {
         return 0;
     }
+
     remaining = size;
+
     while (remaining != 0) {
         int64_t written = file_write(file, vfs, (const uint8_t *)buffer + total, remaining);
 
         if (written == KERNEL_FILE_IO_BROKEN_PIPE) {
             return total != 0 ? total : (uint64_t)-1;
         }
+
         if (fs_service_write_would_block_local(file, written)) {
+            if (fs_service_is_pipe_write_local(file)) {
+                if (!file_pipe_backend_has_readers(file)) {
+                    return total != 0 ? total : (uint64_t)-1;
+                }
+
+                /*
+                 * If we already wrote something, return the partial write.
+                 * If nothing was written, report WOULD_BLOCK upward so libc
+                 * can yield and retry.
+                 */
+                return total != 0 ? total : (uint64_t)KERNEL_FILE_IO_WOULD_BLOCK;
+            }
+
             if (!file_pipe_backend_has_readers(file)) {
                 return total != 0 ? total : (uint64_t)-1;
             }
+
             if (!fs_service_wait_for_write_local(proc)) {
                 return total;
             }
+
             if (!file_pipe_backend_has_readers(file)) {
                 return total != 0 ? total : (uint64_t)-1;
             }
+
             continue;
         }
+
         if (written < 0) {
             return total != 0 ? total : (uint64_t)-1;
         }
+
+        if (written == 0) {
+            return total;
+        }
+
         total += (uint32_t)written;
+
         if ((uint32_t)written >= remaining) {
             break;
         }
+
         remaining -= (uint32_t)written;
+
         if (file_write_would_block(file)) {
+            if (fs_service_is_pipe_write_local(file)) {
+                if (!file_pipe_backend_has_readers(file)) {
+                    return total;
+                }
+
+                /*
+                 * Partial write succeeded. Let userspace retry the rest.
+                 */
+                return total;
+            }
+
             if (!file_pipe_backend_has_readers(file)) {
                 return total;
             }
+
             if (!fs_service_wait_for_write_local(proc)) {
                 return total;
             }
+
             if (!file_pipe_backend_has_readers(file)) {
                 return total;
             }
+
             continue;
         }
+
         break;
     }
+
     return total;
 }
 
@@ -350,6 +490,15 @@ uint64_t fs_service_dup2(struct process *proc, uint32_t src_fd, uint32_t dst_fd)
     if (!file_clone(dst, src)) {
         return (uint64_t)-1;
     }
+
+    /*
+     * dup2() must not copy close-on-spawn/close-on-exec semantics to the
+     * destination fd. This matters for pipes: pipe() returns temporary fds
+     * marked CLOSE_ON_SPAWN, but after dup2(pipefd, STDOUT_FILENO), fd 1 must
+     * survive spawn so the child actually inherits pipeline stdio.
+     */
+    dst->flags &= ~KERNEL_FILE_CLOSE_ON_SPAWN;
+
     fs_service_refresh_stdio_console(proc, dst_fd, dst);
     return dst_fd;
 }

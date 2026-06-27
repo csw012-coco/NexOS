@@ -833,7 +833,7 @@ static int ush_session_load_local(char *cwd, const char *text) {
         write_err_str("usage: session load <name>\n");
         return 1;
     }
-    if (snprintf(path, sizeof(path), "/SYSTEM/SESSION/images/%s.ush", name) < 0) {
+    if (snprintf(path, sizeof(path), "/system/session/images/%s.ush", name) < 0) {
         write_err_str("session: restore path failed\n");
         return 1;
     }
@@ -1229,20 +1229,16 @@ static void ush_report_background_start_local(uint32_t pid, const char *command)
 }
 
 static int ush_spawn_command_local(const char *command, uint32_t mode, int background) {
-    uint32_t before[NEX_PROC_SLOTS_MAX];
     uint32_t pid = 0u;
     int rc;
 
     g_ush_last_background_pid = 0u;
-    if (background) {
-        ush_capture_process_ids_local(before);
-    }
     rc = spawn(command, mode, background ? SYS_SPAWN_BACKGROUND : 0);
-    if (rc != 0) {
+    if (rc < 0) {
         return rc;
     }
     if (background) {
-        pid = ush_find_new_process_pid_local(before);
+        pid = (uint32_t)rc;
         g_ush_last_background_pid = pid;
         if (!g_ush_suppress_background_report) {
             ush_report_background_start_local(pid, command);
@@ -1324,6 +1320,33 @@ static int ush_try_external_command(char *cwd, const char *line, int background,
     }
 
     (void)cwd;
+    /*
+     * Let the kernel's program registry resolve built-in and NexBox applets
+     * before probing wrapper scripts in /ram/CMD and /cmd. This avoids up to
+     * three failed path lookups and an extra ush process for each applet.
+     */
+    if (background) {
+        rc = ush_spawn_command_local(line, SYS_SPAWN_AUTO, 1);
+    } else {
+        rc = exec(line);
+    }
+    if (rc == 0) {
+        if (!background) {
+            ush_report_foreground_exit_status();
+        }
+        if (handled_out != NULL) {
+            *handled_out = 1;
+        }
+        return background ? 0 : ush_last_foreground_status_local();
+    }
+    if (rc < 0 && rc != -2) {
+        ush_report_exec_load_failure_local(line, rc);
+        if (handled_out != NULL) {
+            *handled_out = 1;
+        }
+        return 1;
+    }
+
     if (ush_build_cmd_search_command_from(line, "/ram/CMD", 0, search_command, sizeof(search_command))) {
         rc = ush_spawn_command_local(search_command, SYS_SPAWN_ELF, background);
         if (rc == 0) {
@@ -1375,20 +1398,6 @@ static int ush_try_external_command(char *cwd, const char *line, int background,
         }
     }
 
-    if (background) {
-        rc = ush_spawn_command_local(line, SYS_SPAWN_AUTO, 1);
-    } else {
-        rc = exec(line);
-    }
-    if (rc == 0) {
-        if (!background) {
-            ush_report_foreground_exit_status();
-        }
-        if (handled_out != NULL) {
-            *handled_out = 1;
-        }
-        return background ? 0 : ush_last_foreground_status_local();
-    }
     if (ush_try_wav_command(line, token, background)) {
         if (handled_out != NULL) {
             *handled_out = 1;
@@ -1425,6 +1434,39 @@ static int ush_open_resolved_path(const char *cwd, const char *arg, uint32_t fla
         return -1;
     }
     return open(arg, flags);
+}
+
+static int ush_preload_file_local(const char *path) {
+    static uint8_t buffer[16384];
+    int fd;
+
+    if (path == NULL || path[0] == '\0') {
+        write_err_str("usage: preload <file>\n");
+        return 1;
+    }
+    fd = open(path, 0);
+    if (fd < 0) {
+        write_err_str("preload: open failed: ");
+        write_err_str(path);
+        write_err_str("\n");
+        return 1;
+    }
+    for (;;) {
+        ssize_t got = read((uint32_t)fd, buffer, sizeof(buffer));
+
+        if (got < 0) {
+            close((uint32_t)fd);
+            write_err_str("preload: read failed: ");
+            write_err_str(path);
+            write_err_str("\n");
+            return 1;
+        }
+        if (got == 0) {
+            break;
+        }
+    }
+    close((uint32_t)fd);
+    return 0;
 }
 
 static void ush_init_saved_stdio(uint32_t saved[3]) {
@@ -1769,6 +1811,8 @@ static int ush_execute_command_core(char *cwd, const char *line, int background)
                        starts_with_local(line, ". ") ||
                        streq_local(line, "session load") ||
                        starts_with_local(line, "session load ") ||
+                       streq_local(line, "preload") ||
+                       starts_with_local(line, "preload ") ||
                        streq_local(line, "exec") ||
                        starts_with_local(line, "exec "))) {
         write_err_str("background: shell builtin cannot run in background\n");
@@ -1825,6 +1869,13 @@ static int ush_execute_command_core(char *cwd, const char *line, int background)
     }
     if (starts_with_local(line, "session load ")) {
         return ush_session_load_local(cwd, line + 13);
+    }
+    if (streq_local(line, "preload")) {
+        write_err_str("usage: preload <file>\n");
+        return 1;
+    }
+    if (starts_with_local(line, "preload ")) {
+        return ush_preload_file_local(skip_spaces_local(line + 8));
     }
     if (starts_with_local(line, "set ")) {
         if (!ush_parse_assignment_local(line + 4, name, sizeof(name), value, sizeof(value))) {
@@ -1982,7 +2033,12 @@ static int ush_wait_pipeline_pid(uint32_t pid, int *status_out) {
         if (!ush_process_exists_local(pid)) {
             return 0;
         }
-        sleep(1u);
+        /*
+         * Waiting one timer tick adds up to 10 ms of visible latency after
+         * short-lived commands. Yield directly to another runnable process
+         * so the child can finish without turning this into a busy loop.
+         */
+        yield();
     }
     if (status_out != NULL) {
         *status_out = info.exit_code == 0 ? 0 : 1;

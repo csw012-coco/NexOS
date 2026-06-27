@@ -25,6 +25,12 @@ enum kernel_file_io_result {
     KERNEL_FILE_IO_BROKEN_PIPE = -3
 };
 
+enum kernel_file_flags {
+    KERNEL_FILE_CLOSE_ON_SPAWN = 1u,
+    KERNEL_FILE_ACCESS_READ = 2u,
+    KERNEL_FILE_ACCESS_WRITE = 4u
+};
+
 struct file;
 struct vfs;
 
@@ -46,6 +52,7 @@ struct file_ops {
 
 struct file {
     uint8_t kind;
+    uint8_t flags;
     uint32_t offset;
     uint32_t dir_index;
     struct vfs_node vfs_node;

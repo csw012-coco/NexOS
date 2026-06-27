@@ -1,6 +1,7 @@
 #include "kernel/internal/sys/syscall_internal.h"
 #include "kernel/internal/fs/fs_service_path_internal.h"
 #include "kernel/internal/fs/fs_service_fd_internal.h"
+#include "kernel/internal/fs/path_resolve_internal.h"
 #include "fs/vfs.h"
 
 static uint32_t syscall_path_len(const char *text) {
@@ -25,118 +26,11 @@ static void syscall_copy_path(char *dst, uint32_t dst_size, const char *src) {
     dst[i] = '\0';
 }
 
-static uint32_t syscall_find_last_slash(const char *text) {
-    uint32_t i = 0;
-    uint32_t last = 0;
-
-    while (text != 0 && text[i] != '\0') {
-        if (text[i] == '/') {
-            last = i;
-        }
-        i++;
-    }
-    return last;
-}
-
-static void syscall_path_pop_segment(char *path) {
-    uint32_t len;
-    uint32_t last;
-
-    if (path == 0) {
-        return;
-    }
-    len = syscall_path_len(path);
-    if (len <= 1u) {
-        path[0] = '/';
-        path[1] = '\0';
-        return;
-    }
-    last = syscall_find_last_slash(path);
-    if (last == 0u) {
-        path[0] = '/';
-        path[1] = '\0';
-        return;
-    }
-    path[last] = '\0';
-}
-
-static int syscall_path_append_segment(char *path, uint32_t path_size, const char *segment, uint32_t seg_len) {
-    uint32_t len;
-    uint32_t i;
-
-    if (path == 0 || segment == 0 || seg_len == 0) {
-        return 0;
-    }
-    len = syscall_path_len(path);
-    if (len == 0 || len >= path_size) {
-        return 0;
-    }
-    if (!(len == 1u && path[0] == '/')) {
-        if (len + 1u >= path_size) {
-            return 0;
-        }
-        path[len++] = '/';
-    }
-    if (len + seg_len >= path_size) {
-        return 0;
-    }
-    for (i = 0; i < seg_len; i++) {
-        path[len + i] = segment[i];
-    }
-    path[len + seg_len] = '\0';
-    return 1;
-}
-
 static int syscall_resolve_process_path(const struct process *proc,
                                         const char *input,
                                         char *out,
                                         uint32_t out_size) {
-    uint32_t pos = 0;
-
-    if (input == 0 || out == 0 || out_size < 2u) {
-        return 0;
-    }
-    if (input[0] == '/') {
-        out[0] = '/';
-        out[1] = '\0';
-    } else {
-        syscall_copy_path(out, out_size, process_cwd(proc));
-    }
-    if (input[0] == '\0' || streq(input, ".")) {
-        return 1;
-    }
-    if (input[0] == '/') {
-        pos = 1u;
-    }
-    while (input[pos] != '\0') {
-        char segment[NOS_NAME_BUFFER_SIZE];
-        uint32_t seg_len = 0;
-
-        while (input[pos] == '/') {
-            pos++;
-        }
-        if (input[pos] == '\0') {
-            break;
-        }
-        while (input[pos] != '\0' && input[pos] != '/') {
-            if (seg_len + 1u >= sizeof(segment)) {
-                return 0;
-            }
-            segment[seg_len++] = input[pos++];
-        }
-        segment[seg_len] = '\0';
-        if (seg_len == 1u && segment[0] == '.') {
-            continue;
-        }
-        if (seg_len == 2u && segment[0] == '.' && segment[1] == '.') {
-            syscall_path_pop_segment(out);
-            continue;
-        }
-        if (!syscall_path_append_segment(out, out_size, segment, seg_len)) {
-            return 0;
-        }
-    }
-    return 1;
+    return fs_resolve_process_path(proc, input, out, out_size);
 }
 
 static int syscall_copy_resolved_user_path(struct process *proc, uint64_t user_path_addr, char *buffer, uint32_t size) {

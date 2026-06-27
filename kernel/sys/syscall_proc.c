@@ -131,6 +131,7 @@ uint64_t syscall_handle_spawn(uint64_t user_name_addr,
                               uint64_t user_envp_addr) {
     struct syscall_env_capture capture;
     struct process *proc = process_current_mut();
+    uint32_t child_pid = 0u;
 
     if (proc == 0) {
         return (uint64_t)-1;
@@ -148,10 +149,11 @@ uint64_t syscall_handle_spawn(uint64_t user_name_addr,
                                  g_syscall_name_buffer,
                                  capture.envp,
                                  syscall_mode,
-                                 flags)) {
+                                 flags,
+                                 &child_pid)) {
         return (uint64_t)(-(int64_t)process_last_error());
     }
-    return 0;
+    return child_pid;
 }
 
 uint64_t syscall_handle_getpid(void) {

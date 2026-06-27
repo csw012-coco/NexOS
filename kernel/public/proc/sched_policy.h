@@ -36,6 +36,7 @@ void sched_policy_init(void);
  * Returns the number of processes that became ready.
  */
 uint32_t sched_policy_update_wake_times(uint32_t current_ticks);
+void sched_policy_note_sleep(uint32_t wake_tick);
 
 /**
  * Select the next ready process to run.

@@ -54,6 +54,7 @@ void file_reset(struct file *file) {
         return;
     }
     file->kind = KERNEL_FILE_NONE;
+    file->flags = 0u;
     file->offset = 0;
     file->dir_index = 0;
     vfs_node_reset(&file->vfs_node);
@@ -96,6 +97,8 @@ int file_table_open_pipe_pair(struct file *table,
         file_discard(write_file);
         return 0;
     }
+    read_file->flags |= KERNEL_FILE_CLOSE_ON_SPAWN;
+    write_file->flags |= KERNEL_FILE_CLOSE_ON_SPAWN;
     pair_out[0] = read_fd;
     pair_out[1] = write_fd;
     return 1;

@@ -7,17 +7,19 @@ typedef unsigned int uint32_t;
 #include "drivers/bus/pci.h"
 #include "drivers/storage/ata.h"
 #include "fs/early_vfs.h"
+#include "context.h"
 #include "gdt.h"
 #include "hal/early.h"
 #include "idt.h"
 #include "kernel/public/core/early_boot.h"
 #include "kernel/public/core/early_console.h"
+#include "kernel/public/proc/context.h"
 #include "kernel/public/proc/process.h"
 #include "kernel/public/sys/syscall_dispatch.h"
 #include "keyboard.h"
 #include "lib/string.h"
 #include "paging.h"
-#include "pic.h"
+#include "arch/x86/common/pic.h"
 #include "pmm.h"
 #include "scheduler.h"
 #include "user.h"
@@ -260,7 +262,16 @@ void i386_exception_handler(uint32_t vector, struct i386_exception_frame *frame)
     }
 }
 
+static uint32_t i386_context_action_to_frame(uintptr_t action) {
+    if (action <= 1u) {
+        return (uint32_t)action;
+    }
+    return (uint32_t)i386_context_to_irq(
+        (const struct process_context *)action);
+}
+
 uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
+    struct process_context schedule_context;
     struct syscall_register_request request = {
         .number = frame->eax,
         .arg0 = frame->ebx,
@@ -297,7 +308,7 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
         struct i386_user_image image;
         char name[NOS_NAME_BUFFER_SIZE];
         uint32_t current_root = i386_paging_root();
-        uint32_t action;
+        uintptr_t action;
 
         user_syscall_count++;
         user_syscall_number = request.number;
@@ -315,27 +326,30 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
             return 0u;
         }
         i386_paging_switch(current_root);
-        action = i386_scheduler_exec((struct i386_irq_frame *)frame,
+        i386_context_from_syscall(&schedule_context, frame);
+        action = i386_scheduler_exec(&schedule_context,
                                      image.entry,
                                      image.stack_top,
                                      image.root,
                                      name);
-        return action != 0u ? action : 0u;
+        return i386_context_action_to_frame(action);
     }
     if (request.number == SYS_WAIT) {
         int32_t status = -1;
         int blocked = 0;
-        uint32_t action = i386_scheduler_wait(
-            (struct i386_irq_frame *)frame,
-            request.arg0,
-            &status,
-            &blocked);
+        uintptr_t action;
+
+        i386_context_from_syscall(&schedule_context, frame);
+        action = i386_scheduler_wait(&schedule_context,
+                                     request.arg0,
+                                     &status,
+                                     &blocked);
 
         user_syscall_count++;
         user_syscall_number = request.number;
         user_syscall_argument = request.arg0;
         if (blocked && action != 0u) {
-            return action;
+            return i386_context_action_to_frame(action);
         }
         frame->eax = (uint32_t)status;
         return 0u;
@@ -348,18 +362,22 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
     frame->eax = result.value;
 
     if (result.action == SYSCALL_COMMON_EXIT) {
-        uint32_t action =
-            i386_scheduler_exit((struct i386_irq_frame *)frame,
-                                (int)result.value);
+        uintptr_t action;
 
-        return action != 0u ? action : 1u;
+        i386_context_from_syscall(&schedule_context, frame);
+        action = i386_scheduler_exit(&schedule_context,
+                                     (int)result.value);
+        return action != 0u
+            ? i386_context_action_to_frame(action)
+            : 1u;
     }
     if (result.action == SYSCALL_COMMON_YIELD) {
-        uint32_t action =
-            i386_scheduler_yield((struct i386_irq_frame *)frame);
+        uintptr_t action;
 
+        i386_context_from_syscall(&schedule_context, frame);
+        action = i386_scheduler_yield(&schedule_context);
         if (action != 0u) {
-            return action;
+            return i386_context_action_to_frame(action);
         }
     }
     frame->eax = result.value;
@@ -380,7 +398,14 @@ struct i386_irq_frame *i386_irq_handler(uint32_t irq,
     }
     i386_pic_send_eoi((uint8_t)irq);
     if (irq == 0u) {
-        return i386_scheduler_tick(frame);
+        struct process_context current_context;
+        const struct process_context *next_context;
+
+        i386_context_from_irq(&current_context, frame);
+        next_context = i386_scheduler_tick(&current_context);
+        return next_context == &current_context
+            ? frame
+            : i386_context_to_irq(next_context);
     }
     return frame;
 }

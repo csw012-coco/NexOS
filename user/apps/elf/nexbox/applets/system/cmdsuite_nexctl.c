@@ -1,6 +1,6 @@
 #include "user/apps/elf/nexbox/core/cmdsuite_shared.h"
 
-static const char *g_nexctl_service_dir = "/SYSTEM/SERVICE";
+static const char *g_nexctl_service_dir = "/system/service";
 
 static int nexctl_entry_has_ext_local(const char *name, const char *ext) {
     uint32_t name_len = str_len_local(name);

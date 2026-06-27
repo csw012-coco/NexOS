@@ -354,6 +354,95 @@ struct vfs *kernel_bootstrap_vfs(void) {
     return &g_kernel_vfs;
 }
 
+static int kernel_hex_value(char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    return -1;
+}
+
+static int kernel_parse_uuid(const char *text, uint32_t len, uint8_t uuid_out[16]) {
+    uint32_t digits = 0;
+    int high = -1;
+
+    if (text == 0 || uuid_out == 0) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < 16u; i++) {
+        uuid_out[i] = 0;
+    }
+    for (uint32_t i = 0; i < len; i++) {
+        int value;
+
+        if (text[i] == '-') {
+            continue;
+        }
+        value = kernel_hex_value(text[i]);
+        if (value < 0 || digits >= 32u) {
+            return 0;
+        }
+        if ((digits & 1u) == 0u) {
+            high = value;
+        } else {
+            uuid_out[digits / 2u] = (uint8_t)((uint32_t)(high << 4) | (uint32_t)value);
+            high = -1;
+        }
+        digits++;
+    }
+    return digits == 32u;
+}
+
+static int kernel_extract_root_uuid(const char *cmdline, uint8_t uuid_out[16]) {
+    if (cmdline == 0 || uuid_out == 0) {
+        return 0;
+    }
+    while (*cmdline != '\0') {
+        uint32_t len = 0;
+
+        cmdline = skip_spaces(cmdline);
+        if (*cmdline == '\0') {
+            break;
+        }
+        if (starts_with(cmdline, "root=UUID=")) {
+            const char *uuid_text = cmdline + 10;
+
+            while (uuid_text[len] != '\0' && uuid_text[len] != ' ') {
+                len++;
+            }
+            return kernel_parse_uuid(uuid_text, len, uuid_out);
+        }
+        while (*cmdline != '\0' && *cmdline != ' ') {
+            cmdline++;
+        }
+    }
+    return 0;
+}
+
+int kernel_apply_root_cmdline(struct vfs *vfs, const struct bootx_boot_info *boot_info) {
+    uint8_t uuid[16];
+    const char *cmdline;
+
+    if (vfs == 0 || boot_info == 0 || boot_info->cmdline == 0) {
+        return 0;
+    }
+    cmdline = (const char *)(uintptr_t)boot_info->cmdline;
+    if (!kernel_extract_root_uuid(cmdline, uuid)) {
+        return 0;
+    }
+    if (vfs_switch_root_to_nxfs_uuid(vfs, uuid) != 0) {
+        kprint("root: UUID target not found\n");
+        return -1;
+    }
+    kprint("root: switched by UUID\n");
+    return 1;
+}
+
 int kernel_boot_info_valid(const struct bootx_boot_info *boot_info) {
     return boot_info != 0 && boot_info->hdr.magic == BOOTX_MAGIC &&
            boot_info->hdr.version >= BOOTX_PROTOCOL_VERSION;

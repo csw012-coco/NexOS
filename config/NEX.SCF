@@ -1,0 +1,10 @@
+# NexOS config
+#
+# Paths are relative to the mounted root unless they start with '/'.
+# The kernel reads boot keys; userland tools may read their own keys.
+
+init=/INIT
+ring3_smoke=1
+mouse.cursor=1
+serial_shell=off
+function_recursion_limit=1

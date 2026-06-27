@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kernel/public/proc/process.h"
+#include "kernel/public/proc/context.h"
 #include "kernel/internal/fs/file_internal.h"
 
 enum {
@@ -23,5 +24,6 @@ struct process {
     void *console_handle;
     struct file files[NOS_PROCESS_FILE_MAX];
     struct address_space *address_space;
+    struct process_context context;
     struct syscall_frame saved_frame;
 };

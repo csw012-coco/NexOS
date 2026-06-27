@@ -675,12 +675,15 @@ static void xhci_hid_mouse_process_report(struct xhci_hid_keyboard *mouse,
     if (mouse == 0 || report == 0) {
         return;
     }
+
     buttons = (uint8_t)(report[0] & 0x07u);
     dx = (int32_t)(int8_t)report[1];
-    dy = -(int32_t)(int8_t)report[2];
+    dy = (int32_t)(int8_t)report[2];
+
     if (dx == 0 && dy == 0 && buttons == (uint8_t)(mouse->last_report[0] & 0x07u)) {
         return;
     }
+
     mouse_push_event(dx, dy, buttons, tick);
     memcpy(mouse->last_report, report, 4u);
 }
@@ -756,7 +759,6 @@ void xhci_poll_mouse_events(uint32_t tick) {
     if (!xhci_try_begin_busy()) {
         return;
     }
-    xhci_hotplug_poll();
     for (uint32_t i = 0u; i < g_hid_mouse_count; i++) {
         struct xhci_hid_keyboard *mouse = &g_hid_mice[i];
 

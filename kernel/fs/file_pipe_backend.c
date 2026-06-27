@@ -136,20 +136,25 @@ static int64_t file_pipe_read(struct file *file,
 
     (void)vfs;
     (void)flags;
+
     if (pipe == 0 || buffer == 0 || size == 0) {
         return 0;
     }
+
     if (pipe->count == 0) {
         return pipe->writers == 0 ? 0 : KERNEL_FILE_IO_WOULD_BLOCK;
     }
+
     while (total < size && pipe->count != 0) {
         out[total++] = pipe->buffer[pipe->read_pos];
         pipe->read_pos = (pipe->read_pos + 1u) % FILE_PIPE_BUFFER_SIZE;
         pipe->count--;
     }
+
     if (total != 0) {
         process_wake_file_waiters(pipe, KERNEL_FILE_PIPE_WRITE);
     }
+
     return (int64_t)total;
 }
 
@@ -162,23 +167,29 @@ static int64_t file_pipe_write(struct file *file,
     uint32_t total = 0;
 
     (void)vfs;
+
     if (pipe == 0 || buffer == 0 || size == 0) {
         return 0;
     }
+
     if (pipe->readers == 0) {
         return KERNEL_FILE_IO_BROKEN_PIPE;
     }
+
     if (pipe->count >= FILE_PIPE_BUFFER_SIZE) {
         return KERNEL_FILE_IO_WOULD_BLOCK;
     }
+
     while (total < size && pipe->count < FILE_PIPE_BUFFER_SIZE) {
         pipe->buffer[pipe->write_pos] = in[total++];
         pipe->write_pos = (pipe->write_pos + 1u) % FILE_PIPE_BUFFER_SIZE;
         pipe->count++;
     }
+
     if (total != 0) {
         process_wake_file_waiters(pipe, KERNEL_FILE_PIPE_READ);
     }
+
     return (int64_t)total;
 }
 
@@ -188,11 +199,13 @@ static int64_t file_pipe_close(struct file *file) {
 
     if (pipe != 0) {
         file_pipe_release_end(pipe, kind);
+
         if (kind == KERNEL_FILE_PIPE_READ && pipe->readers == 0) {
             process_wake_file_waiters(pipe, KERNEL_FILE_PIPE_WRITE);
         } else if (kind == KERNEL_FILE_PIPE_WRITE && pipe->writers == 0) {
             process_wake_file_waiters(pipe, KERNEL_FILE_PIPE_READ);
         }
+
         if (pipe->readers == 0 && pipe->writers == 0) {
             if (pipe->linked) {
                 file_pipe_clear_data(pipe);
@@ -201,6 +214,7 @@ static int64_t file_pipe_close(struct file *file) {
             }
         }
     }
+
     return file_pipe_reset_and_ok(file);
 }
 

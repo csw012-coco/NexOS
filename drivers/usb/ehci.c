@@ -172,10 +172,6 @@ int ehci_poll_keyboard_event(struct keyboard_event *out) {
     if (ehci_hid_pop_event(out)) {
         return 1;
     }
-    g_ehci_hid_poll_divider++;
-    if ((g_ehci_hid_poll_divider & 3u) != 0u) {
-        return 0;
-    }
     for (uint32_t i = 0; i < g_ehci_hid_keyboard_count; i++) {
         struct ehci_hid_keyboard *kbd = &g_ehci_hid_keyboards[i];
 

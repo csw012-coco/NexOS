@@ -502,13 +502,45 @@ static void i386_command_run(const char *command) {
     tty_write_str(i386_tty, "\n", 0x0fu);
 }
 
+static int i386_has_shell_operator(const char *line) {
+    while (*line != '\0') {
+        if (*line == '|' || *line == '<' || *line == '>') {
+            return 1;
+        }
+        line++;
+    }
+    return 0;
+}
+
+static void i386_command_shell(const char *line) {
+    char command[512];
+    static const char prefix[] = "/BOOT/NEXBOX32.ELF sh ";
+    uint32_t used = 0u;
+
+    for (uint32_t i = 0u; prefix[i] != '\0'; i++) {
+        command[used++] = prefix[i];
+    }
+    while (*line != '\0' && used + 1u < sizeof(command)) {
+        command[used++] = *line++;
+    }
+    if (*line != '\0') {
+        tty_write_str(i386_tty, "sh: command too long\n", 0x0cu);
+        return;
+    }
+    command[used] = '\0';
+    i386_command_run(command);
+}
+
 static void i386_execute_command(const char *line) {
     if (line[0] == '\0') {
         return;
     }
-    if (streq(line, "help")) {
+    if (i386_has_shell_operator(line)) {
+        i386_command_shell(line);
+    } else if (streq(line, "help")) {
         tty_write_str(i386_tty,
-                      "commands: help clear ps test32 run <elf> [args] ls [path] cat <path>\n",
+                      "commands: help clear ps test32 run <elf> [args] ls [path] cat <path>\n"
+                      "shell: cmd1 | cmd2, cmd > file, cmd < file\n",
                       0x0fu);
     } else if (streq(line, "clear")) {
         tty_clear(i386_tty);

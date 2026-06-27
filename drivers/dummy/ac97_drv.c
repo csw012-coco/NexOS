@@ -321,7 +321,7 @@ static int ac97_mod_wait_channel_done_local(uint32_t duration_ms) {
     }
     start_ticks = driver_timer_current_ticks();
     while ((uint32_t)(driver_timer_current_ticks() - start_ticks) < wait_ticks) {
-        ac97_mod_delay_local(20000u);
+        driver_cpu_wait_for_event();
     }
     return 1;
 }
@@ -872,7 +872,7 @@ static int ac97_mod_wait_dma_halt_local(void) {
         if ((ac97_mod_bus_read16_local(AC97_PO_SR) & AC97_PO_SR_DCH) != 0u) {
             return 1;
         }
-        ac97_mod_delay_local(20000u);
+        driver_cpu_wait_for_event();
     }
     ac97_mod_log("driver: AC97MOD stream drain timeout sr=%x civ=%u lvi=%u\n",
                  (uint32_t)ac97_mod_bus_read16_local(AC97_PO_SR),
@@ -1049,7 +1049,7 @@ static int ac97_mod_wait_writable_descriptor_local(uint8_t *descriptor_out) {
             }
             return 0;
         }
-        ac97_mod_delay_local(20000u);
+        driver_cpu_wait_for_event();
     }
 }
 

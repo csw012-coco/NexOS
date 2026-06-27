@@ -7,23 +7,30 @@ ASSETS := $(ROOT)/assets
 DOOM_ASSETS := $(ASSETS)/doom
 DOOM1_WAD := $(DOOM_ASSETS)/DOOM1.WAD
 DOOM2_WAD := $(DOOM_ASSETS)/DOOM2.WAD
+TNT_WAD := $(DOOM_ASSETS)/TNT.WAD
+PLUTONIA_WAD := $(DOOM_ASSETS)/PLUTONIA.WAD
+MOTD_CFG := $(ASSETS)/motd/motd.scf
 TEST_C_SOURCE := $(ASSETS)/c/test.c
 TEST_WAV := $(ASSETS)/audio/test.wav
 TEST2_WAV := $(ASSETS)/audio/test2.wav
+TEST3_WAV := $(ASSETS)/audio/test3.wav
+TEST4_WAV := $(ASSETS)/audio/test4.wav
 FONT_HEX := $(ASSETS)/fonts/font.hex
+BOOT_FONT_HEX := $(BUILD)/font-boot.hex
 IMAGE_DIR := $(BUILD)/images
 CMD_SUITE_WRAPPER_DIR := $(BUILD)/cmd-wrappers
 BOOT := $(ROOT)/boot
 BOOTX_DIR := $(ROOT)/bootloader/bootx
 BOOTX_BUILD := $(BOOTX_DIR)/build
 BOOTX_CONFIG := $(ROOT)/config/bootx.cfg
+BOOTX_CONFIG_RENDERED := $(BUILD)/bootx.generated.cfg
 IMAGE := $(IMAGE_DIR)/NexOS.img
 BIOS_IMAGE := $(IMAGE_DIR)/NexOS-bios.img
 UEFI_IMAGE := $(IMAGE_DIR)/NexOS-uefi.img
 OS_IMAGE_SIZE ?= 256M
 NXFS_IMAGE := $(IMAGE_DIR)/nxfs.img
 RAMDISK_IMAGE := $(BUILD)/ramdisk.img
-RAMDISK_SIZE ?= 36M
+RAMDISK_SIZE ?= 4M
 NXFS_TOOL := $(BUILD)/nxfs_host
 NXFS_FS := $(BUILD)/nxfs.fs
 BOOT_FS_IMAGE := $(BUILD)/boot.fat
@@ -32,14 +39,15 @@ BOOT_PART_LBA := 2048
 ROOT_PART_LBA := 100352
 MODE ?= solo
 
-CC := x86_64-elf-gcc
+CCACHE ?= $(shell command -v ccache 2>/dev/null)
+CC := $(if $(CCACHE),$(CCACHE) ,)x86_64-elf-gcc
 LD := x86_64-elf-ld
 AR := x86_64-elf-ar
 AS := nasm
-HOSTCC := cc
+HOSTCC := $(if $(CCACHE),$(CCACHE) ,)cc
 Q ?= @
 
-I386_CC ?= cc
+I386_CC ?= $(if $(CCACHE),$(CCACHE) ,)cc
 I386_LD ?= ld
 I386_AR ?= ar
 I386_BUILD := $(BUILD)/i386
@@ -49,6 +57,7 @@ I386_SCHED_USER := $(I386_BUILD)/SCHED32.ELF
 I386_TEST_USER := $(I386_BUILD)/TEST32.ELF
 I386_APP_USER := $(I386_BUILD)/APP32.ELF
 I386_NEXBOX_USER := $(I386_BUILD)/NEXBOX32.ELF
+I386_USH_USER := $(I386_BUILD)/USH32.ELF
 I386_NLIBC := $(I386_BUILD)/libnlibc32.a
 I386_CRT0 := $(I386_BUILD)/libc32_crt0.o
 I386_IMAGE := $(IMAGE_DIR)/NexOS-i386.img
@@ -72,6 +81,14 @@ I386_COMMON_C_SRCS := \
 	kernel/core/tty.c \
 	kernel/core/i386_shared_services.c \
 	kernel/sys/syscall_dispatch.c \
+	kernel/proc/process_context.c \
+	kernel/proc/process_model.c \
+	kernel/sched/runqueue.c \
+	kernel/fs/path_resolve.c \
+	kernel/fs/file.c \
+	kernel/fs/file_backend.c \
+	kernel/fs/file_device_backend_i386.c \
+	kernel/fs/file_pipe_backend.c \
 	drivers/input/keyboard.c \
 	drivers/bus/pci.c \
 	block/block_event.c \
@@ -89,9 +106,10 @@ I386_ARCH_C_SRCS := \
 	arch/x86/i386/gdt.c \
 	arch/x86/i386/idt.c \
 	arch/x86/i386/keyboard.c \
-	arch/x86/i386/pic.c \
+	arch/x86/common/pic.c \
 	arch/x86/i386/paging.c \
 	arch/x86/i386/pmm.c \
+	arch/x86/i386/context.c \
 	arch/x86/i386/scheduler.c \
 	arch/x86/i386/user.c \
 	hal/i386/platform.c \
@@ -111,6 +129,14 @@ I386_COMMON_OBJS := \
 	$(I386_BUILD)/tty.o \
 	$(I386_BUILD)/i386_shared_services.o \
 	$(I386_BUILD)/syscall_dispatch.o \
+	$(I386_BUILD)/process_context.o \
+	$(I386_BUILD)/process_model.o \
+	$(I386_BUILD)/runqueue.o \
+	$(I386_BUILD)/path_resolve.o \
+	$(I386_BUILD)/file.o \
+	$(I386_BUILD)/file_backend.o \
+	$(I386_BUILD)/file_device_backend_i386.o \
+	$(I386_BUILD)/file_pipe_backend.o \
 	$(I386_BUILD)/input_keyboard.o \
 	$(I386_BUILD)/pci.o \
 	$(I386_BUILD)/block_event.o \
@@ -133,7 +159,9 @@ I386_ARCH_C_OBJS := \
 	$(I386_BUILD)/pic.o \
 	$(I386_BUILD)/paging.o \
 	$(I386_BUILD)/pmm.o \
+	$(I386_BUILD)/context.o \
 	$(I386_BUILD)/scheduler.o \
+	$(I386_BUILD)/process_hooks.o \
 	$(I386_BUILD)/user.o \
 	$(I386_BUILD)/hal_i386.o \
 	$(I386_BUILD)/platform_boot.o
@@ -144,13 +172,16 @@ I386_ARCH_ASM_OBJS := \
 I386_OBJS := $(I386_ARCH_ASM_OBJS) $(I386_ARCH_C_OBJS) $(I386_COMMON_OBJS)
 
 
-CFLAGS64 := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -Wall -Wextra -O2 -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include
-DRV_CFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Wextra -O2 -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include
-USERCFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -Wall -Wextra -O2 -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT)/user/libc/include -I$(ROOT)/user/libc/include/sys -I$(ROOT)/user/libc/include/nexos -I$(ROOT)/user/public -I$(ROOT)/abi
-LDFLAGS64 := -nostdlib -static -m elf_x86_64
+BUILD_OPT_FLAGS ?= -O2
+SECTION_FLAGS := -ffunction-sections -fdata-sections
+CFLAGS64 := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -pipe $(SECTION_FLAGS) -Wall -Wextra $(BUILD_OPT_FLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include
+DRV_CFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -pipe $(SECTION_FLAGS) -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Wextra $(BUILD_OPT_FLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include
+USERCFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -pipe $(SECTION_FLAGS) -Wall -Wextra $(BUILD_OPT_FLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT)/user/libc/include -I$(ROOT)/user/libc/include/sys -I$(ROOT)/user/libc/include/nexos -I$(ROOT)/user/public -I$(ROOT)/abi
+LDFLAGS64 := -nostdlib -static -m elf_x86_64 --gc-sections
 USER_ELF_BINS := $(BUILD)/DOOM.ELF $(BUILD)/IPCDEMO.ELF $(BUILD)/IMGVIEW.ELF $(BUILD)/NCC.ELF $(BUILD)/HELLO.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/GUIDEMO.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
-INIT_SCRIPT := $(ROOT)/user/init/INIT.SH
-OS_CONFIG := $(ROOT)/config/NOS.CFG
+ROOT_INIT_SCRIPT := $(ROOT)/user/init/init_root.sh
+RAMDISK_INIT_SCRIPT := $(ROOT)/user/init/init_ramdisk.sh
+OS_CONFIG := $(ROOT)/config/NEX.SCF
 DUMMY_AC97_DRIVER_SRC := $(ROOT)/drivers/dummy/ac97_drv.c
 DUMMY_AC97_DRIVER := $(BUILD)/AC97.DRV
 DUMMY_HDA_DRIVER_SRC := $(ROOT)/drivers/dummy/hda_drv.c
@@ -227,20 +258,24 @@ KERNEL_C_SRCS := \
 	kernel/fs/fs_service_mount_query.c \
 	kernel/fs/fs_service_path.c \
 	kernel/fs/fs_service_fd.c \
+	kernel/fs/path_resolve.c \
+	kernel/proc/process_context.c \
+	kernel/proc/process_model.c \
 	kernel/proc/process_core.c \
 	kernel/proc/process_exec.c \
 	kernel/proc/process_program_registry.c \
 	kernel/sched/scheduler_core.c \
 	kernel/sched/sched_policy.c \
+	kernel/sched/runqueue.c \
 	kernel/proc/job_control.c \
 	kernel/proc/process_reap.c \
 	kernel/proc/process_session.c \
 	kernel/mem/address_space_core.c \
 	kernel/driver/driver.c \
 	kernel/proc/process_elf.c \
-	arch/x86/gdt64.c \
-	arch/x86/paging.c \
-	arch/x86/idt64.c \
+	arch/x86/x86_64/gdt.c \
+	arch/x86/x86_64/paging.c \
+	arch/x86/x86_64/idt.c \
 	block/block_event.c \
 	block/blockdev.c \
 	drivers/audio/audio.c \
@@ -294,16 +329,16 @@ KERNEL_C_SRCS := \
 	lib/string.c \
 	lib/string_benchmark.c \
 	lib/parse.c \
-	arch/x86/io.c \
+	arch/x86/common/io.c \
 	hal/x86/platform.c \
 	hal/x86/cpu.c \
 	hal/x86/interrupts.c \
 	hal/x86/paging.c
 
 KERNEL_ASM_SRCS := \
-	arch/x86/irq_stub64.asm \
-	arch/x86/gdt64_flush.asm \
-	arch/x86/usermode.asm
+	arch/x86/x86_64/irq_stub.asm \
+	arch/x86/x86_64/gdt_flush.asm \
+	arch/x86/x86_64/user.asm
 
 USER_NLIBC_C_SRCS := \
 	user/libc/sys/syscall.c \
@@ -366,6 +401,8 @@ USER_ELF_C_SRCS := \
 	user/apps/elf/nexbox/applets/fs/cmdsuite_storage_cpio.c \
 	user/apps/elf/nexbox/applets/fs/cmdsuite_storage.c \
 	user/apps/elf/nexbox/applets/system/cmdsuite_session.c \
+	user/apps/elf/nexbox/applets/system/cmdsuite_service.c \
+	user/apps/elf/nexbox/applets/system/service_policy.c \
 	user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.c \
 	user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.c \
 	user/apps/elf/nexbox/applets/proc/cmdsuite_proc.c \
@@ -463,7 +500,7 @@ $(I386_BUILD)/isr.o: $(ROOT)/arch/x86/i386/isr.asm | $(I386_BUILD)
 
 $(I386_BUILD)/platform_boot.o: $(ROOT)/arch/x86/i386/platform_boot.c $(ROOT)/arch/x86/i386/gdt.h \
 		$(ROOT)/arch/x86/i386/idt.h $(ROOT)/arch/x86/i386/keyboard.h \
-		$(ROOT)/arch/x86/i386/paging.h $(ROOT)/arch/x86/i386/pic.h \
+		$(ROOT)/arch/x86/i386/paging.h $(ROOT)/arch/x86/common/pic.h \
 		$(ROOT)/arch/x86/i386/pmm.h $(ROOT)/arch/x86/i386/scheduler.h \
 		$(ROOT)/kernel/public/core/early_boot.h \
 		$(BOOTX_DIR)/include/bootx.h | $(I386_BUILD)
@@ -481,12 +518,12 @@ $(I386_BUILD)/idt.o: $(ROOT)/arch/x86/i386/idt.c $(ROOT)/arch/x86/i386/idt.h \
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/keyboard.o: $(ROOT)/arch/x86/i386/keyboard.c \
-		$(ROOT)/arch/x86/i386/keyboard.h $(ROOT)/arch/x86/io.h | $(I386_BUILD)
+		$(ROOT)/arch/x86/i386/keyboard.h $(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/pic.o: $(ROOT)/arch/x86/i386/pic.c $(ROOT)/arch/x86/i386/pic.h \
-		$(ROOT)/arch/x86/io.h | $(I386_BUILD)
+$(I386_BUILD)/pic.o: $(ROOT)/arch/x86/common/pic.c $(ROOT)/arch/x86/common/pic.h \
+		$(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
@@ -508,6 +545,16 @@ $(I386_BUILD)/scheduler.o: $(ROOT)/arch/x86/i386/scheduler.c \
 		$(ROOT)/kernel/internal/proc/process_types_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+
+$(I386_BUILD)/context.o: $(ROOT)/arch/x86/i386/context.c \
+		$(ROOT)/arch/x86/i386/context.h $(ROOT)/arch/x86/i386/idt.h \
+		$(ROOT)/kernel/public/proc/context.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/process_hooks.o: $(ROOT)/arch/x86/i386/process_hooks.c | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
 $(I386_BUILD)/user.o: $(ROOT)/arch/x86/i386/user.c \
 		$(ROOT)/arch/x86/i386/user.h $(ROOT)/arch/x86/i386/paging.h \
@@ -570,6 +617,50 @@ $(I386_BUILD)/syscall_dispatch.o: $(ROOT)/kernel/sys/syscall_dispatch.c \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
+$(I386_BUILD)/process_model.o: $(ROOT)/kernel/proc/process_model.c \
+		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h \
+		$(ROOT)/kernel/internal/proc/process_types_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/process_context.o: $(ROOT)/kernel/proc/process_context.c \
+		$(ROOT)/kernel/public/proc/context.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/runqueue.o: $(ROOT)/kernel/sched/runqueue.c \
+		$(ROOT)/kernel/public/proc/runqueue.h \
+		$(ROOT)/kernel/internal/proc/process_types_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/path_resolve.o: $(ROOT)/kernel/fs/path_resolve.c \
+		$(ROOT)/kernel/internal/fs/path_resolve_internal.h \
+		$(ROOT)/kernel/public/proc/process.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/file.o: $(ROOT)/kernel/fs/file.c \
+		$(ROOT)/kernel/internal/fs/file_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/file_backend.o: $(ROOT)/kernel/fs/file_backend.c \
+		$(ROOT)/kernel/internal/fs/file_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/file_device_backend_i386.o: \
+		$(ROOT)/kernel/fs/file_device_backend_i386.c \
+		$(ROOT)/kernel/internal/fs/file_device_backend.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/file_pipe_backend.o: $(ROOT)/kernel/fs/file_pipe_backend.c \
+		$(ROOT)/kernel/internal/fs/file_pipe_backend.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
 $(I386_BUILD)/input_keyboard.o: $(ROOT)/drivers/input/keyboard.c \
 		$(ROOT)/drivers/input/keyboard.h \
 		$(ROOT)/kernel/public/input/keyboard_types.h | $(I386_BUILD)
@@ -577,7 +668,7 @@ $(I386_BUILD)/input_keyboard.o: $(ROOT)/drivers/input/keyboard.c \
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
 $(I386_BUILD)/pci.o: $(ROOT)/drivers/bus/pci.c $(ROOT)/drivers/bus/pci.h \
-		$(ROOT)/arch/x86/io.h | $(I386_BUILD)
+		$(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
 
@@ -621,12 +712,12 @@ $(I386_BUILD)/vfs_i386.o: $(ROOT)/fs/vfs_i386.c $(ROOT)/fs/vfs_internal.h \
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
 $(I386_BUILD)/hal_i386.o: $(ROOT)/hal/i386/platform.c $(ROOT)/hal/hal.h \
-		$(ROOT)/arch/x86/i386/paging.h $(ROOT)/arch/x86/i386/pic.h \
+		$(ROOT)/arch/x86/i386/paging.h $(ROOT)/arch/x86/common/pic.h \
 		$(ROOT)/arch/x86/i386/keyboard.h $(ROOT)/arch/x86/i386/gdt.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/io.o: $(ROOT)/arch/x86/io.c $(ROOT)/arch/x86/io.h | $(I386_BUILD)
+$(I386_BUILD)/io.o: $(ROOT)/arch/x86/common/io.c $(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
 
@@ -670,7 +761,7 @@ $(I386_BUILD)/libc32_syscall.o: $(ROOT)/user/libc32/sys/syscall.c \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/libc32_string.o: $(ROOT)/user/libc32/std/string.c \
+$(I386_BUILD)/libc32_string.o: $(ROOT)/user/libc/std/string.c \
 		$(ROOT)/user/libc32/include/string.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
@@ -731,6 +822,10 @@ $(I386_NEXBOX_USER): $(I386_CRT0) $(I386_BUILD)/user_nexbox_lite.o \
 	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
 		-o $@ $(I386_CRT0) $(I386_BUILD)/user_nexbox_lite.o $(I386_NLIBC)
 
+$(I386_USH_USER): $(I386_NEXBOX_USER)
+	$(call log_cmd,CP32,$@)
+	$(Q)cp $< $@
+
 .PHONY: app32
 app32: $(I386_CRT0) $(I386_NLIBC) | $(I386_BUILD)
 	@if [ -z "$(SRC)" ]; then echo "usage: make app32 SRC=path/to/app.c OUT=APP32.ELF"; exit 1; fi
@@ -742,7 +837,7 @@ app32: $(I386_CRT0) $(I386_NLIBC) | $(I386_BUILD)
 		-o $(I386_BUILD)/$(OUT) $(I386_CRT0) \
 		$(I386_BUILD)/app32_oneoff.o $(I386_NLIBC)
 
-check-i386: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER) $(I386_APP_USER) $(I386_NEXBOX_USER)
+check-i386: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER) $(I386_APP_USER) $(I386_NEXBOX_USER) $(I386_USH_USER)
 	$(call log_cmd,CHECK,$<)
 	$(Q)readelf -h $< | grep -q 'Class:.*ELF32'
 	$(Q)readelf -h $< | grep -q 'Machine:.*Intel 80386'
@@ -760,12 +855,14 @@ check-i386: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER) $(I
 	$(Q)readelf -h $(I386_APP_USER) | grep -q 'Machine:.*Intel 80386'
 	$(Q)readelf -h $(I386_NEXBOX_USER) | grep -q 'Class:.*ELF32'
 	$(Q)readelf -h $(I386_NEXBOX_USER) | grep -q 'Machine:.*Intel 80386'
+	$(Q)readelf -h $(I386_USH_USER) | grep -q 'Machine:.*Intel 80386'
 	$(Q)echo "i386 boot/x ELF32 kernel checks passed"
 
 $(I386_IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3) \
 		$(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER) \
 		$(I386_APP_USER) \
 		$(I386_NEXBOX_USER) \
+		$(I386_USH_USER) \
 		$(I386_BOOTX_CONFIG) | $(IMAGE_DIR)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
@@ -785,6 +882,7 @@ $(I386_IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3) \
 	$(Q)mcopy -i $@@@1048576 $(I386_TEST_USER) ::/BOOT/TEST32.ELF
 	$(Q)mcopy -i $@@@1048576 $(I386_APP_USER) ::/BOOT/APP32.ELF
 	$(Q)mcopy -i $@@@1048576 $(I386_NEXBOX_USER) ::/BOOT/NEXBOX32.ELF
+	$(Q)mcopy -i $@@@1048576 $(I386_USH_USER) ::/BOOT/USH32.ELF
 	$(Q)mcopy -i $@@@1048576 $(I386_BOOTX_CONFIG) ::/BOOT/BOOTX.CFG
 
 run-i386: check-i386 $(I386_IMAGE)
@@ -824,58 +922,21 @@ $(DUMMY_HDA_DRIVER): $(DUMMY_HDA_DRIVER_SRC) $(ROOT)/kernel/public/driver/driver
 	$(call log_cmd,DRV,$@)
 	$(Q)$(CC) $(DRV_CFLAGS) -c $< -o $@
 
-$(RAMDISK_IMAGE): $(USER_ELF_BINS) $(BOOTX_CONFIG) $(FONT_HEX) $(INIT_SCRIPT) $(OS_CONFIG) $(DUMMY_AC97_DRIVER) $(DUMMY_HDA_DRIVER) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
+$(RAMDISK_IMAGE): $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF $(RAMDISK_INIT_SCRIPT) $(OS_CONFIG) $(DUMMY_AC97_DRIVER) $(DUMMY_HDA_DRIVER) | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s $(RAMDISK_SIZE) $@
 	$(Q)parted -s $@ mklabel msdos
 	$(Q)parted -s $@ mkpart primary fat32 1MiB 100%
 	$(Q)mkfs.fat -F 32 --offset 2048 $@
-	$(Q)mmd -i $@@@1048576 ::/HOME
 	$(Q)mmd -i $@@@1048576 ::/CMD
 	$(Q)mmd -i $@@@1048576 ::/DRIVERS
-	$(Q)mcopy -i $@@@1048576 $(BOOTX_CONFIG) ::/HOME/BOOTX.TXT
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/HELLO.ELF ::/HOME/HELLO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/KEYDEMO.ELF ::/HOME/KEYDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/YIELDDEMO.ELF ::/HOME/YIELDDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/BADPTR.ELF ::/HOME/BADPTR.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/PFDEMO.ELF ::/HOME/PFDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/GPFDEMO.ELF ::/HOME/GPFDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/UDDEMO.ELF ::/HOME/UDDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/DEDEMO.ELF ::/HOME/DEDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/SLEEPDEMO.ELF ::/HOME/SLEEPDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/CATDEMO.ELF ::/HOME/CATDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/LSDEMO.ELF ::/HOME/LSDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/WDEMO.ELF ::/HOME/WDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/GUIDEMO.ELF ::/HOME/GUIDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/FORTH.ELF ::/HOME/FORTH.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/USH.ELF ::/HOME/USH.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/NEXBOX.ELF ::/HOME/NEXBOX.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/NCC.ELF ::/HOME/NCC.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/IMGVIEW.ELF ::/HOME/IMGVIEW.ELF
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/IPCDEMO.ELF ::/HOME/IPCDEMO.ELF
-	$(Q)mcopy -i $@@@1048576 $(ROOT)/config/ACTION.CAPS ::/HOME/ACTION.CAPS
-	$(Q)mcopy -i $@@@1048576 $(FASM_TEST_SOURCE) ::/HOME/TEST.ASM
-	$(Q)mcopy -i $@@@1048576 $(INIT_SCRIPT) ::/INIT.SH
+	$(Q)mcopy -i $@@@1048576 $(RAMDISK_INIT_SCRIPT) ::/INIT
 	$(Q)mcopy -i $@@@1048576 $(OS_CONFIG) ::/NOS.CFG
 	$(Q)mcopy -i $@@@1048576 $(DUMMY_AC97_DRIVER) ::/DRIVERS/AC97.DRV
 	$(Q)mcopy -i $@@@1048576 $(DUMMY_HDA_DRIVER) ::/DRIVERS/HDA.DRV
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/HELLO.ELF ::/CMD/HELLO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/KEYDEMO.ELF ::/CMD/KEYDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/YIELDDEMO.ELF ::/CMD/YIELDDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/BADPTR.ELF ::/CMD/BADPTR
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/PFDEMO.ELF ::/CMD/PFDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/GPFDEMO.ELF ::/CMD/GPFDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/UDDEMO.ELF ::/CMD/UDDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/DEDEMO.ELF ::/CMD/DEDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/SLEEPDEMO.ELF ::/CMD/SLEEPDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/CATDEMO.ELF ::/CMD/CAT
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/LSDEMO.ELF ::/CMD/LS
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/WDEMO.ELF ::/CMD/WDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/GUIDEMO.ELF ::/CMD/GUIDEMO
-	$(Q)mcopy -i $@@@1048576 $(BUILD)/FORTH.ELF ::/CMD/FORTH
 	$(Q)mcopy -i $@@@1048576 $(BUILD)/USH.ELF ::/CMD/USH
-	$(Q)for alias in $(CMD_SUITE_NAMES); do mcopy -o -i $@@@1048576 $(BUILD)/NEXBOX.ELF ::/CMD/$$alias; done
+	$(Q)mcopy -i $@@@1048576 $(BUILD)/NEXBOX.ELF ::/CMD/NEXBOX
 
 $(BUILD):
 	$(call log_cmd,MKDIR,$@)
@@ -894,7 +955,19 @@ $(NXFS_FS): $(NXFS_TOOL)
 	$(Q)rm -f $@
 	$(Q)$< mkfs $@
 
-$(BOOT_FS_IMAGE): $(BOOTX_STAGE3) $(BOOTX_UEFI) $(BUILD)/kernel64.elf $(RAMDISK_IMAGE) $(BOOTX_CONFIG) $(FONT_HEX) | $(BUILD)
+$(BOOT_FONT_HEX): $(FONT_HEX) $(ROOT)/tools/font_subset.py | $(BUILD)
+	$(call log_cmd,GEN,$@)
+	$(Q)python3 $(ROOT)/tools/font_subset.py $< $@
+
+$(BOOTX_CONFIG_RENDERED): $(BOOTX_CONFIG) $(ROOT_FS_IMAGE) $(NXFS_TOOL) | $(BUILD)
+	$(call log_cmd,GEN,$@)
+	$(Q)uuid="$$( $(NXFS_TOOL) uuid $(ROOT_FS_IMAGE) )"; \
+	uuid="$${uuid#uuid=}"; \
+	sed -e "s/root=[^ ]*/root=UUID=$$uuid/g" \
+		-e "s/init=[^ ]*/init=\/system\/init/g" \
+		$(BOOTX_CONFIG) > $@
+
+$(BOOT_FS_IMAGE): $(BOOTX_STAGE3) $(BOOTX_UEFI) $(BUILD)/kernel64.elf $(RAMDISK_IMAGE) $(BOOTX_CONFIG_RENDERED) $(BOOT_FONT_HEX) | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s 48M $@
@@ -906,10 +979,10 @@ $(BOOT_FS_IMAGE): $(BOOTX_STAGE3) $(BOOTX_UEFI) $(BUILD)/kernel64.elf $(RAMDISK_
 	$(Q)mcopy -i $@ $(BOOTX_UEFI) ::/EFI/BOOT/BOOTX64.EFI
 	$(Q)mcopy -i $@ $(BUILD)/kernel64.elf ::/BOOT/NEX.ELF
 	$(Q)mcopy -i $@ $(RAMDISK_IMAGE) ::/BOOT/RAMDISK.IMG
-	$(Q)mcopy -i $@ $(FONT_HEX) ::/BOOT/FONT.HEX
-	$(Q)mcopy -i $@ $(BOOTX_CONFIG) ::/BOOT/BOOTX.CFG
+	$(Q)mcopy -i $@ $(BOOT_FONT_HEX) ::/BOOT/FONT.HEX
+	$(Q)mcopy -i $@ $(BOOTX_CONFIG_RENDERED) ::/BOOT/BOOTX.CFG
 
-$(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(DOOM1_WAD) $(DOOM2_WAD) $(TEST_C_SOURCE) $(TEST_WAV) $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/apps/elf/user.ld $(BOOTX_CONFIG) $(FONT_HEX) $(INIT_SCRIPT) $(OS_CONFIG) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
+$(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(DOOM1_WAD) $(DOOM2_WAD) $(TEST_C_SOURCE) $(TEST_WAV) $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/apps/elf/user.ld $(FONT_HEX) $(ROOT_INIT_SCRIPT) $(OS_CONFIG) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)$(NXFS_TOOL) mkfs $@
@@ -930,11 +1003,10 @@ $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(DOOM1_WAD) $(DOOM2_WAD) $(TEST
 	$(Q)$(NXFS_TOOL) mkdir $@ /system/session
 	$(Q)$(NXFS_TOOL) mkdir $@ /system/session/images
 	$(Q)$(NXFS_TOOL) mkdir $@ /system/service
-	$(Q)$(NXFS_TOOL) write $@ $(INIT_SCRIPT) /init.sh
-	$(Q)$(NXFS_TOOL) write $@ $(OS_CONFIG) /nos.cfg
-	$(Q)$(NXFS_TOOL) write $@ $(OS_CONFIG) /system/config/nos.cfg
+	$(Q)$(NXFS_TOOL) write $@ $(ROOT_INIT_SCRIPT) /system/init
+	$(Q)$(NXFS_TOOL) write $@ $(OS_CONFIG) /system/config/nex.scf
 	$(Q)$(NXFS_TOOL) write $@ $(FONT_HEX) /system/font/font.hex
-
+	$(Q)$(NXFS_TOOL) write $@ $(MOTD_CFG) /system/config/motd.scf
 	$(Q)for f in $(ROOT)/user/libc/include/*.h; do \
 		$(NXFS_TOOL) write $@ "$$f" /system/devel/include/$$(basename "$$f"); \
 	done
@@ -953,10 +1025,10 @@ $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(DOOM1_WAD) $(DOOM2_WAD) $(TEST
 	$(Q)$(NXFS_TOOL) write $@ $(ROOT)/config/ACTION.CAPS /home/action.caps
 	$(Q)$(NXFS_TOOL) write $@ $(FASM_TEST_SOURCE) /home/test.asm
 	$(Q)$(NXFS_TOOL) write $@ $(TEST_C_SOURCE) /home/test.c
-	$(Q)$(NXFS_TOOL) write $@ $(TEST_WAV) /home/test.wav
-	$(Q)$(NXFS_TOOL) write $@ $(TEST2_WAV) /home/test2.wav
 	$(Q)$(NXFS_TOOL) write $@ $(DOOM1_WAD) /home/doom/doom1.wad
 	$(Q)$(NXFS_TOOL) write $@ $(DOOM2_WAD) /home/doom/doom2.wad
+	$(Q)$(NXFS_TOOL) write $@ $(TNT_WAD) /home/doom/tnt.wad
+	$(Q)$(NXFS_TOOL) write $@ $(PLUTONIA_WAD) /home/doom/plutonia.wad
 	$(Q)$(NXFS_TOOL) write $@ assets/b.ppm /home/b.ppm
 	$(Q)$(NXFS_TOOL) write $@ assets/a.ppm /home/a.ppm
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/USH.ELF /cmd/ush
@@ -978,13 +1050,21 @@ $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(DOOM1_WAD) $(DOOM2_WAD) $(TEST
 		$(NXFS_TOOL) write $@ "$$script" /cmd/$$lower; \
 	done
 
-$(NXFS_IMAGE): $(NXFS_FS) | $(IMAGE_DIR)
+NXFS_PART_IMAGE := $(IMAGE_DIR)/nxfs.part
+
+$(NXFS_IMAGE): $(NXFS_TOOL) $(TEST_WAV) $(TEST2_WAV) $(TEST3_WAV) $(TEST4_WAV) | $(IMAGE_DIR)
 	$(call log_cmd,IMAGE,$@)
-	$(Q)rm -f $@
-	$(Q)truncate -s 80M $@
+	$(Q)rm -f $@ $(NXFS_PART_IMAGE)
+	$(Q)truncate -s 511M $(NXFS_PART_IMAGE)
+	$(Q)$(NXFS_TOOL) mkfs $(NXFS_PART_IMAGE)
+	$(Q)$(NXFS_TOOL) write $(NXFS_PART_IMAGE) $(TEST_WAV) /test.wav
+	$(Q)$(NXFS_TOOL) write $(NXFS_PART_IMAGE) $(TEST2_WAV) /test2.wav
+	$(Q)$(NXFS_TOOL) write $(NXFS_PART_IMAGE) $(TEST3_WAV) /test3.wav
+	$(Q)$(NXFS_TOOL) write $(NXFS_PART_IMAGE) $(TEST4_WAV) /test4.wav
+	$(Q)truncate -s 512M $@
 	$(Q)parted -s $@ mklabel msdos
 	$(Q)parted -s $@ mkpart primary 1MiB 100%
-	$(Q)dd if=$(NXFS_FS) of=$@ conv=notrunc bs=512 seek=2048
+	$(Q)dd if=$(NXFS_PART_IMAGE) of=$@ conv=notrunc bs=512 seek=2048
 
 $(BUILD)/%.o: $(ROOT)/%.c | $(BUILD)
 	$(if $(filter user/libc/% user/apps/elf/%,$*),$(do_cc_user),$(do_cc_kernel))
@@ -1016,7 +1096,12 @@ WDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/wdemo.o
 GUIDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/guidemo.o
 FORTH_ELF_OBJS := $(BUILD)/user/apps/elf/forth.o
 USH_ELF_OBJS := $(BUILD)/user/apps/elf/ush.o $(BUILD)/user/apps/elf/ush_editor.o $(BUILD)/user/apps/elf/ush_vars.o $(BUILD)/user/apps/elf/ush_exec.o $(BUILD)/user/apps/elf/ush_parse.o
-NEXBOX_ELF_OBJS := $(BUILD)/user/apps/elf/nexbox/core/cmdsuite.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_dispatch.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_action.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_basic.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text_events.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text_table.o $(BUILD)/user/apps/elf/nexbox/applets/audio/cmdsuite_audio.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_arp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_dns.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_dhcp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_tcp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_http.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_rtl8139.o $(BUILD)/user/apps/elf/nexbox/applets/editor/cmdsuite_editor.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_fdisk.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_block.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_cpio.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_session.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.o $(BUILD)/user/apps/elf/nexbox/applets/proc/cmdsuite_proc.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug_doctor.o $(BUILD)/user/apps/elf/nexbox/applets/asm/cmdsuite_asm.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
+NEXBOX_ELF_OBJS := $(BUILD)/user/apps/elf/nexbox/core/cmdsuite.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_dispatch.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_action.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_basic.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text_events.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text_table.o $(BUILD)/user/apps/elf/nexbox/applets/audio/cmdsuite_audio.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_arp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_dns.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_dhcp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_tcp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_http.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_rtl8139.o $(BUILD)/user/apps/elf/nexbox/applets/editor/cmdsuite_editor.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_fdisk.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_block.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_cpio.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_session.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_service.o $(BUILD)/user/apps/elf/nexbox/applets/system/service_policy.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.o $(BUILD)/user/apps/elf/nexbox/applets/proc/cmdsuite_proc.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug_doctor.o $(BUILD)/user/apps/elf/nexbox/applets/asm/cmdsuite_asm.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
+
+.PHONY: test-service-policy
+test-service-policy:
+	$(Q)cc -std=c11 -Wall -Wextra -I$(ROOT) tests/service_policy_test.c user/apps/elf/nexbox/applets/system/service_policy.c -o $(BUILD)/service_policy_test
+	$(Q)$(BUILD)/service_policy_test
 
 $(eval $(call define_user_elf,HELLO.ELF,$(HELLO_ELF_OBJS)))
 $(eval $(call define_user_elf,KEYDEMO.ELF,$(KEYDEMO_ELF_OBJS)))
@@ -1226,16 +1311,18 @@ dev-uefi: $(UEFI_IMAGE) $(NXFS_IMAGE) $(OVMF_VARS_IMAGE)
 	-audiodev $(QEMU_AUDIODEV)
 
 run-uefi2: $(UEFI_IMAGE) $(NXFS_IMAGE) $(OVMF_VARS_IMAGE)
-	qemu-system-x86_64  -enable-kvm \
-	-machine q35 \
-	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
-	-drive if=pflash,format=raw,file=$(OVMF_VARS_IMAGE) \
-	$(QEMU_SERIAL) \
-	$(QEMU_NET) \
-	$(QEMU_UEFI_SATA) \
-	-device intel-hda \
-	-device hda-duplex,audiodev=snd0 \
-	-audiodev $(QEMU_AUDIODEV)
+	qemu-system-x86_64 -enable-kvm \
+		-machine q35 \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive if=pflash,format=raw,file=$(OVMF_VARS_IMAGE) \
+		$(QEMU_SERIAL) \
+		$(QEMU_NET) \
+		$(QEMU_UEFI_SATA) \
+		-device qemu-xhci,id=xhci \
+		-device usb-kbd,bus=xhci.0 \
+		-device intel-hda \
+		-device hda-duplex,audiodev=snd0 \
+		-audiodev $(QEMU_AUDIODEV)
 
 run-hda: $(IMAGE) $(NXFS_IMAGE)
 	qemu-system-x86_64 \
@@ -1444,17 +1531,12 @@ check-image: $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE) $(NXFS_IMAGE) $(ROOT_FS_IMAGE)
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/session/images
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/service
 	@printf '%s\n' '[check] verifying ramdisk contents'
-	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/HOME | grep -Eq 'USH +ELF'
-	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/HOME | grep -Eq 'HELLO +ELF'
-	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'MKDIR'
-	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'SERVICE'
-	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'NEXCTL'
-	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'SYSINFO'
+	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'USH'
+	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/CMD | grep -Ei 'NEXBOX'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/DRIVERS | grep -Eq 'AC97 +DRV'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/DRIVERS | grep -Eq 'HDA +DRV'
-	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'INIT +SH'
+	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'INIT'
 	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'NOS +CFG'
-	@mdir -i $(RAMDISK_IMAGE)@@1048576 ::/ | grep -Eq 'USH +ELF' && { printf '%s\n' '[check] error: unexpected root /USH.ELF copy in ramdisk'; exit 1; } || true
 
 clean:
 	rm -rf $(BUILD) $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE)

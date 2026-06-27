@@ -1,9 +1,11 @@
 #include "block/blockdev.h"
 #include "block/block_event.h"
 #include "kernel/public/core/profile.h"
+#include "lib/string.h"
 
 enum {
     BLOCKDEV_MAX = 16,
+    BLOCKDEV_READ_CACHE_ENTRIES = 1024,
     BLOCKDEV_MBR_RETRIES = 8,
     BLOCKDEV_SECTOR_SIZE = 512u,
     BLOCKDEV_MBR_TABLE_OFFSET = 446u,
@@ -24,6 +26,56 @@ static uint32_t device_count;
 static uint32_t g_block_profile_read;
 static uint32_t g_block_profile_write;
 static uint32_t g_block_profile_flush;
+
+struct blockdev_read_cache_entry {
+    struct block_device *dev;
+    uint64_t lba;
+    uint8_t valid;
+    uint8_t data[BLOCKDEV_SECTOR_SIZE];
+};
+
+static struct blockdev_read_cache_entry
+    g_block_read_cache[BLOCKDEV_READ_CACHE_ENTRIES];
+
+static uint32_t blockdev_cache_index(struct block_device *dev, uint64_t lba) {
+    uintptr_t device_bits = (uintptr_t)dev >> 4;
+    uint64_t mixed = lba ^ (lba >> 17) ^ (uint64_t)device_bits;
+
+    return (uint32_t)(mixed % BLOCKDEV_READ_CACHE_ENTRIES);
+}
+
+static struct blockdev_read_cache_entry *blockdev_cache_entry(
+    struct block_device *dev,
+    uint64_t lba) {
+    return &g_block_read_cache[blockdev_cache_index(dev, lba)];
+}
+
+static void blockdev_cache_invalidate_device(struct block_device *dev) {
+    for (uint32_t i = 0u; i < BLOCKDEV_READ_CACHE_ENTRIES; i++) {
+        if (g_block_read_cache[i].valid && g_block_read_cache[i].dev == dev) {
+            g_block_read_cache[i].valid = 0u;
+        }
+    }
+}
+
+static void blockdev_cache_invalidate_range(struct block_device *dev,
+                                            uint64_t lba,
+                                            uint32_t count) {
+    uint64_t end = lba + count;
+
+    if (end < lba) {
+        blockdev_cache_invalidate_device(dev);
+        return;
+    }
+    for (uint32_t i = 0u; i < BLOCKDEV_READ_CACHE_ENTRIES; i++) {
+        struct blockdev_read_cache_entry *entry = &g_block_read_cache[i];
+
+        if (entry->valid && entry->dev == dev &&
+            entry->lba >= lba && entry->lba < end) {
+            entry->valid = 0u;
+        }
+    }
+}
 
 static const uint8_t gpt_guid_zero[16] = {
     0
@@ -251,6 +303,11 @@ void blockdev_init(void) {
     for (uint32_t i = 0; i < BLOCKDEV_MAX; i++) {
         devices[i] = 0;
     }
+    for (uint32_t i = 0; i < BLOCKDEV_READ_CACHE_ENTRIES; i++) {
+        g_block_read_cache[i].valid = 0u;
+        g_block_read_cache[i].dev = 0;
+        g_block_read_cache[i].lba = 0u;
+    }
 }
 
 int blockdev_register(struct block_device *dev) {
@@ -306,6 +363,7 @@ int blockdev_unregister(struct block_device *dev) {
     if (disk_index == BLOCKDEV_MAX) {
         return -1;
     }
+    blockdev_cache_invalidate_device(dev);
     for (uint32_t i = 0; i < dev->partition_count; i++) {
         struct blockdev_partition part = dev->partitions[i];
 
@@ -370,17 +428,50 @@ int blockdev_partition_get(struct block_device *dev, uint32_t index, struct bloc
 }
 
 int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *buffer) {
+    uint8_t *out = (uint8_t *)buffer;
     uint64_t start;
     int rc;
 
     if (dev == 0 || dev->read == 0 || buffer == 0 || count == 0) {
         return -1;
     }
+    if (dev->block_size == BLOCKDEV_SECTOR_SIZE) {
+        uint32_t cached;
+
+        for (cached = 0u; cached < count; cached++) {
+            struct blockdev_read_cache_entry *entry =
+                blockdev_cache_entry(dev, lba + cached);
+
+            if (!entry->valid || entry->dev != dev ||
+                entry->lba != lba + cached) {
+                break;
+            }
+            memcpy(out + cached * BLOCKDEV_SECTOR_SIZE,
+                   entry->data,
+                   BLOCKDEV_SECTOR_SIZE);
+        }
+        if (cached == count) {
+            return 0;
+        }
+    }
     if (g_block_profile_read == 0u) {
         g_block_profile_read = kernel_profile_register("block.read");
     }
     start = kernel_profile_clock();
     rc = dev->read(dev, lba, count, buffer);
+    if (rc == 0 && dev->block_size == BLOCKDEV_SECTOR_SIZE) {
+        for (uint32_t i = 0u; i < count; i++) {
+            struct blockdev_read_cache_entry *entry =
+                blockdev_cache_entry(dev, lba + i);
+
+            memcpy(entry->data,
+                   out + i * BLOCKDEV_SECTOR_SIZE,
+                   BLOCKDEV_SECTOR_SIZE);
+            entry->dev = dev;
+            entry->lba = lba + i;
+            entry->valid = 1u;
+        }
+    }
     kernel_profile_record(g_block_profile_read,
                           kernel_profile_clock() - start,
                           rc == 0 ? (uint64_t)count * dev->block_size : 0u);
@@ -403,6 +494,9 @@ int blockdev_write(struct block_device *dev, uint64_t lba, uint32_t count, const
         kernel_profile_record(g_block_profile_write,
                               kernel_profile_clock() - start,
                               rc == 0 ? (uint64_t)count * dev->block_size : 0u);
+    }
+    if (rc == 0) {
+        blockdev_cache_invalidate_range(dev, lba, count);
     }
     if (rc == 0 && lba == 0u) {
         (void)blockdev_rescan_partitions(dev);

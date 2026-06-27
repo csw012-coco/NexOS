@@ -601,6 +601,26 @@ int nxfs_mount(struct nxfs_volume *vol, struct block_device *bdev, uint32_t part
     return 0;
 }
 
+int nxfs_uuid_is_zero(const uint8_t uuid[16]) {
+    if (uuid == 0) {
+        return 1;
+    }
+    for (uint32_t i = 0; i < 16u; i++) {
+        if (uuid[i] != 0u) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int nxfs_get_uuid(struct nxfs_volume *vol, uint8_t uuid_out[16]) {
+    if (vol == 0 || !vol->mounted || uuid_out == 0) {
+        return -1;
+    }
+    nxfs_mem_copy(uuid_out, vol->super.uuid, 16u);
+    return 0;
+}
+
 int nxfs_read_inode(struct nxfs_volume *vol, uint32_t inode_index, struct nxfs_inode *out) {
     uint32_t inode_offset;
 

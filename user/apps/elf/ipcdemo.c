@@ -135,8 +135,6 @@ int main(int argc, char **argv) {
     static const char child_message[] = "shared memory is ready";
     struct ipc_demo_shared *shared = MAP_FAILED;
     char message[SYS_MQ_MESSAGE_MAX];
-    uint32_t pid_snapshot[NEX_PROC_SLOTS_MAX];
-    uint32_t pid_snapshot_count;
     int shm_handle = -1;
     mqd_t queue;
     sem_t ready;
@@ -177,14 +175,13 @@ int main(int argc, char **argv) {
     }
     memset(shared, 0, sizeof(*shared));
 
-    pid_snapshot_count = capture_process_ids(pid_snapshot, NEX_PROC_SLOTS_MAX);
     spawn_rc = spawn("/cmd/ipcdemo --child", NEX_SPAWN_AUTO, NEX_SPAWN_BACKGROUND);
-    if (spawn_rc != 0) {
+    if (spawn_rc < 0) {
         eprintf("ipcdemo: child spawn failed rc=%d\n", spawn_rc);
         (void)cleanup(shm_handle, shared, sizeof(*shared));
         return 1;
     }
-    child = find_new_process_pid(pid_snapshot, pid_snapshot_count);
+    child = (uint32_t)spawn_rc;
 
     deadline = ticks() + IPC_DEMO_WAIT_TICKS;
     for (;;) {

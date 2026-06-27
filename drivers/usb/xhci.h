@@ -10,5 +10,6 @@ uint32_t xhci_connected_port_count(void);
 uint32_t xhci_hid_keyboard_count(void);
 int xhci_poll_keyboard_event(struct keyboard_event *out);
 void xhci_poll_mouse_events(uint32_t tick);
+void xhci_hotplug_poll(void);
 
 extern const struct kernel_driver xhci_kernel_driver;

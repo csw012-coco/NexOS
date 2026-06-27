@@ -1,6 +1,6 @@
 #include "kernel/public/driver/driver.h"
 #include "kernel/public/driver/driver_module.h"
-#include "arch/x86/io.h"
+#include "arch/x86/common/io.h"
 #include "drivers/audio/audio.h"
 #include "drivers/bus/pci.h"
 #include "fs/vfs.h"
@@ -14,7 +14,7 @@
 #define DRIVER_FILE_MAX_COUNT 32u
 #define DRIVER_MODULE_ALLOC_MAX_COUNT 64u
 #define DRIVER_MODULE_ALLOC_MAX_PAGES 256u
-#define DRIVER_ELF_MAX_SECTIONS 64u
+#define DRIVER_ELF_MAX_SECTIONS 256u
 #define DRIVER_ELF_MAX_FILE_SIZE (1024u * 1024u)
 #define DRIVER_ELF_PAGE_SIZE 4096u
 

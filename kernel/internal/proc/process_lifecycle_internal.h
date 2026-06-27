@@ -4,6 +4,9 @@
 #include "kernel/internal/mem/address_space_internal.h"
 
 void process_clear_slot_state(struct process *proc);
+void process_model_reset(struct process *proc,
+                         uint32_t slot,
+                         enum process_state state);
 void process_init_stdio(struct process *proc);
 uint32_t sched_current_ticks(void);
 void process_set_name(struct process *proc, const char *name);

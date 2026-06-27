@@ -63,7 +63,10 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
         case SYS_READ:
             buffer.user_addr = frame->rcx;
             buffer.size = (uint32_t)frame->rdx;
-            SYSCALL_RETURN(syscall_handle_fd_read((uint32_t)frame->rbx, &buffer, (uint32_t)frame->rsi));
+            SYSCALL_RETURN(syscall_handle_fd_read((uint32_t)frame->rbx,
+                                                &buffer,
+                                                (uint32_t)frame->rsi,
+                                                frame));
         case SYS_WRITE:
             buffer.user_addr = frame->rcx;
             buffer.size = (uint32_t)frame->rdx;

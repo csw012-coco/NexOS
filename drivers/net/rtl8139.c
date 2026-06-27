@@ -1,6 +1,6 @@
 #include "drivers/net/rtl8139.h"
 
-#include "arch/x86/io.h"
+#include "arch/x86/common/io.h"
 #include "drivers/bus/pci.h"
 #include "drivers/net/net_event.h"
 #include "hal/hal.h"

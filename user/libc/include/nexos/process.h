@@ -22,6 +22,7 @@
 #define NEX_WAIT_LAST_PID SYS_WAIT_LAST_PID
 
 int exec(const char *name);
+/* Returns a child PID for background spawn, 0 for foreground, or a negative error. */
 int spawn(const char *name, uint32_t mode, uint32_t flags);
 int exec_replace(const char *name);
 int proc_query(uint32_t kind, uint32_t index, struct syscall_process_info *info);

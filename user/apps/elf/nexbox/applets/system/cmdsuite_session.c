@@ -10,8 +10,9 @@ enum {
     SERVICE_COMMAND_MAX = 128u
 };
 
-static const char *g_session_dir = "/SYSTEM/SESSION/images";
-static const char *g_service_dir = "/SYSTEM/SERVICE";
+static const char *g_session_dir = "/system/session/images";
+static const char *g_service_dir = "/system/service";
+static int service_stop_local(const char *name, int quiet);
 
 static int session_name_valid_local(const char *name) {
     uint32_t i = 0;
@@ -57,8 +58,8 @@ static int session_ensure_dir_local(const char *path) {
 }
 
 static int session_ensure_store_local(void) {
-    return session_ensure_dir_local("/SYSTEM") &&
-           session_ensure_dir_local("/SYSTEM/SESSION") &&
+    return session_ensure_dir_local("/system") &&
+           session_ensure_dir_local("/system/session") &&
            session_ensure_dir_local(g_session_dir);
 }
 
@@ -649,11 +650,31 @@ static int service_set_enabled_local(const char *name, int enabled) {
     return 0;
 }
 
+static int service_remove_local(const char *name) {
+    char path[CMD_PATH_MAX];
+
+    if (!service_load_def_local(name, NULL, 0u, NULL)) {
+        write_err_str("service: not found\n");
+        return 1;
+    }
+    if (service_stop_local(name, 1) != 0) {
+        return 1;
+    }
+    if (!service_build_path_local(path, sizeof(path), name, "svc") ||
+        remove(path) != 0) {
+        write_err_str("service: remove failed\n");
+        return 1;
+    }
+    service_remove_run_local(name);
+    write_str("removed service ");
+    write_str(name);
+    write_str("\n");
+    return 0;
+}
+
 static int service_start_local(const char *name, int quiet) {
     char command[SERVICE_COMMAND_MAX];
-    uint32_t before[NEX_PROC_SLOTS_MAX];
     uint32_t pid = 0u;
-    uint32_t start_tick;
     int enabled;
     int rc;
 
@@ -671,23 +692,15 @@ static int service_start_local(const char *name, int quiet) {
         }
         return 0;
     }
-    service_capture_pids_local(before);
     rc = spawn(command, SYS_SPAWN_ELF, SYS_SPAWN_BACKGROUND);
-    if (rc != 0) {
+    if (rc < 0) {
         write_err_str("service: start failed rc=");
         eprintf("%d\n", rc);
         return 1;
     }
-    start_tick = ticks();
-    while ((uint32_t)(ticks() - start_tick) < 100u) {
-        pid = service_find_new_pid_local(before);
-        if (pid != 0u) {
-            break;
-        }
-        yield();
-    }
+    pid = (uint32_t)rc;
     if (pid == 0u) {
-        write_err_str("service: started but pid unknown\n");
+        write_err_str("service: background spawn returned no pid\n");
         service_remove_run_local(name);
         return 1;
     }
@@ -931,9 +944,9 @@ struct config_entry_local {
     const char *type;
 };
 
-static const char *g_config_system_path = "/SYSTEM/CONFIG/NOS.CFG";
-static const char *g_config_user_path = "/HOME/CONFIG.CFG";
-static const char *g_config_runtime_path = "/SYSTEM/CONFIG/RUNTIME.CFG";
+static const char *g_config_system_path = "/system/config/nex.scf";
+static const char *g_config_user_path = "/home/config.scf";
+static const char *g_config_runtime_path = "/system/config/runtime.scf";
 
 static char g_config_lines[CONFIG_LINE_STORE_MAX][CONFIG_LINE_MAX];
 static uint32_t g_config_line_count;
@@ -1117,11 +1130,11 @@ static const char *config_layer_name_local(const char *path) {
 
 static int config_ensure_store_for_path_local(const char *path) {
     if (streq_local(path, g_config_user_path)) {
-        (void)mkdir("/HOME");
+        (void)mkdir("/home");
         return 1;
     }
-    (void)mkdir("/SYSTEM");
-    return session_ensure_dir_local("/SYSTEM/CONFIG");
+    (void)mkdir("/system");
+    return session_ensure_dir_local("/system/config");
 }
 
 static int config_lookup_in_file_local(const char *path,
@@ -1543,7 +1556,7 @@ int cmd_session(int argc, char **argv) {
     return 1;
 }
 
-int cmd_service(int argc, char **argv) {
+int cmd_service_legacy(int argc, char **argv) {
     if (argc < 2 || argv[1] == NULL) {
         write_err_usage("service", " <define|list|info|start|stop|restart|enable|disable|boot|reconcile|supervise> ...\n");
         return 1;
@@ -1595,18 +1608,31 @@ int cmd_service(int argc, char **argv) {
         return service_start_local(argv[2], 0);
     }
     if (streq_ignore_case_local(argv[1], "enable")) {
-        if (argc != 3) {
-            write_err_usage("service enable", " <name>\n");
+        if (argc != 3 && !(argc == 4 && streq_local(argv[3], "--now"))) {
+            write_err_usage("service enable", " <name> [--now]\n");
             return 1;
         }
-        return service_set_enabled_local(argv[2], 1);
+        if (service_set_enabled_local(argv[2], 1) != 0) {
+            return 1;
+        }
+        return argc == 4 ? service_start_local(argv[2], 0) : 0;
     }
     if (streq_ignore_case_local(argv[1], "disable")) {
-        if (argc != 3) {
-            write_err_usage("service disable", " <name>\n");
+        if (argc != 3 && !(argc == 4 && streq_local(argv[3], "--now"))) {
+            write_err_usage("service disable", " <name> [--now]\n");
             return 1;
         }
-        return service_set_enabled_local(argv[2], 0);
+        if (service_set_enabled_local(argv[2], 0) != 0) {
+            return 1;
+        }
+        return argc == 4 ? service_stop_local(argv[2], 0) : 0;
+    }
+    if (streq_ignore_case_local(argv[1], "remove")) {
+        if (argc != 3) {
+            write_err_usage("service remove", " <name>\n");
+            return 1;
+        }
+        return service_remove_local(argv[2]);
     }
     if (streq_ignore_case_local(argv[1], "boot")) {
         if (argc != 2) {

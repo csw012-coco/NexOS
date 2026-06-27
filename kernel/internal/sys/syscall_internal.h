@@ -89,14 +89,18 @@ uint64_t syscall_handle_mkfifo(uint64_t user_path_addr);
 uint64_t syscall_handle_mount(uint64_t user_source_addr, uint64_t user_target_addr, uint32_t syscall_kind);
 uint64_t syscall_handle_umount(uint64_t user_target_addr);
 uint64_t syscall_handle_switch_root(uint64_t user_target_addr);
-uint64_t syscall_handle_write(const struct syscall_user_buffer *buffer);
+uint64_t syscall_handle_write(const struct syscall_user_buffer *buffer,
+                              const struct syscall_frame *frame);
 uint64_t syscall_handle_fd_write(uint32_t fd,
                                  const struct syscall_user_buffer *buffer,
                                  const struct syscall_frame *frame);
 uint64_t syscall_handle_clear(void);
 uint64_t syscall_handle_open(uint64_t user_name_addr, uint32_t flags);
 uint64_t syscall_handle_opendir(uint64_t user_path_addr);
-uint64_t syscall_handle_fd_read(uint32_t fd, const struct syscall_user_buffer *buffer, uint32_t flags);
+uint64_t syscall_handle_fd_read(uint32_t fd,
+                                const struct syscall_user_buffer *buffer,
+                                uint32_t flags,
+                                const struct syscall_frame *frame);
 uint64_t syscall_handle_close(uint32_t fd);
 uint64_t syscall_handle_seek(uint32_t fd, int64_t offset, uint32_t whence);
 uint64_t syscall_handle_dup2(uint32_t src_fd, uint32_t dst_fd);

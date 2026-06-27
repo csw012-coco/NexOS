@@ -71,17 +71,30 @@ int syscall_copy_from_user(void *dest, uint64_t user_addr, uint32_t size) {
 }
 
 int syscall_copy_user_cstr(char *dest, uint64_t user_addr, uint32_t max_len) {
-    if (dest == 0 || max_len == 0u) {
+    uint32_t copied = 0u;
+
+    if (dest == 0 || user_addr == 0u || max_len == 0u) {
         return 0;
     }
-    for (uint32_t i = 0u; i + 1u < max_len; i++) {
-        if (!syscall_prepare_user_range(user_addr + i, 1u, 0) ||
-            !vmm_copy_from_user(&dest[i], user_addr + i, 1u)) {
+    while (copied + 1u < max_len) {
+        uint64_t current = user_addr + copied;
+        uint32_t page_remaining =
+            USER_PAGE_SIZE - (uint32_t)(current & (USER_PAGE_SIZE - 1u));
+        uint32_t buffer_remaining = max_len - 1u - copied;
+        uint32_t chunk = page_remaining < buffer_remaining
+            ? page_remaining
+            : buffer_remaining;
+
+        if (!syscall_prepare_user_range(current, chunk, 0) ||
+            !vmm_copy_from_user(dest + copied, current, chunk)) {
             return 0;
         }
-        if (dest[i] == '\0') {
-            return 1;
+        for (uint32_t i = 0u; i < chunk; i++) {
+            if (dest[copied + i] == '\0') {
+                return 1;
+            }
         }
+        copied += chunk;
     }
     dest[max_len - 1u] = '\0';
     return 1;

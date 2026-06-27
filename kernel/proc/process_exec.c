@@ -977,7 +977,8 @@ int process_spawn_from_user(struct vfs *vfs,
                             char *command_line,
                             const char *const *envp,
                             uint32_t syscall_mode,
-                            uint32_t flags) {
+                            uint32_t flags,
+                            uint32_t *pid_out) {
     enum process_exec_mode mode;
 
     if (proc == 0 || command_line == 0 || !process_map_spawn_mode_local(syscall_mode, &mode)) {
@@ -993,7 +994,10 @@ int process_spawn_from_user(struct vfs *vfs,
             g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
             return 0;
         }
-        return job_run_background_with_pid(vfs, command_line, envp, mode, 0);
+        return job_run_background_with_pid(vfs, command_line, envp, mode, pid_out);
+    }
+    if (pid_out != 0) {
+        *pid_out = 0u;
     }
     return process_run_foreground_command(vfs, proc, command_line, envp, mode);
 }

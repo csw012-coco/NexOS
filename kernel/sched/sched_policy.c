@@ -16,6 +16,11 @@ static enum sched_mode g_sched_mode = SCHED_MODE_INTERACTIVE;
 static uint32_t g_sched_next_slot = 0;
 static uint8_t g_sched_foreground_turn = 1u;
 static uint32_t g_sched_excluded_pid;
+static uint32_t g_sched_next_wake_tick;
+
+static int sched_policy_tick_before(uint32_t lhs, uint32_t rhs) {
+    return (int32_t)(lhs - rhs) < 0;
+}
 
 /* ============================================================================
  * Public Policy Interface
@@ -26,6 +31,17 @@ void sched_policy_init(void) {
     g_sched_foreground_turn = 1u;
     g_sched_mode = SCHED_MODE_INTERACTIVE;
     g_sched_excluded_pid = 0;
+    g_sched_next_wake_tick = 0u;
+}
+
+void sched_policy_note_sleep(uint32_t wake_tick) {
+    if (wake_tick == 0u) {
+        return;
+    }
+    if (g_sched_next_wake_tick == 0u ||
+        sched_policy_tick_before(wake_tick, g_sched_next_wake_tick)) {
+        g_sched_next_wake_tick = wake_tick;
+    }
 }
 
 static int sched_policy_pid_active_on_kernel_stack(uint32_t pid) {
@@ -49,26 +65,36 @@ static int sched_policy_pid_allowed(const struct process *proc) {
     if (proc == 0) {
         return 0;
     }
+
     if (g_sched_excluded_pid != 0u && proc->pid == g_sched_excluded_pid) {
         return 0;
     }
+
     return !sched_policy_pid_active_on_kernel_stack(proc->pid);
 }
-
 /**
  * Check all sleeping processes and wake them up if their timer expired.
  * This is the "wake-up policy" - what conditions trigger becoming READY.
  */
 uint32_t sched_policy_update_wake_times(uint32_t current_ticks) {
     uint32_t woke_up_count = 0;
+    uint32_t next_wake_tick = 0u;
+
+    if (g_sched_next_wake_tick == 0u ||
+        sched_policy_tick_before(current_ticks, g_sched_next_wake_tick)) {
+        return 0u;
+    }
 
     /* Check foreground session (always in slot 0 conceptually) */
     if (g_user_session.process.image_kind != PROCESS_IMAGE_NONE &&
-        g_user_session.process.state == PROCESS_STATE_SLEEPING &&
-        current_ticks >= g_user_session.process.wake_tick) {
-        g_user_session.process.state = PROCESS_STATE_READY;
-        g_user_session.process.wake_tick = 0;
-        woke_up_count++;
+        g_user_session.process.state == PROCESS_STATE_SLEEPING) {
+        if (!sched_policy_tick_before(current_ticks, g_user_session.process.wake_tick)) {
+            g_user_session.process.state = PROCESS_STATE_READY;
+            g_user_session.process.wake_tick = 0;
+            woke_up_count++;
+        } else {
+            next_wake_tick = g_user_session.process.wake_tick;
+        }
     }
 
     /* Check background jobs */
@@ -78,14 +104,21 @@ uint32_t sched_policy_update_wake_times(uint32_t current_ticks) {
         if (runtime == 0) {
             continue;
         }
-        if (runtime->session.process.state == PROCESS_STATE_SLEEPING &&
-            current_ticks >= runtime->session.process.wake_tick) {
-            runtime->session.process.state = PROCESS_STATE_READY;
-            runtime->session.process.wake_tick = 0;
-            woke_up_count++;
+        if (runtime->session.process.state == PROCESS_STATE_SLEEPING) {
+            uint32_t wake_tick = runtime->session.process.wake_tick;
+
+            if (!sched_policy_tick_before(current_ticks, wake_tick)) {
+                runtime->session.process.state = PROCESS_STATE_READY;
+                runtime->session.process.wake_tick = 0;
+                woke_up_count++;
+            } else if (next_wake_tick == 0u ||
+                       sched_policy_tick_before(wake_tick, next_wake_tick)) {
+                next_wake_tick = wake_tick;
+            }
         }
     }
 
+    g_sched_next_wake_tick = next_wake_tick;
     return woke_up_count;
 }
 

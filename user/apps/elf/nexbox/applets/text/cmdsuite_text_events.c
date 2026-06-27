@@ -498,7 +498,6 @@ static int event_job_attach_log_local(const char *id) {
 }
 
 static int event_job_spawn_daemon_local(int argc, char **argv) {
-    uint32_t before[NEX_PROC_SLOTS_MAX];
     uint32_t pid = 0u;
     char id[EVENT_JOB_ID_MAX];
     char command[EVENT_JOB_COMMAND_MAX];
@@ -511,19 +510,12 @@ static int event_job_spawn_daemon_local(int argc, char **argv) {
         write_err_str("on: daemon command too long\n");
         return 1;
     }
-    event_job_capture_pids_local(before);
     rc = spawn(command, SYS_SPAWN_ELF, SYS_SPAWN_BACKGROUND);
-    if (rc != 0) {
+    if (rc < 0) {
         write_err_str("on: daemon spawn failed\n");
         return 1;
     }
-    for (uint32_t i = 0; i < 100u; i++) {
-        pid = event_job_find_new_pid_local(before);
-        if (pid != 0u) {
-            break;
-        }
-        yield();
-    }
+    pid = (uint32_t)rc;
     (void)event_job_write_meta_local(id, pid, command);
     write_str("event job ");
     write_str(id);

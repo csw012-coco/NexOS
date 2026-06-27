@@ -54,6 +54,9 @@ int vfs_find_source_by_boot_partition(uint32_t partition_lba,
 int vfs_find_disk_by_boot_partition(uint32_t partition_lba,
                                     uint32_t partition_sectors,
                                     uint32_t *disk_index_out);
+int vfs_find_source_by_nxfs_uuid(const uint8_t uuid[16],
+                                 uint32_t *disk_index_out,
+                                 uint32_t *part_index_out);
 int vfs_mount_fs(struct vfs *vfs, uint8_t kind, uint32_t disk_index, uint32_t part_index, const char *target);
 int vfs_mount_fs_at_lba(struct vfs *vfs,
                         uint8_t kind,
@@ -63,6 +66,7 @@ int vfs_mount_fs_at_lba(struct vfs *vfs,
                         const char *target);
 int vfs_umount(struct vfs *vfs, const char *target);
 int vfs_switch_root_to_source(struct vfs *vfs, uint32_t disk_index, uint32_t part_index);
+int vfs_switch_root_to_nxfs_uuid(struct vfs *vfs, const uint8_t uuid[16]);
 int vfs_switch_root_to_first_kind(struct vfs *vfs, uint8_t kind);
 int vfs_prepare_opened_node(struct vfs *vfs,
                             struct vfs_node *node,
