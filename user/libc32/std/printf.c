@@ -166,41 +166,7 @@ int snprintf(char *buffer, size_t size, const char *format, ...) {
     return result;
 }
 
-int vfprintf(FILE *stream, const char *format, va_list args) {
-    char buffer[256];
-    int result;
-    size_t length;
-
-    if (stream == 0) {
-        return -1;
-    }
-    result = vsnprintf(buffer, sizeof(buffer), format, args);
-    if (result < 0) {
-        stream->error = 1;
-        return result;
-    }
-    length = (size_t)result;
-    if (length >= sizeof(buffer)) {
-        length = sizeof(buffer) - 1u;
-    }
-    if (write(stream->fd, buffer, length) != (ssize_t)length) {
-        stream->error = 1;
-        return -1;
-    }
-    return result;
-}
-
-int fprintf(FILE *stream, const char *format, ...) {
-    va_list args;
-    int result;
-
-    va_start(args, format);
-    result = vfprintf(stream, format, args);
-    va_end(args);
-    return result;
-}
-
-int vprintf(const char *format, va_list args) {
+int vdprintf(int fd, const char *format, va_list args) {
     char buffer[256];
     int result = vsnprintf(buffer, sizeof(buffer), format, args);
     size_t length;
@@ -212,9 +178,63 @@ int vprintf(const char *format, va_list args) {
     if (length >= sizeof(buffer)) {
         length = sizeof(buffer) - 1u;
     }
-    return write(STDOUT_FILENO, buffer, length) == (ssize_t)length
-        ? result
-        : -1;
+    return write(fd, buffer, length) == (ssize_t)length ? result : -1;
+}
+
+int dprintf(int fd, const char *format, ...) {
+    va_list args;
+    int result;
+
+    va_start(args, format);
+    result = vdprintf(fd, format, args);
+    va_end(args);
+    return result;
+}
+
+int veprintf(const char *format, va_list args) {
+    return vdprintf(STDERR_FILENO, format, args);
+}
+
+int eprintf(const char *format, ...) {
+    va_list args;
+    int result;
+
+    va_start(args, format);
+    result = veprintf(format, args);
+    va_end(args);
+    return result;
+}
+
+int vfprintf(FILE *stream, const char *format, va_list args) {
+    if (stream == 0) {
+        return -1;
+    }
+    {
+        int result = vdprintf(stream->fd, format, args);
+
+        if (result < 0) {
+            stream->error = 1;
+        }
+        return result;
+    }
+}
+
+int vfdprintf(uint32_t fd, const char *format, va_list args) {
+    return vdprintf((int)fd, format, args);
+}
+
+int fdprintf(uint32_t fd, const char *format, ...) {
+    va_list args;
+    int result;
+
+    va_start(args, format);
+    result = vdprintf((int)fd, format, args);
+    va_end(args);
+    return result;
+}
+
+int vprintf(const char *format, va_list args) {
+    return vdprintf(STDOUT_FILENO, format, args);
 }
 
 int printf(const char *format, ...) {
@@ -223,6 +243,16 @@ int printf(const char *format, ...) {
 
     va_start(args, format);
     result = vprintf(format, args);
+    va_end(args);
+    return result;
+}
+
+int fprintf(FILE *stream, const char *format, ...) {
+    va_list args;
+    int result;
+
+    va_start(args, format);
+    result = vfprintf(stream, format, args);
     va_end(args);
     return result;
 }

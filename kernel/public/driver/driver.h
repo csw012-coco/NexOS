@@ -47,13 +47,19 @@ struct kernel_driver_record {
     int init_result;
     const char *source;
     const char *path;
+    const char *reason;
 };
 
 struct kernel_driver_file {
     char name[NOS_NAME_BUFFER_SIZE];
     char path[NOS_PATH_BUFFER_SIZE];
     uint32_t size;
+    uint8_t elf_class;
+    uint8_t elf_data;
+    uint16_t elf_type;
+    uint16_t elf_machine;
     enum kernel_driver_file_state state;
+    const char *reason;
 };
 
 void driver_manager_init(void);

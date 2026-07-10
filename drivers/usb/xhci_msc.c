@@ -1,11 +1,21 @@
 #include "drivers/usb/xhci_internal.h"
 
+enum {
+    XHCI_MSC_CONFIG_TRACE_ENABLED = 0u
+};
+
+#define XHCI_MSC_CONFIG_TRACE(...) do { \
+    if (XHCI_MSC_CONFIG_TRACE_ENABLED) { \
+        kprint(__VA_ARGS__); \
+    } \
+} while (0)
 
 int xhci_parse_msc_config(struct xhci_enum_device *dev, const uint8_t *cfg, uint32_t length) {
     uint32_t offset = 0;
     uint8_t in_msc = 0;
     uint8_t saw_msc = 0;
     uint8_t saw_uas = 0;
+    uint8_t last_bulk_ep = 0;
 
     if (dev == 0 || cfg == 0 || length < 9u || cfg[1] != USB_DESC_CONFIGURATION) {
         return 0;
@@ -16,6 +26,8 @@ int xhci_parse_msc_config(struct xhci_enum_device *dev, const uint8_t *cfg, uint
     dev->bulk_out_ep = 0u;
     dev->bulk_in_epid = 0u;
     dev->bulk_out_epid = 0u;
+    dev->bulk_in_burst = 0u;
+    dev->bulk_out_burst = 0u;
     dev->bulk_in_mps = 0u;
     dev->bulk_out_mps = 0u;
     while (offset + 2u <= length) {
@@ -35,13 +47,13 @@ int xhci_parse_msc_config(struct xhci_enum_device *dev, const uint8_t *cfg, uint
                 if (in_msc) {
                     dev->msc_interface_number = cfg[offset + 2u];
                 }
-                kprint("xhci: slot%u MSC iface=%u subclass=%u proto=%x eps=%u bot=%u\n",
-                       (uint32_t)dev->slot_id,
-                       (uint32_t)cfg[offset + 2u],
-                       (uint32_t)cfg[offset + 6u],
-                       (uint32_t)cfg[offset + 7u],
-                       (uint32_t)cfg[offset + 4u],
-                       (uint32_t)in_msc);
+                XHCI_MSC_CONFIG_TRACE("xhci: slot%u MSC iface=%u subclass=%u proto=%x eps=%u bot=%u\n",
+                                      (uint32_t)dev->slot_id,
+                                      (uint32_t)cfg[offset + 2u],
+                                      (uint32_t)cfg[offset + 6u],
+                                      (uint32_t)cfg[offset + 7u],
+                                      (uint32_t)cfg[offset + 4u],
+                                      (uint32_t)in_msc);
             }
         } else if (type == 5u && len >= 7u && in_msc) {
             uint8_t ep = cfg[offset + 2u];
@@ -53,11 +65,27 @@ int xhci_parse_msc_config(struct xhci_enum_device *dev, const uint8_t *cfg, uint
                 dev->bulk_in_ep = ep;
                 dev->bulk_in_epid = (uint8_t)(ep_num * 2u + 1u);
                 dev->bulk_in_mps = mps;
+                last_bulk_ep = ep;
             } else if (attr == 2u && ep_num != 0u) {
                 dev->bulk_out_ep = ep;
                 dev->bulk_out_epid = (uint8_t)(ep_num * 2u);
                 dev->bulk_out_mps = mps;
+                last_bulk_ep = ep;
             }
+        } else if (type == USB_DESC_SS_ENDPOINT_COMPANION && len >= 6u && in_msc && last_bulk_ep != 0u) {
+            uint8_t burst = (uint8_t)(cfg[offset + 2u] & 0x0fu);
+
+            if ((last_bulk_ep & 0x80u) != 0u) {
+                dev->bulk_in_burst = burst;
+            } else {
+                dev->bulk_out_burst = burst;
+            }
+            XHCI_MSC_CONFIG_TRACE("xhci: slot%u MSC ss ep=%x burst=%u attr=%x bytes=%u\n",
+                                  (uint32_t)dev->slot_id,
+                                  (uint32_t)last_bulk_ep,
+                                  (uint32_t)burst,
+                                  (uint32_t)cfg[offset + 3u],
+                                  (uint32_t)usb_read_u16le(cfg + offset + 4u));
         }
         offset += len;
     }
@@ -91,6 +119,8 @@ static void xhci_prepare_bulk_context(struct xhci_enum_device *dev) {
     uint32_t *out_ctx = (uint32_t *)bulk_out;
     uint32_t *in_ctx = (uint32_t *)bulk_in;
     uint8_t last_epid = dev->bulk_in_epid > dev->bulk_out_epid ? dev->bulk_in_epid : dev->bulk_out_epid;
+    uint32_t out_avg = (uint32_t)dev->bulk_out_mps * ((uint32_t)dev->bulk_out_burst + 1u);
+    uint32_t in_avg = (uint32_t)dev->bulk_in_mps * ((uint32_t)dev->bulk_in_burst + 1u);
 
     memset(dev->input_context, 0, XHCI_PAGE_SIZE);
     memcpy(slot, out_slot, g_xhci.context_size);
@@ -99,15 +129,28 @@ static void xhci_prepare_bulk_context(struct xhci_enum_device *dev) {
             (1u << dev->bulk_in_epid);
     slot_ctx[0] = (slot_ctx[0] & ~(0x1fu << 27)) | ((uint32_t)last_epid << 27);
 
-    out_ctx[1] = XHCI_EP_CONTEXT_CERR_3 | (2u << 3) | ((uint32_t)dev->bulk_out_mps << 16);
+    if (out_avg > 0xffffu) {
+        out_avg = 0xffffu;
+    }
+    if (in_avg > 0xffffu) {
+        in_avg = 0xffffu;
+    }
+
+    out_ctx[1] = XHCI_EP_CONTEXT_CERR_3 |
+                 (2u << 3) |
+                 ((uint32_t)dev->bulk_out_burst << 8) |
+                 ((uint32_t)dev->bulk_out_mps << 16);
     out_ctx[2] = (uint32_t)dev->bulk_out_ring_phys | 1u;
     out_ctx[3] = (uint32_t)(dev->bulk_out_ring_phys >> 32);
-    out_ctx[4] = dev->bulk_out_mps;
+    out_ctx[4] = out_avg;
 
-    in_ctx[1] = XHCI_EP_CONTEXT_CERR_3 | (6u << 3) | ((uint32_t)dev->bulk_in_mps << 16);
+    in_ctx[1] = XHCI_EP_CONTEXT_CERR_3 |
+                (6u << 3) |
+                ((uint32_t)dev->bulk_in_burst << 8) |
+                ((uint32_t)dev->bulk_in_mps << 16);
     in_ctx[2] = (uint32_t)dev->bulk_in_ring_phys | 1u;
     in_ctx[3] = (uint32_t)(dev->bulk_in_ring_phys >> 32);
-    in_ctx[4] = dev->bulk_in_mps;
+    in_ctx[4] = in_avg;
 }
 
 static int xhci_configure_bulk_endpoints(struct xhci_enum_device *dev) {
@@ -264,28 +307,28 @@ static int xhci_bulk_transfer(struct xhci_enum_device *dev,
                                         XHCI_MSC_BULK_WAIT_SPINS)) {
         uint8_t state = xhci_endpoint_state(dev, endpoint_id);
         dev->last_bulk_completion = 0u;
-        kprint("xhci: bulk timeout slot=%u epid=%u bytes=%u trb=%lx state=%u enq=%u cyc=%u ev=%u/%u usbsts=%x\n",
-               (uint32_t)dev->slot_id,
-               (uint32_t)endpoint_id,
-               bytes,
-               submitted_trb_phys,
-               (uint32_t)state,
-               *enqueue,
-               (uint32_t)*cycle,
-               g_xhci.event_dequeue,
-               (uint32_t)g_xhci.event_cycle,
-               xhci_read32(g_xhci.op, XHCI_OP_USBSTS));
+        XHCI_MSC_TRANSPORT_TRACE("xhci: bulk timeout slot=%u epid=%u bytes=%u trb=%lx state=%u enq=%u cyc=%u ev=%u/%u usbsts=%x\n",
+                                 (uint32_t)dev->slot_id,
+                                 (uint32_t)endpoint_id,
+                                 bytes,
+                                 submitted_trb_phys,
+                                 (uint32_t)state,
+                                 *enqueue,
+                                 (uint32_t)*cycle,
+                                 g_xhci.event_dequeue,
+                                 (uint32_t)g_xhci.event_cycle,
+                                 xhci_read32(g_xhci.op, XHCI_OP_USBSTS));
         xhci_save_active_controller();
         return 0;
     }
     dev->last_bulk_completion = (uint8_t)completion;
     if (completion != XHCI_CC_SUCCESS &&
         !(completion == XHCI_CC_SHORT_PACKET && (endpoint_id & 1u) != 0u)) {
-        kprint("xhci: bulk failed slot=%u epid=%u cc=%u bytes=%u\n",
-               (uint32_t)dev->slot_id,
-               (uint32_t)endpoint_id,
-               completion,
-               bytes);
+        XHCI_MSC_TRANSPORT_TRACE("xhci: bulk failed slot=%u epid=%u cc=%u bytes=%u\n",
+                                 (uint32_t)dev->slot_id,
+                                 (uint32_t)endpoint_id,
+                                 completion,
+                                 bytes);
         xhci_save_active_controller();
         return 0;
     }
@@ -325,12 +368,12 @@ static void xhci_msc_recover_transport(struct xhci_enum_device *dev, uint8_t op,
     if (dev == 0) {
         return;
     }
-    kprint("xhci: MSC recovery slot=%u op=%x phase=%s in=%x out=%x\n",
-           (uint32_t)dev->slot_id,
-           (uint32_t)op,
-           phase,
-           (uint32_t)dev->bulk_in_ep,
-           (uint32_t)dev->bulk_out_ep);
+    XHCI_MSC_TRANSPORT_TRACE("xhci: MSC recovery slot=%u op=%x phase=%s in=%x out=%x\n",
+                             (uint32_t)dev->slot_id,
+                             (uint32_t)op,
+                             phase,
+                             (uint32_t)dev->bulk_in_ep,
+                             (uint32_t)dev->bulk_out_ep);
     (void)xhci_msc_bulk_only_reset(dev);
     xhci_delay_ms(XHCI_MSC_RESET_SETTLE_MS);
     (void)xhci_clear_endpoint_halt(dev, dev->bulk_in_ep);
@@ -375,10 +418,10 @@ int xhci_msc_command(struct xhci_enum_device *dev,
     dev->last_msc_phase = 1u;
     if (!xhci_bulk_transfer(dev, dev->bulk_out_epid, dev->cbw_phys, 31u)) {
         dev->last_msc_status = MSC_STATUS_TRANSPORT_ERROR;
-        kprint("xhci: MSC CBW failed slot=%u tag=%x op=%x\n",
-               (uint32_t)dev->slot_id,
-               tag,
-               (uint32_t)cmd[0]);
+        XHCI_MSC_TRANSPORT_TRACE("xhci: MSC CBW failed slot=%u tag=%x op=%x\n",
+                                 (uint32_t)dev->slot_id,
+                                 tag,
+                                 (uint32_t)cmd[0]);
         xhci_msc_recover_transport(dev, cmd[0], "CBW");
         return 0;
     }
@@ -392,12 +435,12 @@ int xhci_msc_command(struct xhci_enum_device *dev,
                                 dev->data_phys,
                                 data_len)) {
             dev->last_msc_status = MSC_STATUS_TRANSPORT_ERROR;
-            kprint("xhci: MSC DATA %s failed slot=%u tag=%x op=%x len=%u\n",
-                   data_in ? "in" : "out",
-                   (uint32_t)dev->slot_id,
-                   tag,
-                   (uint32_t)cmd[0],
-                   data_len);
+            XHCI_MSC_TRANSPORT_TRACE("xhci: MSC DATA %s failed slot=%u tag=%x op=%x len=%u\n",
+                                     data_in ? "in" : "out",
+                                     (uint32_t)dev->slot_id,
+                                     tag,
+                                     (uint32_t)cmd[0],
+                                     data_len);
             xhci_msc_recover_transport(dev, cmd[0], data_in ? "DATA-IN" : "DATA-OUT");
             return 0;
         }
@@ -413,11 +456,11 @@ int xhci_msc_command(struct xhci_enum_device *dev,
         }
         if (csw_retry != 0u) {
             dev->last_msc_status = MSC_STATUS_TRANSPORT_ERROR;
-            kprint("xhci: MSC CSW failed slot=%u tag=%x op=%x cc=%u\n",
-                   (uint32_t)dev->slot_id,
-                   tag,
-                   (uint32_t)cmd[0],
-                   (uint32_t)dev->last_bulk_completion);
+            XHCI_MSC_TRANSPORT_TRACE("xhci: MSC CSW failed slot=%u tag=%x op=%x cc=%u\n",
+                                     (uint32_t)dev->slot_id,
+                                     tag,
+                                     (uint32_t)cmd[0],
+                                     (uint32_t)dev->last_bulk_completion);
             xhci_msc_recover_transport(dev, cmd[0], "CSW");
             return 0;
         }
@@ -431,22 +474,22 @@ int xhci_msc_command(struct xhci_enum_device *dev,
     dev->last_msc_residue = usb_read_u32le(dev->csw + 8);
     dev->last_msc_status = dev->csw[12];
     if (signature != MSC_CSW_SIGNATURE || csw_tag != tag) {
-        kprint("xhci: MSC CSW bad slot=%u op=%x sig=%x tag=%x/%x status=%u residue=%x\n",
-               (uint32_t)dev->slot_id,
-               (uint32_t)cmd[0],
-               signature,
-               csw_tag,
-               tag,
-               (uint32_t)dev->last_msc_status,
-               dev->last_msc_residue);
+        XHCI_MSC_TRANSPORT_TRACE("xhci: MSC CSW bad slot=%u op=%x sig=%x tag=%x/%x status=%u residue=%x\n",
+                                 (uint32_t)dev->slot_id,
+                                 (uint32_t)cmd[0],
+                                 signature,
+                                 csw_tag,
+                                 tag,
+                                 (uint32_t)dev->last_msc_status,
+                                 dev->last_msc_residue);
         xhci_msc_recover_transport(dev, cmd[0], "CSW-BAD");
         return 0;
     }
     if (dev->last_msc_status == 2u) {
-        kprint("xhci: MSC CSW phase error slot=%u op=%x residue=%x\n",
-               (uint32_t)dev->slot_id,
-               (uint32_t)cmd[0],
-               dev->last_msc_residue);
+        XHCI_MSC_TRANSPORT_TRACE("xhci: MSC CSW phase error slot=%u op=%x residue=%x\n",
+                                 (uint32_t)dev->slot_id,
+                                 (uint32_t)cmd[0],
+                                 dev->last_msc_residue);
         xhci_msc_recover_transport(dev, cmd[0], "CSW-PHASE");
         return 0;
     }
@@ -454,11 +497,11 @@ int xhci_msc_command(struct xhci_enum_device *dev,
         if (cmd[0] != SCSI_TEST_UNIT_READY &&
             cmd[0] != SCSI_READ_CAPACITY_10 &&
             cmd[0] != SCSI_REQUEST_SENSE) {
-            kprint("xhci: MSC command status slot=%u op=%x status=%u residue=%x\n",
-                   (uint32_t)dev->slot_id,
-                   (uint32_t)cmd[0],
-                   (uint32_t)dev->last_msc_status,
-                   dev->last_msc_residue);
+            XHCI_MSC_TRANSPORT_TRACE("xhci: MSC command status slot=%u op=%x status=%u residue=%x\n",
+                                     (uint32_t)dev->slot_id,
+                                     (uint32_t)cmd[0],
+                                     (uint32_t)dev->last_msc_status,
+                                     dev->last_msc_residue);
         }
         dev->last_msc_phase = 0u;
         return 0;
@@ -634,10 +677,10 @@ static int xhci_msc_probe_device(struct xhci_enum_device *dev) {
                    dev->last_msc_residue);
             continue;
         }
-        kprint("xhci: MSC lun%u inquiry type=%x removable=%u\n",
-               (uint32_t)lun,
-               (uint32_t)(inquiry[0] & 0x1fu),
-               (uint32_t)((inquiry[1] & 0x80u) != 0u));
+        XHCI_MSC_CONFIG_TRACE("xhci: MSC lun%u inquiry type=%x removable=%u\n",
+                              (uint32_t)lun,
+                              (uint32_t)(inquiry[0] & 0x1fu),
+                              (uint32_t)((inquiry[1] & 0x80u) != 0u));
         if (!xhci_msc_wait_ready(dev)) {
             kprint("xhci: MSC lun%u not ready sense=%x/%x/%x phase=%u status=%u residue=%x\n",
                    (uint32_t)lun,

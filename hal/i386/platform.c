@@ -3,6 +3,7 @@
 #include "arch/x86/i386/paging.h"
 #include "arch/x86/common/pic.h"
 #include "arch/x86/common/io.h"
+#include "drivers/video/framebuffer.h"
 #include "hal/hal.h"
 
 enum {
@@ -28,29 +29,44 @@ static uint16_t display_cell_to_vga(uint32_t cell) {
 }
 
 void hal_display_init(const struct bootx_console_info *console) {
-    (void)console;
+    framebuffer_display_init(console);
 }
 
 void hal_display_load_font(const struct bootx_boot_info *boot_info) {
-    (void)boot_info;
+    framebuffer_display_load_font_from_boot_modules(boot_info);
 }
 
 int hal_display_enable_backbuffer(void) {
+    if (framebuffer_display_active()) {
+        return framebuffer_display_enable_backbuffer();
+    }
     return 0;
 }
 
 void hal_display_begin_update(void) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_begin_update();
+    }
 }
 
 void hal_display_end_update(void) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_end_update();
+    }
 }
 
 void hal_display_service_pending(void) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_service_pending();
+    }
 }
 
 uint32_t hal_display_read_cell(uint16_t row, uint16_t col) {
     uint16_t cell;
 
+    if (framebuffer_display_active()) {
+        return framebuffer_display_read_cell(row, col);
+    }
     if (row >= VGA_ROWS || col >= VGA_COLUMNS) {
         return 0;
     }
@@ -60,12 +76,20 @@ uint32_t hal_display_read_cell(uint16_t row, uint16_t col) {
 }
 
 void hal_display_write_cell(uint16_t row, uint16_t col, uint32_t value) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_write_cell(row, col, value);
+        return;
+    }
     if (row < VGA_ROWS && col < VGA_COLUMNS) {
         vga[row * VGA_COLUMNS + col] = display_cell_to_vga(value);
     }
 }
 
 void hal_display_clear_row(uint16_t row, uint8_t color) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_clear_row(row, color);
+        return;
+    }
     if (row >= VGA_ROWS) {
         return;
     }
@@ -76,6 +100,10 @@ void hal_display_clear_row(uint16_t row, uint8_t color) {
 }
 
 void hal_display_put_at(uint16_t row, uint16_t col, uint8_t color, char ch) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_put_at(row, col, color, ch);
+        return;
+    }
     if (row < VGA_ROWS && col < VGA_COLUMNS) {
         vga[row * VGA_COLUMNS + col] =
             (uint16_t)(((uint16_t)color << 8) | (uint8_t)ch);
@@ -83,6 +111,10 @@ void hal_display_put_at(uint16_t row, uint16_t col, uint8_t color, char ch) {
 }
 
 void hal_display_enable_cursor(uint8_t start, uint8_t end) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_enable_cursor(start, end);
+        return;
+    }
     outb(VGA_CRTC_INDEX, 0x0a);
     outb(VGA_CRTC_DATA, (uint8_t)((inb(VGA_CRTC_DATA) & 0xc0u) | start));
     outb(VGA_CRTC_INDEX, 0x0b);
@@ -92,6 +124,10 @@ void hal_display_enable_cursor(uint8_t start, uint8_t end) {
 void hal_display_set_cursor(uint16_t row, uint16_t col) {
     uint16_t position;
 
+    if (framebuffer_display_active()) {
+        framebuffer_display_set_cursor(row, col);
+        return;
+    }
     if (row >= VGA_ROWS) {
         row = VGA_ROWS - 1u;
     }
@@ -106,20 +142,44 @@ void hal_display_set_cursor(uint16_t row, uint16_t col) {
 }
 
 uint16_t hal_display_text_columns(void) {
+    if (framebuffer_display_active()) {
+        return framebuffer_display_columns();
+    }
     return VGA_COLUMNS;
 }
 
 uint16_t hal_display_text_rows(void) {
+    if (framebuffer_display_active()) {
+        return framebuffer_display_rows();
+    }
     return VGA_ROWS;
 }
 
 uint32_t hal_display_cell_height(void) {
+    if (framebuffer_display_active()) {
+        return framebuffer_display_cell_height();
+    }
     return 16u;
+}
+
+void hal_display_bitblt(uint32_t src_x,
+                        uint32_t src_y,
+                        uint32_t width,
+                        uint32_t height,
+                        uint32_t dst_x,
+                        uint32_t dst_y) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_bitblt(src_x, src_y, width, height, dst_x, dst_y);
+    }
 }
 
 void hal_display_scroll_rows(uint16_t top_row,
                              uint16_t bottom_row,
                              uint8_t clear_color) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_scroll_rows(top_row, bottom_row, clear_color);
+        return;
+    }
     if (top_row >= bottom_row || top_row >= VGA_ROWS) {
         return;
     }
@@ -135,7 +195,112 @@ void hal_display_scroll_rows(uint16_t top_row,
     hal_display_clear_row(bottom_row, clear_color);
 }
 
+void hal_display_blit_surface(const struct surface *surface,
+                              uint32_t src_x,
+                              uint32_t src_y,
+                              uint32_t width,
+                              uint32_t height,
+                              int32_t dst_x,
+                              int32_t dst_y) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_blit_surface(surface, src_x, src_y, width, height, dst_x, dst_y);
+    }
+}
+
+void hal_display_blit_xrgb8888(const uint32_t *pixels,
+                               uint32_t pitch,
+                               uint32_t width,
+                               uint32_t height,
+                               int32_t dst_x,
+                               int32_t dst_y) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_blit_xrgb8888(pixels, pitch, width, height, dst_x, dst_y);
+    }
+}
+
+void hal_display_draw_pixel(int32_t x, int32_t y, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_draw_pixel(x, y, rgb);
+    }
+}
+
+void hal_display_draw_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_draw_line(x0, y0, x1, y1, rgb);
+    }
+}
+
+void hal_display_draw_rect(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_draw_rect(x, y, width, height, rgb);
+    }
+}
+
+void hal_display_fill_rect_rgb(int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_fill_rect_rgb(x, y, width, height, rgb);
+    }
+}
+
+void hal_display_draw_triangle(int32_t x0,
+                               int32_t y0,
+                               int32_t x1,
+                               int32_t y1,
+                               int32_t x2,
+                               int32_t y2,
+                               uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_draw_triangle(x0, y0, x1, y1, x2, y2, rgb);
+    }
+}
+
+void hal_display_fill_triangle(int32_t x0,
+                               int32_t y0,
+                               int32_t x1,
+                               int32_t y1,
+                               int32_t x2,
+                               int32_t y2,
+                               uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_fill_triangle(x0, y0, x1, y1, x2, y2, rgb);
+    }
+}
+
+void hal_display_draw_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_draw_circle(cx, cy, radius, rgb);
+    }
+}
+
+void hal_display_fill_circle(int32_t cx, int32_t cy, uint32_t radius, uint32_t rgb) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_fill_circle(cx, cy, radius, rgb);
+    }
+}
+
 void hal_display_present(void) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_present();
+    }
+}
+
+void hal_display_set_mouse_cursor_enabled(int enabled) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_set_mouse_cursor_enabled(enabled);
+    }
+}
+
+void hal_display_move_mouse_cursor(int32_t dx, int32_t dy) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_move_mouse_cursor(dx, dy);
+    }
+}
+
+int hal_display_mouse_cursor_cell(uint16_t *row_out, uint16_t *col_out) {
+    if (framebuffer_display_active()) {
+        return framebuffer_display_mouse_cursor_cell(row_out, col_out);
+    }
+    return 0;
 }
 
 void hal_timer_init(uint32_t pit_hz) {
@@ -146,6 +311,10 @@ void hal_timer_init(uint32_t pit_hz) {
 
 void hal_timer_notify_tick(void) {
     timer_ticks++;
+    if (framebuffer_display_active()) {
+        framebuffer_display_tick(timer_ticks);
+        framebuffer_display_service_pending();
+    }
 }
 
 uint32_t hal_timer_current_ticks(void) {
@@ -188,6 +357,42 @@ void hal_cpu_sti(void) {
 
 void hal_cpu_halt(void) {
     __asm__ volatile("hlt");
+}
+
+uint64_t hal_cpu_read_tsc(void) {
+    uint32_t lo;
+    uint32_t hi;
+
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+void hal_cpu_cpuid(uint32_t leaf,
+                   uint32_t subleaf,
+                   uint32_t *eax,
+                   uint32_t *ebx,
+                   uint32_t *ecx,
+                   uint32_t *edx) {
+    uint32_t a = 0;
+    uint32_t b = 0;
+    uint32_t c = 0;
+    uint32_t d = 0;
+
+    __asm__ volatile("cpuid"
+                     : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                     : "a"(leaf), "c"(subleaf));
+    if (eax != 0) {
+        *eax = a;
+    }
+    if (ebx != 0) {
+        *ebx = b;
+    }
+    if (ecx != 0) {
+        *ecx = c;
+    }
+    if (edx != 0) {
+        *edx = d;
+    }
 }
 
 void hal_cpu_wait_for_interrupt(void) {

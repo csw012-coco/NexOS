@@ -148,8 +148,8 @@ int cmd_ac97(void) {
     struct syscall_ac97_info info;
 
     if (ac97_query(&info) <= 0 || !info.present) {
-        write_err_str("ac97: controller not found\n");
-        return 1;
+        write_str("ac97: controller not found\n");
+        return 0;
     }
     write_str("AC97 controller\n");
     write_str("bdf ");
@@ -197,8 +197,8 @@ int cmd_hda(void) {
     struct syscall_hda_info info;
 
     if (hda_query(&info) <= 0 || !info.present) {
-        write_err_str("hda: controller not found\n");
-        return 1;
+        write_str("hda: controller not found\n");
+        return 0;
     }
     write_str("HD Audio controller\n");
     write_str("bdf ");
@@ -258,6 +258,7 @@ int cmd_hda(void) {
 int cmd_meminfo(void) {
     struct syscall_memmap_info meminfo;
     struct syscall_pmm_info pmminfo;
+    struct syscall_vm_info vminfo;
     struct syscall_boot_info bootinfo;
     uint64_t total = 0;
     uint64_t usable = 0;
@@ -305,6 +306,25 @@ int cmd_meminfo(void) {
     write_str(" dropped=");
     write_dec(pmminfo.dropped_pages);
     write_str("\n");
+    if (vm_query(&vminfo) > 0) {
+        write_str("vm mmap_regions=");
+        write_dec(vminfo.mmap_regions);
+        write_str("/");
+        write_dec(vminfo.mmap_region_capacity);
+        write_str(" mmap_pages=");
+        write_dec(vminfo.mmap_pages);
+        write_str(" shared_regions=");
+        write_dec(vminfo.shared_regions);
+        write_str(" shm_objects=");
+        write_dec(vminfo.shm_objects);
+        write_str("/");
+        write_dec(vminfo.shm_object_capacity);
+        write_str(" shm_pages=");
+        write_dec(vminfo.shm_mapped_pages);
+        write_str(" stack_pages=");
+        write_dec(vminfo.user_stack_pages);
+        write_str("\n");
+    }
     write_str("boot drive=0x");
     write_hex_u32(bootinfo.boot_drive);
     write_str(" part_lba=");
@@ -413,6 +433,46 @@ int cmd_cpuinfo(void) {
     write_str(" edx=");
     write_hex_u32(info.cpuid_leaf1_edx);
     write_str("\n");
+    return 0;
+}
+
+int cmd_drivers(int argc, char **argv) {
+    char buffer[256];
+    int fd;
+    int printed = 0;
+
+    if (argc > 1 &&
+        (streq_local(argv[1], "-h") || streq_local(argv[1], "--help"))) {
+        write_err_usage("drivers", "\n");
+        return 0;
+    }
+    if (argc != 1) {
+        write_err_usage("drivers", "\n");
+        return 1;
+    }
+    fd = open("/proc/drivers", O_RDONLY);
+    if (fd < 0) {
+        write_err_str("drivers: cannot open /proc/drivers\n");
+        return 1;
+    }
+    for (;;) {
+        ssize_t got = read(fd, buffer, sizeof(buffer));
+
+        if (got < 0) {
+            close(fd);
+            write_err_str("drivers: read failed\n");
+            return 1;
+        }
+        if (got == 0) {
+            break;
+        }
+        write_stdout(buffer, (uint32_t)got);
+        printed = 1;
+    }
+    close(fd);
+    if (!printed) {
+        write_str("(no drivers)\n");
+    }
     return 0;
 }
 

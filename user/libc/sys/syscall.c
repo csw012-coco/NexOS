@@ -34,6 +34,14 @@ int munmap(void *addr, size_t length) {
     return syscall4(SYS_MUNMAP, (uint64_t)(uintptr_t)addr, length, 0, 0) ? 0 : -1;
 }
 
+int mprotect(void *addr, size_t length, int prot) {
+    return syscall4(SYS_MPROTECT,
+                    (uint64_t)(uintptr_t)addr,
+                    length,
+                    (uint64_t)(uint32_t)prot,
+                    0) ? 0 : -1;
+}
+
 int shm_open(const char *name, size_t size, int flags) {
     return (int)syscall4(SYS_SHM_OPEN,
                          (uint64_t)(uintptr_t)name,
@@ -330,12 +338,20 @@ int pmm_query(struct syscall_pmm_info *info) {
     return sys_query(SYS_QUERY_PMM, 0, 0, info);
 }
 
+int vm_query(struct syscall_vm_info *info) {
+    return sys_query(SYS_QUERY_VM, 0, 0, info);
+}
+
 int block_read(uint32_t disk_index, uint64_t lba, struct syscall_block_read_info *info) {
     return (int)syscall4(SYS_BLOCK_READ, disk_index, lba, (uint64_t)(uintptr_t)info, 0);
 }
 
 int block_write(uint32_t disk_index, uint64_t lba, struct syscall_block_write_info *info) {
     return (int)syscall4(SYS_BLOCK_WRITE, disk_index, lba, (uint64_t)(uintptr_t)info, 0);
+}
+
+int block_flush(uint32_t disk_index) {
+    return (int)syscall4(SYS_BLOCK_FLUSH, disk_index, 0, 0, 0);
 }
 
 int program_query(uint32_t index, struct syscall_program_info *info) {
@@ -425,6 +441,10 @@ int rtc_query(struct syscall_rtc_info *info) {
 
 int tty_query(uint32_t fd, struct syscall_tty_info *info) {
     return sys_query(SYS_QUERY_TTY, fd, 0, info);
+}
+
+int fd_query(uint32_t fd, struct syscall_fd_info *info) {
+    return sys_query(SYS_QUERY_FD, fd, 0, info);
 }
 
 int profile_query(uint32_t index, uint32_t flags, struct syscall_profile_info *info) {

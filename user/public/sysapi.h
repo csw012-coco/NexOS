@@ -36,4 +36,6 @@ enum bootx_memmap_type {
  *   RTC:               arg0=0              arg1=0          buffer=struct syscall_rtc_info*
  *   TTY:               arg0=fd             arg1=0          buffer=struct syscall_tty_info*
  *   PROFILE:           arg0=index          arg1=flags      buffer=struct syscall_profile_info*
+ *   FD:                arg0=fd             arg1=0          buffer=struct syscall_fd_info*
+ *   FB:                arg0=0              arg1=0          buffer=struct syscall_framebuffer_info*
  */

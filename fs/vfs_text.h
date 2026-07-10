@@ -54,6 +54,28 @@ static inline uint32_t vfs_append_u32_text(char *dst, uint32_t pos, uint32_t dst
     return pos;
 }
 
+static inline uint32_t vfs_append_u64_text(char *dst, uint32_t pos, uint32_t dst_size, uint64_t value) {
+    char digits[20];
+    uint32_t count = 0;
+
+    do {
+        digits[count++] = (char)('0' + (uint32_t)(value % 10u));
+        value /= 10u;
+    } while (value != 0 && count < sizeof(digits));
+    if (dst == 0 || dst_size == 0) {
+        return pos;
+    }
+    if (pos >= dst_size) {
+        dst[dst_size - 1u] = '\0';
+        return dst_size - 1u;
+    }
+    while (count > 0 && pos < dst_size - 1u) {
+        dst[pos++] = digits[--count];
+    }
+    vfs_terminate_text(dst, pos, dst_size);
+    return pos;
+}
+
 static inline uint32_t vfs_append_i32_text(char *dst, uint32_t pos, uint32_t dst_size, int32_t value) {
     if (value < 0) {
         pos = vfs_append_text(dst, pos, dst_size, "-");

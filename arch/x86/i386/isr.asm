@@ -31,9 +31,30 @@ i386_isr3:
     push dword 3
     call i386_exception_handler
     add esp, 8
+    cmp eax, 1
+    ja .isr3_switch_context
+    test eax, eax
+    jnz .isr3_resume_kernel
     popad
     add esp, 4
     iretd
+.isr3_switch_context:
+    mov esp, eax
+    popad
+    iretd
+.isr3_resume_kernel:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov esp, [saved_kernel_esp]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    mov eax, 1
+    ret
 
 i386_isr14:
     cld
@@ -43,9 +64,30 @@ i386_isr14:
     push dword 14
     call i386_exception_handler
     add esp, 8
+    cmp eax, 1
+    ja .isr14_switch_context
+    test eax, eax
+    jnz .isr14_resume_kernel
     popad
     add esp, 4
     iretd
+.isr14_switch_context:
+    mov esp, eax
+    popad
+    iretd
+.isr14_resume_kernel:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov esp, [saved_kernel_esp]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    mov eax, 1
+    ret
 
 i386_trigger_page_fault:
 i386_page_fault_test_fault:

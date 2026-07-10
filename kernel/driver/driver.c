@@ -605,12 +605,18 @@ void driver_manager_init(void) {
         g_driver_records[i].init_result = 0;
         g_driver_records[i].source = "builtin";
         g_driver_records[i].path = "-";
+        g_driver_records[i].reason = "empty";
     }
     for (i = 0; i < DRIVER_FILE_MAX_COUNT; i++) {
         g_driver_files[i].name[0] = '\0';
         g_driver_files[i].path[0] = '\0';
         g_driver_files[i].size = 0;
+        g_driver_files[i].elf_class = 0;
+        g_driver_files[i].elf_data = 0;
+        g_driver_files[i].elf_type = 0;
+        g_driver_files[i].elf_machine = 0;
         g_driver_files[i].state = KERNEL_DRIVER_FILE_DISCOVERED;
+        g_driver_files[i].reason = "empty";
     }
     g_driver_count = 0;
     g_driver_file_count = 0;
@@ -637,6 +643,7 @@ static int driver_register_source_local(const struct kernel_driver *driver,
     g_driver_records[g_driver_count].init_result = 0;
     g_driver_records[g_driver_count].source = source != NULL ? source : "builtin";
     g_driver_records[g_driver_count].path = path != NULL ? path : "-";
+    g_driver_records[g_driver_count].reason = "registered";
     g_driver_count++;
     return 1;
 }
@@ -661,11 +668,14 @@ uint32_t driver_init_all(void) {
         g_driver_records[i].init_result = result;
         if (result > 0) {
             g_driver_records[i].state = KERNEL_DRIVER_STATE_ACTIVE;
+            g_driver_records[i].reason = "init-ok";
             active_count++;
         } else if (result == 0) {
             g_driver_records[i].state = KERNEL_DRIVER_STATE_INACTIVE;
+            g_driver_records[i].reason = "missing-hardware";
         } else {
             g_driver_records[i].state = KERNEL_DRIVER_STATE_FAILED;
+            g_driver_records[i].reason = "init-failed";
         }
     }
     return active_count;
@@ -687,11 +697,18 @@ uint32_t driver_count(void) {
 }
 
 static enum kernel_driver_file_state driver_probe_elf_local(struct vfs *vfs,
-                                                            struct vfs_node *node) {
+                                                            struct vfs_node *node,
+                                                            struct kernel_driver_file *file) {
     struct driver_elf64_header header;
     uint32_t offset = 0;
     int64_t read_bytes;
 
+    if (file != NULL) {
+        file->elf_class = 0;
+        file->elf_data = 0;
+        file->elf_type = 0;
+        file->elf_machine = 0;
+    }
     if (vfs == NULL || node == NULL || vfs_node_file_size(node) < DRIVER_ELF_HEADER_SIZE) {
         return KERNEL_DRIVER_FILE_ELF_INVALID;
     }
@@ -709,6 +726,12 @@ static enum kernel_driver_file_state driver_probe_elf_local(struct vfs *vfs,
         header.ident[2] != 'L' ||
         header.ident[3] != 'F') {
         return KERNEL_DRIVER_FILE_ELF_INVALID;
+    }
+    if (file != NULL) {
+        file->elf_class = header.ident[4];
+        file->elf_data = header.ident[5];
+        file->elf_type = header.type;
+        file->elf_machine = header.machine;
     }
     if (header.ident[4] != DRIVER_ELF_CLASS_64 ||
         header.ident[5] != DRIVER_ELF_DATA_LSB) {
@@ -1254,7 +1277,13 @@ uint32_t driver_discover_root(struct vfs *vfs, const char *directory) {
                                path,
                                sizeof(g_driver_files[g_driver_file_count].path));
         g_driver_files[g_driver_file_count].size = vfs_node_file_size(&file_node);
-        g_driver_files[g_driver_file_count].state = driver_probe_elf_local(vfs, &file_node);
+        g_driver_files[g_driver_file_count].state =
+            driver_probe_elf_local(vfs, &file_node, &g_driver_files[g_driver_file_count]);
+        if (g_driver_files[g_driver_file_count].state == KERNEL_DRIVER_FILE_ELF_RELOC) {
+            g_driver_files[g_driver_file_count].reason = "probe-ok";
+        } else {
+            g_driver_files[g_driver_file_count].reason = "unsupported-elf";
+        }
         kprint("driver: discovered %s size=%u state=%u\n",
                g_driver_files[g_driver_file_count].path,
                g_driver_files[g_driver_file_count].size,
@@ -1280,9 +1309,11 @@ uint32_t driver_load_all(struct vfs *vfs) {
         }
         if (driver_load_file_local(vfs, &g_driver_files[i])) {
             g_driver_files[i].state = KERNEL_DRIVER_FILE_LOADED;
+            g_driver_files[i].reason = "loaded";
             loaded++;
         } else {
             g_driver_files[i].state = KERNEL_DRIVER_FILE_LOAD_FAILED;
+            g_driver_files[i].reason = "load-failed";
             kprint("driver: load failed %s\n", g_driver_files[i].path);
         }
     }

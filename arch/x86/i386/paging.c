@@ -11,6 +11,7 @@ enum {
     PAGING_IDENTITY_TABLES = I386_PAGING_IDENTITY_LIMIT / (4u * 1024u * 1024u),
     PAGING_DYNAMIC_TABLES = 16u,
     PAGING_TEMPORARY_SLOTS = 4u,
+    PAGING_TEMPORARY_DIRECTORY_INDEX = I386_PAGING_DYNAMIC_BASE >> 22,
     PAGING_CR0_PG = 1u << 31
 };
 
@@ -273,6 +274,12 @@ uint32_t i386_paging_create_address_space(void) {
     for (uint32_t i = 0; i < PAGING_IDENTITY_TABLES; i++) {
         directory[i] = page_directory[i];
     }
+    for (uint32_t i = PAGING_IDENTITY_TABLES; i < PAGING_DIRECTORY_ENTRIES; i++) {
+        if (i != PAGING_TEMPORARY_DIRECTORY_INDEX &&
+            (page_directory[i] & PAGING_ENTRY_PRESENT) != 0u) {
+            directory[i] = page_directory[i] & ~PAGING_ENTRY_USER;
+        }
+    }
     i386_paging_temporary_unmap(0u);
     return root;
 }
@@ -376,6 +383,52 @@ int i386_paging_unmap_page_in(uint32_t root,
     if (physical_address != 0) {
         *physical_address = table_entry & PAGING_ENTRY_ADDRESS_MASK;
     }
+    i386_paging_temporary_unmap(1u);
+    i386_paging_temporary_unmap(0u);
+    return 1;
+}
+
+int i386_paging_protect_page_in(uint32_t root,
+                                uint32_t virtual_address,
+                                int writable,
+                                int user_accessible) {
+    uint32_t *directory;
+    uint32_t *table;
+    uint32_t directory_entry;
+    uint32_t *entry;
+
+    if (root == 0u ||
+        (virtual_address & (I386_PAGE_SIZE - 1u)) != 0u ||
+        i386_paging_root() != kernel_page_directory_root ||
+        !i386_paging_temporary_map(root, 0u, (void **)&directory)) {
+        return 0;
+    }
+    directory_entry = directory[virtual_address >> 22];
+    if ((directory_entry & PAGING_ENTRY_PRESENT) == 0u ||
+        !i386_paging_temporary_map(directory_entry & PAGING_ENTRY_ADDRESS_MASK,
+                                   1u,
+                                   (void **)&table)) {
+        i386_paging_temporary_unmap(0u);
+        return 0;
+    }
+    entry = &table[(virtual_address >> 12) & 0x3ffu];
+    if ((*entry & PAGING_ENTRY_PRESENT) == 0u) {
+        i386_paging_temporary_unmap(1u);
+        i386_paging_temporary_unmap(0u);
+        return 0;
+    }
+    if (writable) {
+        *entry |= PAGING_ENTRY_WRITABLE;
+    } else {
+        *entry &= ~PAGING_ENTRY_WRITABLE;
+    }
+    if (user_accessible) {
+        *entry |= PAGING_ENTRY_USER;
+        directory[virtual_address >> 22] |= PAGING_ENTRY_USER;
+    } else {
+        *entry &= ~PAGING_ENTRY_USER;
+    }
+    invalidate_page(virtual_address);
     i386_paging_temporary_unmap(1u);
     i386_paging_temporary_unmap(0u);
     return 1;

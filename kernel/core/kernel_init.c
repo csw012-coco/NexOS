@@ -120,6 +120,44 @@ static void kernel_copy_path_local(char *dst, const char *src, uint32_t dst_size
     dst[i] = '\0';
 }
 
+static int kernel_probe_init_path(struct vfs *vfs,
+                                  const char *path,
+                                  struct vfs_node *node_out,
+                                  uint32_t *kind_out,
+                                  uint32_t *size_out,
+                                  uint32_t *bytes_out,
+                                  uint8_t *buffer,
+                                  uint32_t buffer_size) {
+    struct vfs_node node;
+    uint32_t offset = 0;
+    uint32_t probe_size = 4u;
+    int64_t read_rc;
+
+    if (vfs == 0 || path == 0 || buffer == 0 || buffer_size == 0) {
+        return 0;
+    }
+    if (vfs_open(vfs, path, 0, &node) != 0 || node.kind != VFS_NODE_FILE) {
+        return 0;
+    }
+    if (node_out != 0) {
+        *node_out = node;
+    }
+    if (kind_out != 0) {
+        *kind_out = node.mount_kind;
+    }
+    if (size_out != 0) {
+        *size_out = vfs_node_file_size(&node);
+    }
+    if (probe_size > buffer_size) {
+        probe_size = buffer_size;
+    }
+    read_rc = vfs_read(vfs, &node, &offset, buffer, probe_size, VFS_READ_BLOCKING);
+    if (bytes_out != 0) {
+        *bytes_out = read_rc < 0 ? 0u : (uint32_t)read_rc;
+    }
+    return 1;
+}
+
 struct vfs *kernel_init_core_services(struct tty *shell_tty, volatile uint32_t *timer_ticks) {
     if (shell_tty == 0 || timer_ticks == 0) {
         return 0;
@@ -155,16 +193,22 @@ int kernel_try_run_init(struct vfs *vfs,
                         const struct bootx_boot_info *boot_info) {
     char init_path[NOS_PATH_BUFFER_SIZE];
     struct vfs_node init_probe_node;
-    uint32_t init_probe_offset = 0;
     uint32_t init_probe_bytes = 0;
     uint32_t init_probe_open_ok = 0;
     uint32_t init_probe_kind = 0;
     uint32_t init_probe_size = 0;
     uint8_t init_probe_buffer[64];
+    static const char *fallback_init_paths[] = {
+        "/INIT",
+        "INIT",
+        "/system/init",
+        "system/init"
+    };
     struct kernel_config config;
     const char *cmdline;
     int started;
     int ring3_smoke_ok;
+    uint32_t fallback_index;
 
     if (vfs == 0 || shell_tty == 0 || boot_trace_row == 0) {
         return 0;
@@ -184,7 +228,10 @@ int kernel_try_run_init(struct vfs *vfs,
         return 0;
     }
 
-    kernel_config_load(vfs, "SYSTEM/CONFIG/NOS.CFG", &config);
+    kernel_config_load(vfs, "/system/config/nex.scf", &config);
+    if (!config.loaded) {
+        kernel_config_load(vfs, "SYSTEM/CONFIG/NOS.CFG", &config);
+    }
     if (!config.loaded) {
         kernel_config_load(vfs, "NOS.CFG", &config);
     }
@@ -213,32 +260,59 @@ int kernel_try_run_init(struct vfs *vfs,
         kernel_boot_trace(shell_tty, boot_trace_row, "kernel: ring3 smoke skip");
     }
     kernel_boot_trace(shell_tty, boot_trace_row, init_path);
-    if (vfs_open(vfs, init_path, 0, &init_probe_node) == 0 && init_probe_node.kind == VFS_NODE_FILE) {
+    if (kernel_probe_init_path(vfs,
+                               init_path,
+                               &init_probe_node,
+                               &init_probe_kind,
+                               &init_probe_size,
+                               &init_probe_bytes,
+                               init_probe_buffer,
+                               sizeof(init_probe_buffer))) {
         init_probe_open_ok = 1;
-        init_probe_kind = init_probe_node.mount_kind;
-        init_probe_size = vfs_node_file_size(&init_probe_node);
+    } else {
+        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: init probe open fail");
+        for (fallback_index = 0;
+             fallback_index < sizeof(fallback_init_paths) / sizeof(fallback_init_paths[0]);
+             fallback_index++) {
+            if (kernel_probe_init_path(vfs,
+                                       fallback_init_paths[fallback_index],
+                                       &init_probe_node,
+                                       &init_probe_kind,
+                                       &init_probe_size,
+                                       &init_probe_bytes,
+                                       init_probe_buffer,
+                                       sizeof(init_probe_buffer))) {
+                kernel_copy_path_local(init_path,
+                                       fallback_init_paths[fallback_index],
+                                       sizeof(init_path));
+                init_probe_open_ok = 1;
+                kernel_boot_trace(shell_tty, boot_trace_row, "kernel: init fallback");
+                kernel_boot_trace(shell_tty, boot_trace_row, init_path);
+                break;
+            }
+        }
+    }
+    if (init_probe_open_ok) {
         kernel_boot_trace(shell_tty, boot_trace_row, "kernel: init probe ok");
         kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: init probe kind", init_probe_kind);
         kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: init probe fsize", init_probe_size);
-        init_probe_bytes = (uint32_t)vfs_read(vfs,
-                                              &init_probe_node,
-                                              &init_probe_offset,
-                                              init_probe_buffer,
-                                              4u,
-                                              VFS_READ_BLOCKING);
         kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: init probe read", init_probe_bytes);
-    } else {
-        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: init probe open fail");
     }
     tty_set_cursor(shell_tty,
                    *boot_trace_row < console_rows() ? *boot_trace_row : (uint16_t)(console_rows() - 1u),
                    0);
     kernel_boot_trace(shell_tty, boot_trace_row, "kernel: virtual tty shells");
+    kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty2 shell");
     if (!job_run_background_with_pid(vfs, "/cmd/ush --tty /dev/tty2", 0, PROCESS_EXEC_AUTO, 0)) {
         kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty2 shell fail");
+    } else {
+        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty2 shell ok");
     }
+    kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty3 shell");
     if (!job_run_background_with_pid(vfs, "/cmd/ush --tty /dev/tty3", 0, PROCESS_EXEC_AUTO, 0)) {
         kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty3 shell fail");
+    } else {
+        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty3 shell ok");
     }
     if (config.serial_shell) {
         kernel_boot_trace(shell_tty, boot_trace_row, "kernel: serial shell");

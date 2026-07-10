@@ -5,6 +5,7 @@
 #define NEX_QUERY_BOOT_INFO SYS_QUERY_BOOT_INFO
 #define NEX_QUERY_MEMMAP SYS_QUERY_MEMMAP
 #define NEX_QUERY_PMM SYS_QUERY_PMM
+#define NEX_QUERY_VM SYS_QUERY_VM
 #define NEX_QUERY_BLOCK SYS_QUERY_BLOCK
 #define NEX_QUERY_PART SYS_QUERY_PART
 #define NEX_QUERY_MOUNT SYS_QUERY_MOUNT
@@ -21,6 +22,7 @@
 #define NEX_QUERY_RTC SYS_QUERY_RTC
 #define NEX_QUERY_TTY SYS_QUERY_TTY
 #define NEX_QUERY_PROFILE SYS_QUERY_PROFILE
+#define NEX_QUERY_FD SYS_QUERY_FD
 
 int sys_query(uint32_t kind, uint64_t arg0, uint64_t arg1, void *buffer);
 int kmsg_query(uint32_t offset, struct syscall_kmsg_info *info);
@@ -29,6 +31,7 @@ int pci_query_at(uint32_t index, struct syscall_pci_info *info);
 int machine_info_query(struct syscall_machine_info *info);
 int rtc_query(struct syscall_rtc_info *info);
 int tty_query(uint32_t fd, struct syscall_tty_info *info);
+int fd_query(uint32_t fd, struct syscall_fd_info *info);
 int profile_query(uint32_t index, uint32_t flags, struct syscall_profile_info *info);
 void clear(void);
 uint32_t ticks(void);

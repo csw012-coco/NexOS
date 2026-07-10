@@ -147,8 +147,8 @@ static int xhci_enumerate_hub_port(struct xhci_enum_device *hub, uint8_t port) {
     if ((status & USB_HUB_PORT_CONNECTION) == 0u) {
         return 0;
     }
-    kprint("xhci: hub slot%u port%u connected status=%x change=%x\n",
-           (uint32_t)hub->slot_id, (uint32_t)port, (uint32_t)status, (uint32_t)change);
+    XHCI_HUB_TRACE("xhci: hub slot%u port%u connected status=%x change=%x\n",
+                   (uint32_t)hub->slot_id, (uint32_t)port, (uint32_t)status, (uint32_t)change);
     if (!xhci_hub_set_port_feature(hub, port, USB_HUB_FEATURE_PORT_RESET)) {
         kprint("xhci: hub slot%u port%u reset failed\n", (uint32_t)hub->slot_id, (uint32_t)port);
         return 0;
@@ -185,11 +185,11 @@ static int xhci_enumerate_hub_port(struct xhci_enum_device *hub, uint8_t port) {
     child->route_string = hub->route_string | ((uint32_t)port << (hub->route_depth * 4u));
     child->parent_slot_id = hub->slot_id;
     child->parent_port = port;
-    kprint("xhci: hub slot%u port%u route=%x speed=%u\n",
-           (uint32_t)hub->slot_id,
-           (uint32_t)port,
-           child->route_string,
-           (uint32_t)child->speed);
+    XHCI_HUB_TRACE("xhci: hub slot%u port%u route=%x speed=%u\n",
+                   (uint32_t)hub->slot_id,
+                   (uint32_t)port,
+                   child->route_string,
+                   (uint32_t)child->speed);
     return xhci_enumerate_device(child);
 }
 
@@ -222,12 +222,12 @@ void xhci_probe_hub(struct xhci_enum_device *dev, const uint8_t *cfg, uint16_t c
     if (pwr_ms < 100u) {
         pwr_ms = 100u;
     }
-    kprint("xhci: hub slot%u rootport=%u ports=%u pwr=%u desc=%x\n",
-           (uint32_t)dev->slot_id,
-           (uint32_t)dev->port,
-           (uint32_t)port_count,
-           pwr_ms,
-           (uint32_t)hub_desc[1]);
+    XHCI_HUB_TRACE("xhci: hub slot%u rootport=%u ports=%u pwr=%u desc=%x\n",
+                   (uint32_t)dev->slot_id,
+                   (uint32_t)dev->port,
+                   (uint32_t)port_count,
+                   pwr_ms,
+                   (uint32_t)hub_desc[1]);
     if (!xhci_update_hub_context(dev, port_count)) {
         kprint("xhci: hub slot%u context update failed\n", (uint32_t)dev->slot_id);
         return;
@@ -241,11 +241,11 @@ void xhci_probe_hub(struct xhci_enum_device *dev, const uint8_t *cfg, uint16_t c
         uint16_t change = 0u;
 
         if (xhci_hub_get_port_status(dev, port, &status, &change)) {
-            kprint("xhci: hub slot%u port%u status=%x change=%x\n",
-                   (uint32_t)dev->slot_id,
-                   (uint32_t)port,
-                   (uint32_t)status,
-                   (uint32_t)change);
+            XHCI_HUB_TRACE("xhci: hub slot%u port%u status=%x change=%x\n",
+                           (uint32_t)dev->slot_id,
+                           (uint32_t)port,
+                           (uint32_t)status,
+                           (uint32_t)change);
         }
         (void)xhci_enumerate_hub_port(dev, port);
     }
@@ -400,13 +400,13 @@ static int xhci_enumerate_root_port(uint32_t port, const char *reason) {
         return 0;
     }
     speed = (portsc >> 10) & 0x0fu;
-    kprint("xhci: %s root port%u connected speed=%u enabled=%u powered=%u portsc=%x\n",
-           reason,
-           port,
-           speed,
-           (uint32_t)((portsc & XHCI_PORTSC_PED) != 0u),
-           (uint32_t)((portsc & XHCI_PORTSC_PP) != 0u),
-           portsc);
+    XHCI_HUB_TRACE("xhci: %s root port%u connected speed=%u enabled=%u powered=%u portsc=%x\n",
+                   reason,
+                   port,
+                   speed,
+                   (uint32_t)((portsc & XHCI_PORTSC_PED) != 0u),
+                   (uint32_t)((portsc & XHCI_PORTSC_PP) != 0u),
+                   portsc);
     dev = xhci_alloc_device_record();
     if (dev == 0) {
         kprint("xhci: no enum slots left\n");
@@ -437,7 +437,7 @@ static void xhci_scan_root_hotplug_ports(void) {
         xhci_clear_root_port_changes(port, portsc);
         if ((portsc & XHCI_PORTSC_CCS) == 0u) {
             if (dev != 0 || g_xhci.root_port_slots[port] != 0u) {
-                kprint("xhci: hotplug root port%u disconnected portsc=%x\n", port, portsc);
+                XHCI_HUB_TRACE("xhci: hotplug root port%u disconnected portsc=%x\n", port, portsc);
                 xhci_mark_device_detached(dev);
                 g_xhci.root_port_slots[port] = 0u;
             }
@@ -466,11 +466,11 @@ static void xhci_scan_hub_hotplug(struct xhci_enum_device *hub) {
         xhci_hub_clear_changes(hub, port, change);
         if ((status & USB_HUB_PORT_CONNECTION) == 0u) {
             if (child != 0) {
-                kprint("xhci: hotplug hub slot%u port%u disconnected status=%x change=%x\n",
-                       (uint32_t)hub->slot_id,
-                       (uint32_t)port,
-                       (uint32_t)status,
-                       (uint32_t)change);
+                XHCI_HUB_TRACE("xhci: hotplug hub slot%u port%u disconnected status=%x change=%x\n",
+                               (uint32_t)hub->slot_id,
+                               (uint32_t)port,
+                               (uint32_t)status,
+                               (uint32_t)change);
                 xhci_mark_device_detached(child);
             }
             continue;
@@ -478,11 +478,11 @@ static void xhci_scan_hub_hotplug(struct xhci_enum_device *hub) {
         if (child != 0) {
             continue;
         }
-        kprint("xhci: hotplug hub slot%u port%u connected status=%x change=%x\n",
-               (uint32_t)hub->slot_id,
-               (uint32_t)port,
-               (uint32_t)status,
-               (uint32_t)change);
+        XHCI_HUB_TRACE("xhci: hotplug hub slot%u port%u connected status=%x change=%x\n",
+                       (uint32_t)hub->slot_id,
+                       (uint32_t)port,
+                       (uint32_t)status,
+                       (uint32_t)change);
         (void)xhci_enumerate_hub_port(hub, port);
     }
 }
@@ -510,6 +510,20 @@ void xhci_hotplug_poll(void) {
         return;
     }
     g_xhci_last_hotplug_tick = tick;
+    for (uint32_t index = 0u; index < g_xhci_controller_count && index < XHCI_MAX_CONTROLLERS; index++) {
+        if (!xhci_select_controller((uint8_t)index)) {
+            continue;
+        }
+        xhci_scan_root_hotplug_ports();
+        xhci_scan_hub_hotplug_ports();
+        xhci_save_active_controller();
+    }
+}
+
+void xhci_hotplug_scan_now(void) {
+    if (g_xhci_controller_count == 0u) {
+        return;
+    }
     for (uint32_t index = 0u; index < g_xhci_controller_count && index < XHCI_MAX_CONTROLLERS; index++) {
         if (!xhci_select_controller((uint8_t)index)) {
             continue;

@@ -27,6 +27,10 @@ int i386_paging_map_page_in(uint32_t root,
 int i386_paging_unmap_page_in(uint32_t root,
                               uint32_t virtual_address,
                               uint32_t *physical_address);
+int i386_paging_protect_page_in(uint32_t root,
+                                uint32_t virtual_address,
+                                int writable,
+                                int user_accessible);
 int i386_paging_translate_in(uint32_t root,
                              uint32_t virtual_address,
                              uint32_t *physical_address);

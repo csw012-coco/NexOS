@@ -16,6 +16,14 @@
 # Local reference material
 /a/
 
+# User-provided game data
+/assets/doom/*.WAD
+/assets/doom/*.wad
+
+# User-provided audio samples
+/assets/audio/*.wav
+/assets/audio/*.WAV
+
 # Editor and OS noise
 .codex
 *~

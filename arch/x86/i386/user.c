@@ -15,6 +15,10 @@ enum {
     ELF_MAX_PROGRAM_HEADERS = 16u
 };
 
+enum {
+    I386_USER_LIMIT = 0xc0000000u
+};
+
 struct elf32_header {
     uint8_t ident[ELF_IDENT_SIZE];
     uint16_t type;
@@ -43,6 +47,107 @@ struct elf32_program_header {
     uint32_t align;
 } __attribute__((packed));
 
+static int add_u32_overflows(uint32_t a, uint32_t b, uint32_t *out) {
+    uint32_t value = a + b;
+
+    if (value < a) {
+        return 1;
+    }
+    if (out != 0) {
+        *out = value;
+    }
+    return 0;
+}
+
+static int ranges_overlap(uint32_t a_start,
+                          uint32_t a_end,
+                          uint32_t b_start,
+                          uint32_t b_end) {
+    return a_start < b_end && b_start < a_end;
+}
+
+static int validate_elf32_image(const struct early_vfs_node *node,
+                                const struct elf32_header *header,
+                                const struct elf32_program_header *programs) {
+    uint32_t file_size;
+    int has_load = 0;
+    int entry_in_load = 0;
+
+    if (node == 0 || header == 0 || programs == 0 ||
+        header->phnum == 0u ||
+        header->phnum > ELF_MAX_PROGRAM_HEADERS ||
+        header->entry < I386_PAGING_IDENTITY_LIMIT ||
+        header->entry >= I386_USER_LIMIT) {
+        return 0;
+    }
+
+    file_size = early_vfs_file_size(node);
+    for (uint32_t i = 0; i < header->phnum; i++) {
+        const struct elf32_program_header *program = &programs[i];
+        uint32_t file_end;
+        uint32_t mem_end;
+        uint32_t page_start;
+        uint32_t page_end;
+
+        if (program->type != ELF_PROGRAM_LOAD) {
+            continue;
+        }
+        has_load = 1;
+        if (program->memsz == 0u ||
+            program->memsz < program->filesz ||
+            program->vaddr < I386_PAGING_IDENTITY_LIMIT ||
+            program->vaddr >= I386_USER_LIMIT ||
+            add_u32_overflows(program->offset, program->filesz, &file_end) ||
+            add_u32_overflows(program->vaddr, program->memsz, &mem_end) ||
+            file_end > file_size ||
+            mem_end > I386_USER_LIMIT ||
+            (program->vaddr & (I386_PAGE_SIZE - 1u)) !=
+                (program->offset & (I386_PAGE_SIZE - 1u))) {
+            return 0;
+        }
+        page_start = program->vaddr & ~(I386_PAGE_SIZE - 1u);
+        if (add_u32_overflows(mem_end,
+                              I386_PAGE_SIZE - 1u,
+                              &page_end)) {
+            return 0;
+        }
+        page_end &= ~(I386_PAGE_SIZE - 1u);
+        if (page_end > I386_USER_LIMIT) {
+            return 0;
+        }
+        if (header->entry >= program->vaddr && header->entry < mem_end) {
+            entry_in_load = 1;
+        }
+        for (uint32_t j = i + 1u; j < header->phnum; j++) {
+            const struct elf32_program_header *other = &programs[j];
+            uint32_t other_mem_end;
+            uint32_t other_page_start;
+            uint32_t other_page_end;
+
+            if (other->type != ELF_PROGRAM_LOAD) {
+                continue;
+            }
+            if (add_u32_overflows(other->vaddr,
+                                  other->memsz,
+                                  &other_mem_end) ||
+                add_u32_overflows(other_mem_end,
+                                  I386_PAGE_SIZE - 1u,
+                                  &other_page_end)) {
+                return 0;
+            }
+            other_page_start = other->vaddr & ~(I386_PAGE_SIZE - 1u);
+            other_page_end &= ~(I386_PAGE_SIZE - 1u);
+            if (ranges_overlap(page_start,
+                               page_end,
+                               other_page_start,
+                               other_page_end)) {
+                return 0;
+            }
+        }
+    }
+    return has_load && entry_in_load;
+}
+
 static int map_user_range(uint32_t start, uint32_t end, int writable) {
     uint32_t page = start & ~(I386_PAGE_SIZE - 1u);
     uint32_t limit = (end + I386_PAGE_SIZE - 1u) & ~(I386_PAGE_SIZE - 1u);
@@ -66,7 +171,9 @@ static int map_user_range(uint32_t start, uint32_t end, int writable) {
 
 int i386_user_map_stack(uint32_t stack_top) {
     if ((stack_top & (I386_PAGE_SIZE - 1u)) != 0u ||
-        stack_top <= I386_PAGING_IDENTITY_LIMIT) {
+        stack_top <= I386_PAGING_IDENTITY_LIMIT ||
+        stack_top < I386_USER_STACK_SIZE ||
+        stack_top - I386_USER_STACK_SIZE < I386_PAGING_IDENTITY_LIMIT) {
         return 0;
     }
     return map_user_range(stack_top - I386_PAGE_SIZE, stack_top, 1);
@@ -217,6 +324,10 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
         return 0;
     }
 
+    if (!validate_elf32_image(&node, &header, programs)) {
+        return 0;
+    }
+
     root = i386_paging_create_address_space();
     if (root == 0u) {
         return 0;
@@ -230,14 +341,6 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
         if (program->type != ELF_PROGRAM_LOAD) {
             continue;
         }
-        if (program->memsz < program->filesz ||
-            program->vaddr < I386_PAGING_IDENTITY_LIMIT ||
-            program->vaddr + program->memsz < program->vaddr ||
-            program->offset + program->filesz < program->offset ||
-            program->offset + program->filesz > early_vfs_file_size(&node)) {
-            return 0;
-        }
-
         page = program->vaddr & ~(I386_PAGE_SIZE - 1u);
         limit = (program->vaddr + program->memsz + I386_PAGE_SIZE - 1u) &
                 ~(I386_PAGE_SIZE - 1u);
@@ -281,14 +384,13 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
     if (!loaded) {
         return 0;
     }
-    {
+    for (uint32_t stack_page = stack_top - I386_PAGE_SIZE;
+         stack_page < stack_top;
+         stack_page += I386_PAGE_SIZE) {
         uint32_t stack_frame;
         uint8_t *temporary;
 
-        if (!map_image_page(root,
-                            stack_top - I386_PAGE_SIZE,
-                            1,
-                            &stack_frame) ||
+        if (!map_image_page(root, stack_page, 1, &stack_frame) ||
             !i386_paging_temporary_map(stack_frame, 2u, (void **)&temporary)) {
             return 0;
         }
@@ -361,18 +463,17 @@ int i386_user_load_elf(struct early_vfs *vfs,
         return 0;
     }
 
+    if (!validate_elf32_image(&node, &header, programs)) {
+        return 0;
+    }
+
     for (uint32_t i = 0; i < header.phnum; i++) {
         const struct elf32_program_header *program = &programs[i];
 
         if (program->type != ELF_PROGRAM_LOAD) {
             continue;
         }
-        if (program->memsz < program->filesz ||
-            program->vaddr < I386_PAGING_IDENTITY_LIMIT ||
-            program->vaddr + program->memsz < program->vaddr ||
-            program->offset + program->filesz < program->offset ||
-            program->offset + program->filesz > early_vfs_file_size(&node) ||
-            !map_user_range(program->vaddr,
+        if (!map_user_range(program->vaddr,
                             program->vaddr + program->memsz,
                             (program->flags & ELF_PROGRAM_WRITABLE) != 0)) {
             return 0;

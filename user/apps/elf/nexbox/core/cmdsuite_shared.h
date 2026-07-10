@@ -1,5 +1,18 @@
 #pragma once
 
+#ifdef __i386__
+#include "user/libc32/include/fcntl.h"
+#include "user/libc32/include/file.h"
+#include "user/libc32/include/stdio.h"
+#include "user/libc32/include/stdlib.h"
+#include "user/libc32/include/string.h"
+#include "user/libc32/include/strings.h"
+#include "user/libc32/include/nexos/audio.h"
+#include "user/libc32/include/nexos/fs.h"
+#include "user/libc32/include/nexos/net.h"
+#include "user/libc32/include/nexos/process.h"
+#include "user/libc32/include/nexos/system.h"
+#else
 #include "user/libc/include/fcntl.h"
 #include "user/libc/include/file.h"
 #include "user/libc/include/stdio.h"
@@ -13,6 +26,7 @@
 #include "user/libc/include/nexos/process.h"
 #include "user/libc/include/nexos/string.h"
 #include "user/libc/include/nexos/system.h"
+#endif
 
 #define CMD_PATH_MAX 64u
 #define CMD_PAGER_LINES 20u
@@ -89,6 +103,8 @@ int cmd_tree(int argc, char **argv);
 int cmd_file(int argc, char **argv);
 int cmd_parts(int argc, char **argv);
 int cmd_fdisk(int argc, char **argv);
+int cmd_dd(int argc, char **argv);
+int cmd_mkfs(int argc, char **argv);
 int cmd_blk(void);
 int cmd_df(int argc, char **argv);
 int cmd_mounts(void);
@@ -124,7 +140,9 @@ int cmd_sysinfo(int argc, char **argv);
 int cmd_meminfo(void);
 int cmd_minfo(void);
 int cmd_uname(int argc, char **argv);
+int cmd_fb(int argc, char **argv);
 int cmd_cpuinfo(void);
+int cmd_drivers(int argc, char **argv);
 int cmd_config(int argc, char **argv);
 int cmd_session(int argc, char **argv);
 int cmd_service(int argc, char **argv);

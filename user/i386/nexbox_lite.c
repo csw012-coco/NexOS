@@ -51,11 +51,92 @@ static int write_all(int fd, const void *buffer, size_t size) {
 
 static int command_help(void) {
     puts("NexBox-lite i386 multicall userland");
-    puts("applets: help echo pwd cd ls cat hexdump touch write append pipe-test sh shell-test");
+    puts("applets: help echo pwd cd ls cat hexdump touch write append");
+    puts("         blk parts mounts mount umount df pipe-test sh shell-test");
     puts("usage: nexbox32 <applet> [args...]");
     puts("cd chaining: nexbox32 cd <dir> <applet> [args...]");
     puts("stdin: cat - reads one entered line");
     return 0;
+}
+
+static const char *mount_kind_name(uint32_t kind) {
+    if (kind == SYS_MOUNT_INFO_FAT32) {
+        return "fat32";
+    }
+    if (kind == SYS_MOUNT_INFO_NXFS) {
+        return "nxfs";
+    }
+    if (kind == SYS_MOUNT_INFO_DEVFS) {
+        return "devfs";
+    }
+    if (kind == SYS_MOUNT_INFO_PROCFS) {
+        return "procfs";
+    }
+    if (kind == SYS_MOUNT_INFO_EVENTFS) {
+        return "eventfs";
+    }
+    return "none";
+}
+
+static uint32_t mount_kind_arg(const char *text) {
+    if (text == 0 || strcmp(text, "auto") == 0) {
+        return SYS_MOUNT_AUTO;
+    }
+    if (strcmp(text, "fat32") == 0 || strcmp(text, "fat") == 0) {
+        return SYS_MOUNT_FAT32;
+    }
+    if (strcmp(text, "nxfs") == 0) {
+        return SYS_MOUNT_NXFS;
+    }
+    return UINT32_MAX;
+}
+
+static const char *mount_error_message(int rc) {
+    int code = -rc;
+
+    if (rc == 0) {
+        return "ok";
+    }
+    if (code == SYS_MOUNT_ERR_BAD_ARGS) {
+        return "bad arguments";
+    }
+    if (code == SYS_MOUNT_ERR_INVALID_SOURCE) {
+        return "invalid source";
+    }
+    if (code == SYS_MOUNT_ERR_INVALID_TARGET) {
+        return "invalid target";
+    }
+    if (code == SYS_MOUNT_ERR_RESERVED_TARGET) {
+        return "reserved target";
+    }
+    if (code == SYS_MOUNT_ERR_TARGET_EXISTS) {
+        return "target already mounted";
+    }
+    if (code == SYS_MOUNT_ERR_NO_SLOTS) {
+        return "no mount slots";
+    }
+    if (code == SYS_MOUNT_ERR_DISK_NOT_FOUND) {
+        return "disk not found";
+    }
+    if (code == SYS_MOUNT_ERR_PARTITION_NOT_FOUND) {
+        return "partition not found";
+    }
+    if (code == SYS_MOUNT_ERR_FS_DETECT) {
+        return "filesystem detect failed";
+    }
+    if (code == SYS_MOUNT_ERR_UNSUPPORTED_KIND) {
+        return "unsupported filesystem";
+    }
+    if (code == SYS_MOUNT_ERR_FS_MOUNT) {
+        return "filesystem mount failed";
+    }
+    if (code == SYS_MOUNT_ERR_TARGET_BUSY) {
+        return "target busy";
+    }
+    if (code == SYS_MOUNT_ERR_TARGET_NOT_FOUND) {
+        return "target not mounted";
+    }
+    return "mount error";
 }
 
 static int shell_tokenize(int argc,
@@ -208,7 +289,7 @@ static pid_t shell_spawn_stage(const struct shell_stage *stage,
         close(opened_output);
         opened_output = -1;
     }
-    child = spawn(command);
+    child = spawn_ex(command, SYS_SPAWN_ELF, 0u);
 
 restore:
     (void)dup2(SHELL_SAVE_STDIN, STDIN_FILENO);
@@ -281,7 +362,11 @@ static int command_shell(int argc, char **argv) {
     }
     if (pipe_index < 0) {
         left_child = shell_spawn_stage(&left, -1, -1);
-        return left_child > 0 ? waitpid(left_child) : 1;
+        if (left_child <= 0) {
+            fprintf(stderr, "sh: failed to start %s\n", left.words[0]);
+            return 1;
+        }
+        return waitpid(left_child);
     }
     if (left.output_path != 0 || right.input_path != 0) {
         fprintf(stderr, "sh: pipe conflicts with explicit redirection\n");
@@ -295,12 +380,14 @@ static int command_shell(int argc, char **argv) {
     close(pair[1]);
     pair[1] = -1;
     if (left_child <= 0) {
+        fprintf(stderr, "sh: failed to start %s\n", left.words[0]);
         close(pair[0]);
         return 1;
     }
     right_child = shell_spawn_stage(&right, pair[0], -1);
     close(pair[0]);
     if (right_child <= 0) {
+        fprintf(stderr, "sh: failed to start %s\n", right.words[0]);
         (void)waitpid(left_child);
         return 1;
     }
@@ -396,7 +483,9 @@ static int command_pipe_test(void) {
         return 1;
     }
     {
-        pid_t child = spawn("/BOOT/NEXBOX32.ELF echo inherited fd");
+        pid_t child = spawn_ex("/BOOT/NEXBOX32.ELF echo inherited fd",
+                               SYS_SPAWN_ELF,
+                               0u);
 
         if (child <= 0) {
             return 1;
@@ -683,6 +772,150 @@ static int command_hexdump(int argc, char **argv) {
     return 0;
 }
 
+static int command_blk(void) {
+    struct syscall_block_info info;
+
+    puts("disk   blocks     blksz parts rw name");
+    for (uint32_t index = 0u; block_query(index, &info) > 0; index++) {
+        printf("disk%u  %llu  %u   %u     %u  %s\n",
+               info.index,
+               (unsigned long long)info.block_count,
+               info.block_size,
+               info.partition_count,
+               info.writable,
+               info.name);
+    }
+    return 0;
+}
+
+static int command_parts(int argc, char **argv) {
+    struct syscall_partition_info info;
+    uint32_t disk = 0u;
+    char *end = 0;
+
+    if (argc > 2) {
+        fprintf(stderr, "parts: usage: parts [disk]\n");
+        return 2;
+    }
+    if (argc == 2) {
+        disk = (uint32_t)strtoul(argv[1], &end, 10);
+        if (end == argv[1] || *end != '\0') {
+            fprintf(stderr, "parts: invalid disk index\n");
+            return 2;
+        }
+    }
+    puts("disk part boot type start_lba sectors");
+    for (uint32_t slot = 0u; part_query(disk, slot, &info) > 0; slot++) {
+        printf("%u    %u    %u    %02x   %llu      %llu\n",
+               info.disk_index,
+               info.part_index + 1u,
+               info.bootable,
+               info.type,
+               (unsigned long long)info.start_lba,
+               (unsigned long long)info.sector_count);
+    }
+    return 0;
+}
+
+static int command_mounts(void) {
+    struct syscall_mount_info info;
+
+    puts("target        type   source       blocks/free");
+    for (uint32_t index = 0u; mount_query(index, &info) > 0; index++) {
+        printf("/%-11s %-6s ",
+               info.target,
+               mount_kind_name(info.kind));
+        if (info.source_known) {
+            if (info.part_index == 0xffffffffu) {
+                printf("disk%u      ", info.disk_index);
+            } else {
+                printf("disk%up%u    ", info.disk_index, info.part_index + 1u);
+            }
+        } else {
+            printf("-           ");
+        }
+        if (info.space_known) {
+            printf("%llu/%llu\n",
+                   (unsigned long long)info.total_blocks,
+                   (unsigned long long)info.free_blocks);
+        } else {
+            puts("-");
+        }
+    }
+    return 0;
+}
+
+static int command_mount(int argc, char **argv) {
+    uint32_t kind;
+    int rc;
+
+    if (argc == 1) {
+        return command_mounts();
+    }
+    if (argc == 3) {
+        kind = SYS_MOUNT_AUTO;
+        rc = mount(argv[1], argv[2], kind);
+    } else if (argc == 4) {
+        kind = mount_kind_arg(argv[1]);
+        if (kind == UINT32_MAX) {
+            fprintf(stderr, "mount: unknown filesystem: %s\n", argv[1]);
+            return 2;
+        }
+        rc = mount(argv[2], argv[3], kind);
+    } else {
+        fprintf(stderr, "mount: usage: mount [auto|fat32|nxfs] <source> <target>\n");
+        return 2;
+    }
+    if (rc != 0) {
+        fprintf(stderr, "mount: %s\n", mount_error_message(rc));
+        return 1;
+    }
+    return 0;
+}
+
+static int command_umount(int argc, char **argv) {
+    int rc;
+
+    if (argc != 2) {
+        fprintf(stderr, "umount: usage: umount <target>\n");
+        return 2;
+    }
+    rc = umount(argv[1]);
+    if (rc != 0) {
+        fprintf(stderr, "umount: %s\n", mount_error_message(rc));
+        return 1;
+    }
+    return 0;
+}
+
+static int command_df(int argc, char **argv) {
+    struct syscall_mount_info info;
+    const char *target = argc > 1 ? argv[1] : 0;
+
+    if (argc > 2) {
+        fprintf(stderr, "df: usage: df [target]\n");
+        return 2;
+    }
+    puts("target        type   blksz total free");
+    for (uint32_t index = 0u; mount_query(index, &info) > 0; index++) {
+        char full_target[NEXBOX_PATH_SIZE];
+
+        snprintf(full_target, sizeof(full_target), "/%s", info.target);
+        if (target != 0 &&
+            strcmp(target, info.target) != 0 &&
+            strcmp(target, full_target) != 0) {
+            continue;
+        }
+        printf("/%-11s %-6s %u    %llu %llu\n",
+               info.target,
+               mount_kind_name(info.kind),
+               info.block_size,
+               (unsigned long long)info.total_blocks,
+               (unsigned long long)info.free_blocks);
+    }
+    return 0;
+}
+
 static int dispatch(int argc, char **argv) {
     const char *command;
 
@@ -728,6 +961,24 @@ static int dispatch(int argc, char **argv) {
     }
     if (strcmp(command, "hexdump") == 0) {
         return command_hexdump(argc, argv);
+    }
+    if (strcmp(command, "blk") == 0) {
+        return command_blk();
+    }
+    if (strcmp(command, "parts") == 0) {
+        return command_parts(argc, argv);
+    }
+    if (strcmp(command, "mounts") == 0) {
+        return command_mounts();
+    }
+    if (strcmp(command, "mount") == 0) {
+        return command_mount(argc, argv);
+    }
+    if (strcmp(command, "umount") == 0) {
+        return command_umount(argc, argv);
+    }
+    if (strcmp(command, "df") == 0) {
+        return command_df(argc, argv);
     }
     if (strcmp(command, "touch") == 0) {
         return command_touch(argc, argv);

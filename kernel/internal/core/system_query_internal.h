@@ -24,3 +24,4 @@ int kernel_query_block_info(uint32_t index, struct syscall_block_info *info);
 int kernel_query_part_info(uint32_t disk_index, uint32_t slot, struct syscall_partition_info *info);
 int kernel_block_read(uint32_t disk_index, uint64_t lba, struct syscall_block_read_info *info);
 int kernel_block_write(uint32_t disk_index, uint64_t lba, struct syscall_block_write_info *info);
+int kernel_block_flush(uint32_t disk_index);

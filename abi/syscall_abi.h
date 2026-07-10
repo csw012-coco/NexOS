@@ -57,6 +57,7 @@ enum syscall_number {
     SYS_FORK = 32,
     SYS_MMAP = 33,
     SYS_MUNMAP = 34,
+    SYS_MPROTECT = 71,
     SYS_SHM_OPEN = 35,
     SYS_SHM_UNLINK = 36,
     SYS_MQ_OPEN = 37,
@@ -74,6 +75,7 @@ enum syscall_number {
     SYS_SWITCH_ROOT = 50,
     SYS_BLOCK_READ = 51,
     SYS_BLOCK_WRITE = 52,
+    SYS_BLOCK_FLUSH = 53,
 
     SYS_AUDIO_TONE = 60,
     SYS_AUDIO_PLAY = 61,
@@ -86,7 +88,7 @@ enum syscall_number {
     SYS_GFX = 67,
     SYS_GUI_EVENT = 68,
     SYS_CLIPBOARD = 69,
-    SYS_MAX = 71
+    SYS_MAX = 72
 };
 
 enum syscall_mmap_prot {
@@ -157,6 +159,22 @@ enum syscall_fd {
     SYS_FD_STDIN = 0,
     SYS_FD_STDOUT = 1,
     SYS_FD_STDERR = 2
+};
+
+enum syscall_fd_kind {
+    SYS_FD_KIND_NONE = 0,
+    SYS_FD_KIND_TTY_STDIN = 1,
+    SYS_FD_KIND_TTY_STDOUT = 2,
+    SYS_FD_KIND_TTY_STDERR = 3,
+    SYS_FD_KIND_VFS = 4,
+    SYS_FD_KIND_PIPE_READ = 5,
+    SYS_FD_KIND_PIPE_WRITE = 6
+};
+
+enum syscall_fd_flags {
+    SYS_FD_FLAG_CLOSE_ON_SPAWN = 1u,
+    SYS_FD_FLAG_READ = 2u,
+    SYS_FD_FLAG_WRITE = 4u
 };
 
 enum syscall_mount_kind {
@@ -250,7 +268,10 @@ enum syscall_query_kind {
     SYS_QUERY_RTC = 17,
     SYS_QUERY_HDA = 18,
     SYS_QUERY_TTY = 19,
-    SYS_QUERY_PROFILE = 20
+    SYS_QUERY_PROFILE = 20,
+    SYS_QUERY_FD = 21,
+    SYS_QUERY_FB = 22,
+    SYS_QUERY_VM = 23
 };
 
 enum {
@@ -565,6 +586,18 @@ struct syscall_mount_info {
     uint64_t free_blocks;
 };
 
+struct syscall_fd_info {
+    uint32_t fd;
+    uint32_t kind;
+    uint32_t flags;
+    uint32_t offset;
+    uint32_t node_kind;
+    uint32_t mount_kind;
+    uint32_t readable;
+    uint32_t writable;
+    char path[NOS_PATH_BUFFER_SIZE];
+};
+
 struct syscall_boot_info {
     uint32_t boot_drive;
     uint32_t partition_lba;
@@ -584,6 +617,38 @@ struct syscall_pmm_info {
     uint32_t free_pages;
     uint32_t used_pages;
     uint32_t dropped_pages;
+};
+
+struct syscall_vm_info {
+    uint32_t mmap_regions;
+    uint32_t mmap_region_capacity;
+    uint32_t mmap_pages;
+    uint32_t mmap_page_capacity;
+    uint32_t shared_regions;
+    uint32_t shm_objects;
+    uint32_t shm_object_capacity;
+    uint32_t shm_mapped_pages;
+    uint32_t user_stack_pages;
+    uint32_t reserved;
+};
+
+struct syscall_framebuffer_info {
+    uint32_t present;
+    uint32_t type;
+    uint64_t addr;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t bpp;
+    uint32_t red_mask_size;
+    uint32_t red_mask_shift;
+    uint32_t green_mask_size;
+    uint32_t green_mask_shift;
+    uint32_t blue_mask_size;
+    uint32_t blue_mask_shift;
+    uint32_t text_columns;
+    uint32_t text_rows;
+    uint32_t text_color;
 };
 
 struct syscall_kmsg_info {

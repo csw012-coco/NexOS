@@ -30,12 +30,12 @@ static int xhci_parse_hid_keyboard_config(struct xhci_enum_device *dev,
             hid_protocol = cfg[offset + 7u];
             in_hid = cfg[offset + 5u] == USB_CLASS_HID;
             if (in_hid) {
-                kprint("xhci: slot%u HID iface=%u subclass=%u proto=%u eps=%u\n",
-                       (uint32_t)dev->slot_id,
-                       (uint32_t)hid_iface,
-                       (uint32_t)hid_subclass,
-                       (uint32_t)hid_protocol,
-                       (uint32_t)hid_endpoint_count);
+                XHCI_HID_TRACE("xhci: slot%u HID iface=%u subclass=%u proto=%u eps=%u\n",
+                               (uint32_t)dev->slot_id,
+                               (uint32_t)hid_iface,
+                               (uint32_t)hid_subclass,
+                               (uint32_t)hid_protocol,
+                               (uint32_t)hid_endpoint_count);
             }
         } else if (type == 5u && len >= 7u && in_hid) {
             uint8_t ep = cfg[offset + 2u];
@@ -46,13 +46,13 @@ static int xhci_parse_hid_keyboard_config(struct xhci_enum_device *dev,
             uint8_t is_boot_keyboard = hid_subclass == USB_SUBCLASS_BOOT &&
                                        hid_protocol == USB_PROTO_KEYBOARD;
 
-            kprint("xhci: slot%u HID iface=%u ep=%x attr=%u mps=%u interval=%u\n",
-                   (uint32_t)dev->slot_id,
-                   (uint32_t)hid_iface,
-                   (uint32_t)ep,
-                   (uint32_t)attr,
-                   (uint32_t)mps,
-                   (uint32_t)interval);
+            XHCI_HID_TRACE("xhci: slot%u HID iface=%u ep=%x attr=%u mps=%u interval=%u\n",
+                           (uint32_t)dev->slot_id,
+                           (uint32_t)hid_iface,
+                           (uint32_t)ep,
+                           (uint32_t)attr,
+                           (uint32_t)mps,
+                           (uint32_t)interval);
 
             if (hid_protocol == USB_PROTO_KEYBOARD &&
                 attr == 3u && (ep & 0x80u) != 0u && ep_num != 0u && mps != 0u &&
@@ -628,16 +628,16 @@ int xhci_probe_hid_keyboard(struct xhci_enum_device *dev, const uint8_t *cfg, ui
     }
     kbd->dev = dev;
     if (kbd->boot_protocol && !xhci_hid_set_protocol(kbd, 0u)) {
-        kprint("xhci: slot%u HID set protocol failed\n", (uint32_t)dev->slot_id);
+        XHCI_HID_TRACE("xhci: slot%u HID set protocol failed\n", (uint32_t)dev->slot_id);
     } else if (!kbd->boot_protocol) {
-        kprint("xhci: slot%u HID non-boot fallback iface=%u subclass=%u proto=%u\n",
-               (uint32_t)dev->slot_id,
-               (uint32_t)kbd->interface_number,
-               (uint32_t)kbd->interface_subclass,
-               (uint32_t)kbd->interface_protocol);
+        XHCI_HID_TRACE("xhci: slot%u HID non-boot fallback iface=%u subclass=%u proto=%u\n",
+                       (uint32_t)dev->slot_id,
+                       (uint32_t)kbd->interface_number,
+                       (uint32_t)kbd->interface_subclass,
+                       (uint32_t)kbd->interface_protocol);
     }
     if (!xhci_hid_set_idle(kbd)) {
-        kprint("xhci: slot%u HID set idle failed\n", (uint32_t)dev->slot_id);
+        XHCI_HID_TRACE("xhci: slot%u HID set idle failed\n", (uint32_t)dev->slot_id);
     }
     if (!xhci_alloc_hid_keyboard_resources(kbd)) {
         kprint("xhci: slot%u HID resource allocation failed\n", (uint32_t)dev->slot_id);
@@ -652,16 +652,16 @@ int xhci_probe_hid_keyboard(struct xhci_enum_device *dev, const uint8_t *cfg, ui
     (void)xhci_hid_set_leds(kbd, keyboard_led_state());
     kbd->present = 1u;
     (void)xhci_hid_submit_interrupt_report(kbd);
-    kprint("xhci: slot%u hidkbd%u iface=%u in=%x epid=%u mps=%u interval=%u report=%u boot=%u\n",
-           (uint32_t)dev->slot_id,
-           kbd_index,
-           (uint32_t)kbd->interface_number,
-           (uint32_t)kbd->interrupt_in_ep,
-           (uint32_t)kbd->interrupt_in_epid,
-           (uint32_t)kbd->interrupt_in_mps,
-           (uint32_t)kbd->interrupt_in_interval,
-           (uint32_t)kbd->report_size,
-           (uint32_t)kbd->boot_protocol);
+    XHCI_HID_TRACE("xhci: slot%u hidkbd%u iface=%u in=%x epid=%u mps=%u interval=%u report=%u boot=%u\n",
+                   (uint32_t)dev->slot_id,
+                   kbd_index,
+                   (uint32_t)kbd->interface_number,
+                   (uint32_t)kbd->interrupt_in_ep,
+                   (uint32_t)kbd->interrupt_in_epid,
+                   (uint32_t)kbd->interrupt_in_mps,
+                   (uint32_t)kbd->interrupt_in_interval,
+                   (uint32_t)kbd->report_size,
+                   (uint32_t)kbd->boot_protocol);
     return 1;
 }
 
@@ -721,10 +721,10 @@ int xhci_probe_hid_mouse(struct xhci_enum_device *dev, const uint8_t *cfg, uint3
     }
     mouse->dev = dev;
     if (!xhci_hid_set_protocol(mouse, 0u)) {
-        kprint("xhci: slot%u HID mouse set protocol failed\n", (uint32_t)dev->slot_id);
+        XHCI_HID_TRACE("xhci: slot%u HID mouse set protocol failed\n", (uint32_t)dev->slot_id);
     }
     if (!xhci_hid_set_idle(mouse)) {
-        kprint("xhci: slot%u HID mouse set idle failed\n", (uint32_t)dev->slot_id);
+        XHCI_HID_TRACE("xhci: slot%u HID mouse set idle failed\n", (uint32_t)dev->slot_id);
     }
     if (!xhci_alloc_hid_keyboard_resources(mouse)) {
         kprint("xhci: slot%u HID mouse resource allocation failed\n", (uint32_t)dev->slot_id);
@@ -741,15 +741,15 @@ int xhci_probe_hid_mouse(struct xhci_enum_device *dev, const uint8_t *cfg, uint3
         g_hid_mouse_count = mouse_index + 1u;
     }
     (void)xhci_hid_submit_interrupt_report(mouse);
-    kprint("xhci: slot%u hidmouse%u iface=%u in=%x epid=%u mps=%u interval=%u report=%u\n",
-           (uint32_t)dev->slot_id,
-           mouse_index,
-           (uint32_t)mouse->interface_number,
-           (uint32_t)mouse->interrupt_in_ep,
-           (uint32_t)mouse->interrupt_in_epid,
-           (uint32_t)mouse->interrupt_in_mps,
-           (uint32_t)mouse->interrupt_in_interval,
-           (uint32_t)mouse->report_size);
+    XHCI_HID_TRACE("xhci: slot%u hidmouse%u iface=%u in=%x epid=%u mps=%u interval=%u report=%u\n",
+                   (uint32_t)dev->slot_id,
+                   mouse_index,
+                   (uint32_t)mouse->interface_number,
+                   (uint32_t)mouse->interrupt_in_ep,
+                   (uint32_t)mouse->interrupt_in_epid,
+                   (uint32_t)mouse->interrupt_in_mps,
+                   (uint32_t)mouse->interrupt_in_interval,
+                   (uint32_t)mouse->report_size);
     return 1;
 }
 

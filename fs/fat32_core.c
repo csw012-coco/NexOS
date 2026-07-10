@@ -1,5 +1,9 @@
 #include "fs/fat32_internal.h"
 
+enum {
+    FAT32_TRACE_ENABLED = 0u
+};
+
 void mem_copy(void *dest, const void *src, uint32_t size) {
     uint8_t *d = (uint8_t *)dest;
     const uint8_t *s = (const uint8_t *)src;
@@ -49,7 +53,7 @@ void fat32_log_probe_failure(uint32_t partition_lba,
                                     const char *reason,
                                     const struct fat32_bpb *bpb,
                                     const uint8_t *sector_data) {
-    if (!kprint_is_ready()) {
+    if (!FAT32_TRACE_ENABLED || !kprint_is_ready()) {
         return;
     }
     if (bpb == 0) {
@@ -100,7 +104,7 @@ void fat32_log_io_failure(const struct fat32_volume *vol,
                                  const char *op,
                                  uint32_t lba,
                                  const char *reason) {
-    if (!kprint_is_ready()) {
+    if (!FAT32_TRACE_ENABLED || !kprint_is_ready()) {
         return;
     }
     kprint("fat32: %s lba=%u failed: %s partition=%u sectors=%u data=%u clusters=%u\n",
@@ -117,7 +121,7 @@ void fat32_log_file_failure(const struct fat32_volume *vol,
                                    const struct fat32_file *file,
                                    const char *op,
                                    const char *reason) {
-    if (!kprint_is_ready()) {
+    if (!FAT32_TRACE_ENABLED || !kprint_is_ready()) {
         return;
     }
     kprint("fat32: %s file=%s failed: %s first_cluster=%u size=%u partition=%u data=%u clusters=%u\n",

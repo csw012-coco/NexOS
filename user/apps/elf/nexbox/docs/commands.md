@@ -221,6 +221,8 @@ Notes:
 - `runelf` forces ELF execution.
 - `runbg` starts the command as a background job.
 - `fdisk` currently targets MBR-style partition editing.
+- `dd if=<src> of=<dst> [bs=512] [count=n] [skip=n] [seek=n]` copies files or `/dev/diskX[pY]` block targets.
+- `mkfs nxfs /dev/diskXpY` or `mkfs.nxfs /dev/diskXpY` creates an empty NXFS filesystem.
 - `stat <path>` prints type, size, and raw filesystem attributes; `stat --table <path>` emits a typed table.
 - `du [-a] [-s] [path]` summarizes file or directory usage; `du --table <path>` emits `path`, `size`, and `type`.
 - `tree [path]` prints a recursive directory tree; `tree --table [path]` emits `path`, `depth`, `type`, and `size`.

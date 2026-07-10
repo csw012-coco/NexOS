@@ -2,6 +2,7 @@
 #include "kernel/internal/proc/process_lifecycle_internal.h"
 #include "kernel/internal/proc/process_program_registry_internal.h"
 #include "fs/vfs.h"
+#include "kernel/public/core/kprint.h"
 #include "kernel/public/mem/vmm.h"
 #include "kernel/public/proc/job_control.h"
 #include "lib/string.h"
@@ -15,8 +16,16 @@ static const uint8_t g_ring3_smoke_code[] = {
 
 enum {
     PROCESS_EXEC_PROBE_SIZE = NOS_TTY_LINE_BUFFER_SIZE,
-    PROCESS_EXEC_SCRIPT_DEPTH_MAX = 4
+    PROCESS_EXEC_SCRIPT_DEPTH_MAX = 4,
+    PROCESS_EXEC_READ_CHUNK = 4096u,
+    PROCESS_EXEC_TRACE_ENABLED = 0u
 };
+
+#define PROCESS_EXEC_TRACE(...) do { \
+    if (PROCESS_EXEC_TRACE_ENABLED) { \
+        kprint(__VA_ARGS__); \
+    } \
+} while (0)
 
 static int process_exec_elf(struct vfs *vfs,
                             const char *image_name,
@@ -41,13 +50,16 @@ static int process_open_exec_file(struct vfs *vfs,
                                   uint32_t *file_size_out) {
     struct vfs_node node;
 
+    PROCESS_EXEC_TRACE("exec: open begin %s\n", image_name != 0 ? image_name : "(null)");
     if (!process_exec_args_valid(vfs, image_name)) {
         return 0;
     }
     if (vfs_open(vfs, image_name, 0, &node) != 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_NOT_FOUND;
+        PROCESS_EXEC_TRACE("exec: open fail %s\n", image_name);
         return 0;
     }
+    PROCESS_EXEC_TRACE("exec: open ok kind=%u mount=%u\n", (uint32_t)node.kind, (uint32_t)node.mount_kind);
     if (node.kind != VFS_NODE_FILE) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_NOT_FOUND;
         return 0;
@@ -57,6 +69,7 @@ static int process_open_exec_file(struct vfs *vfs,
     }
     if (file_size_out != 0) {
         *file_size_out = process_exec_node_file_size(&node);
+        PROCESS_EXEC_TRACE("exec: open size=%u\n", *file_size_out);
     }
     return 1;
 }
@@ -68,7 +81,7 @@ static int process_read_exec_file(struct vfs *vfs,
     struct vfs_node node;
     uint32_t offset = 0;
     uint32_t file_size = 0;
-    int64_t read_rc;
+    uint32_t total_read = 0;
 
     g_process_exec_read_open_rc = 0xffffffffu;
     g_process_exec_read_node_kind = 0;
@@ -89,17 +102,29 @@ static int process_read_exec_file(struct vfs *vfs,
         g_process_exec_read_result = PROCESS_EXEC_ERR_FILE_TOO_LARGE;
         return 0;
     }
-    read_rc = vfs_read(vfs, &node, &offset, g_elf_file_buffer, file_size, VFS_READ_BLOCKING);
-    if (read_rc < 0) {
-        g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
-        g_process_exec_read_result = PROCESS_EXEC_ERR_FILE_READ;
-        return 0;
-    }
-    g_process_exec_read_bytes = (uint32_t)read_rc;
-    if ((uint32_t)read_rc != file_size) {
-        g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
-        g_process_exec_read_result = PROCESS_EXEC_ERR_FILE_READ;
-        return 0;
+    while (total_read < file_size) {
+        uint32_t chunk = file_size - total_read;
+        int64_t read_rc;
+
+        if (chunk > PROCESS_EXEC_READ_CHUNK) {
+            chunk = PROCESS_EXEC_READ_CHUNK;
+        }
+        PROCESS_EXEC_TRACE("exec: full read chunk off=%u bytes=%u\n", total_read, chunk);
+        read_rc = vfs_read(vfs,
+                           &node,
+                           &offset,
+                           g_elf_file_buffer + total_read,
+                           chunk,
+                           VFS_READ_BLOCKING);
+        PROCESS_EXEC_TRACE("exec: full read chunk rc=%d\n", (int32_t)read_rc);
+        if (read_rc < 0 || (uint32_t)read_rc != chunk) {
+            g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
+            g_process_exec_read_result = PROCESS_EXEC_ERR_FILE_READ;
+            g_process_exec_read_bytes = total_read;
+            return 0;
+        }
+        total_read += (uint32_t)read_rc;
+        g_process_exec_read_bytes = total_read;
     }
     if (node_out != 0) {
         *node_out = node;
@@ -263,6 +288,7 @@ static int process_probe_exec_file(struct vfs *vfs,
     if (!process_open_exec_file(vfs, image_name, &node, &file_size)) {
         return 0;
     }
+    PROCESS_EXEC_TRACE("exec: probe opened size=%u\n", file_size);
     if (node_out != 0) {
         *node_out = node;
     }
@@ -277,7 +303,9 @@ static int process_probe_exec_file(struct vfs *vfs,
     if (to_read == 0u) {
         return 1;
     }
+    PROCESS_EXEC_TRACE("exec: probe read begin bytes=%u\n", to_read);
     read_rc = vfs_read(vfs, &node, &offset, probe_out, to_read, VFS_READ_BLOCKING);
+    PROCESS_EXEC_TRACE("exec: probe read rc=%d\n", (int32_t)read_rc);
     if (read_rc < 0 || (uint32_t)read_rc != to_read) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
         return 0;
@@ -378,6 +406,7 @@ static int process_resolve_exec_target_depth(struct vfs *vfs,
     char redirected_command[NOS_TTY_LINE_BUFFER_SIZE];
     char redirected_name[NOS_TTY_LINE_BUFFER_SIZE];
 
+    PROCESS_EXEC_TRACE("exec: resolve depth=%u image=%s\n", depth, image_name != 0 ? image_name : "(null)");
     if (depth >= PROCESS_EXEC_SCRIPT_DEPTH_MAX) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_HEADER;
         return 0;
@@ -392,6 +421,7 @@ static int process_resolve_exec_target_depth(struct vfs *vfs,
         return 0;
     }
     if (process_probe_has_shebang(probe, probe_bytes)) {
+        PROCESS_EXEC_TRACE("exec: shebang detected\n");
         if (!process_build_shebang_command(image_name,
                                            command_line != 0 ? command_line : image_name,
                                            probe,
@@ -417,9 +447,11 @@ static int process_resolve_exec_target_depth(struct vfs *vfs,
                                                  bytes_read_out,
                                                  depth + 1u);
     }
+    PROCESS_EXEC_TRACE("exec: full read begin %s\n", image_name);
     if (!process_read_exec_file(vfs, image_name, node_out, bytes_read_out)) {
         return 0;
     }
+    PROCESS_EXEC_TRACE("exec: full read ok bytes=%u\n", bytes_read_out != 0 ? *bytes_read_out : 0u);
     process_copy_text_local(resolved_image_name_out, resolved_image_name_size, image_name);
     process_copy_text_local(resolved_command_line_out,
                             resolved_command_line_size,
@@ -839,6 +871,11 @@ int process_exec_from_user(struct vfs *vfs,
     return process_run_foreground_command(vfs, proc, command_line, envp, PROCESS_EXEC_AUTO);
 }
 
+/*
+ * Prepare the current process session for exec_replace by preserving the
+ * current process state, rebuilding the user address space, and retaining
+ * the same process slot while the image is replaced in-place.
+ */
 static int process_prepare_exec_replace_session_local(struct process_session *session,
                                                       struct user_page_mapping *mappings,
                                                       const struct process *proc) {
@@ -942,30 +979,30 @@ int process_exec_replace_from_user(struct vfs *vfs,
     g_process_exec_last_stage = 3;
     if (!process_prepare_exec_replace_session_local(session, mappings, proc)) {
         session_finish(session, mappings);
-        return 1;
+        return 0;
     }
     process_discard_non_stdio_files(&session->process);
     process_set_name(&session->process, resolved_image_name);
     g_process_exec_last_stage = 4;
     if (!process_load_elf_image(g_elf_file_buffer, bytes_read, &entry)) {
         session_finish(session, mappings);
-        return 1;
+        return 0;
     }
     g_process_exec_last_stage = 5;
     if (!process_map_exec_stack()) {
         session_finish(session, mappings);
-        return 1;
+        return 0;
     }
     g_process_exec_last_stage = 6;
     if (!process_prepare_arguments(resolved_command_line, envp, &stack_top)) {
         session_finish(session, mappings);
-        return 1;
+        return 0;
     }
     g_process_exec_last_stage = 7;
     if (!session_enter_ring3(session, mappings, entry, stack_top)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ENTER;
         session_finish(session, mappings);
-        return 1;
+        return 0;
     }
     g_process_exec_last_stage = 8;
     g_process_exec_last_error = PROCESS_EXEC_OK;

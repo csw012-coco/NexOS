@@ -25,5 +25,6 @@ void *mmap(void *addr,
            int shm_handle,
            uint64_t offset);
 int munmap(void *addr, size_t length);
+int mprotect(void *addr, size_t length, int prot);
 int shm_open(const char *name, size_t size, int flags);
 int shm_unlink(const char *name);

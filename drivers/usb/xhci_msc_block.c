@@ -42,13 +42,7 @@ static int xhci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
         uint32_t chunk = count - done;
         uint8_t *chunk_out = out + done * XHCI_SECTOR_SIZE;
 
-        if (count == 1u && dev->read_cache != 0) {
-            chunk = XHCI_MSC_READAHEAD_SECTORS;
-            if ((uint64_t)chunk > dev->sector_count - lba) {
-                chunk = (uint32_t)(dev->sector_count - lba);
-            }
-            chunk_out = dev->read_cache;
-        } else if (chunk > XHCI_MSC_READAHEAD_SECTORS) {
+        if (chunk > XHCI_MSC_READAHEAD_SECTORS) {
             chunk = XHCI_MSC_READAHEAD_SECTORS;
         }
 
@@ -87,13 +81,11 @@ static int xhci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t 
             result = -1;
             break;
         }
-        if (count == 1u && chunk_out == dev->read_cache) {
+        if (count == 1u && dev->read_cache != 0) {
+            memcpy(dev->read_cache, out, XHCI_SECTOR_SIZE);
             dev->read_cache_lba = lba;
-            dev->read_cache_count = (uint8_t)chunk;
+            dev->read_cache_count = 1u;
             dev->read_cache_valid = 1u;
-            memcpy(out, dev->read_cache, XHCI_SECTOR_SIZE);
-            done = count;
-            break;
         }
         done += chunk;
     }

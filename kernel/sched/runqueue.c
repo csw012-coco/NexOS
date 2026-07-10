@@ -83,6 +83,9 @@ uint32_t sched_runqueue_reschedule(struct sched_runqueue *queue,
         case SCHED_RUNQUEUE_BLOCK:
             current->state = PROCESS_STATE_WAITING;
             break;
+        case SCHED_RUNQUEUE_SLEEP:
+            current->state = PROCESS_STATE_SLEEPING;
+            break;
         case SCHED_RUNQUEUE_EXIT:
             if (current->state != PROCESS_STATE_EXITED) {
                 current->state = PROCESS_STATE_EXITED;

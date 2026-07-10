@@ -4,6 +4,36 @@
 #include "kernel/public/proc/process.h"
 #include "lib/string.h"
 
+struct vfs_procfs_root_entry {
+    const char *name;
+    uint32_t aux_index;
+};
+
+static const struct vfs_procfs_root_entry vfs_procfs_root_entries[] = {
+    {"meminfo", VFS_PROC_MEMINFO},
+    {"mounts", VFS_PROC_MOUNTS},
+    {"uptime", VFS_PROC_UPTIME},
+    {"kmsg", VFS_PROC_KMSG},
+    {"actions", VFS_PROC_ACTIONS},
+    {"rtc", VFS_PROC_RTC},
+    {"caps", VFS_PROC_CAPS},
+    {"devices", VFS_PROC_DEVICES},
+    {"drivers", VFS_PROC_DRIVERS},
+    {"cpuinfo", VFS_PROC_CPUINFO},
+    {"filesystems", VFS_PROC_FILESYSTEMS},
+    {"block", VFS_PROC_BLOCK},
+    {"partitions", VFS_PROC_PARTITIONS},
+    {"cmdline", VFS_PROC_CMDLINE},
+    {"version", VFS_PROC_VERSION},
+    {"fb", VFS_PROC_FB},
+    {"interrupts", VFS_PROC_INTERRUPTS},
+    {"tty", VFS_PROC_TTY},
+};
+
+static uint32_t vfs_procfs_root_entry_count(void) {
+    return (uint32_t)(sizeof(vfs_procfs_root_entries) / sizeof(vfs_procfs_root_entries[0]));
+}
+
 static int64_t vfs_procfs_emit_dir_entry(struct vfs_dirent *entry,
                                          uint32_t *index_io,
                                          const char *name,
@@ -53,35 +83,13 @@ int64_t vfs_read_dir_procfs(struct vfs_node *node, uint32_t *index_io, struct vf
         }
         return 0;
     }
-    if (*index_io == 0) {
-        return vfs_procfs_emit_dir_entry(entry, index_io, "meminfo", 0, 0);
-    }
-    if (*index_io == 1) {
-        return vfs_procfs_emit_dir_entry(entry, index_io, "mounts", 0, 0);
-    }
-    if (*index_io == 2) {
-        return vfs_procfs_emit_dir_entry(entry, index_io, "uptime", 0, 0);
-    }
-    if (*index_io == 3) {
-        return vfs_procfs_emit_dir_entry(entry, index_io, "kmsg", 0, 0);
-    }
-    if (*index_io == 4) {
-        return vfs_procfs_emit_dir_entry(entry, index_io, "actions", 0, 0);
-    }
-    if (*index_io == 5) {
-        return vfs_procfs_emit_dir_entry(entry, index_io, "rtc", 0, 0);
-    }
-    if (*index_io == 6) {
-        return vfs_procfs_emit_dir_entry(entry, index_io, "caps", 0, 0);
-    }
-    if (*index_io == 7) {
-        return vfs_procfs_emit_dir_entry(entry, index_io, "devices", 0, 0);
-    }
-    if (*index_io == 8) {
-        return vfs_procfs_emit_dir_entry(entry, index_io, "drivers", 0, 0);
+    if (*index_io < vfs_procfs_root_entry_count()) {
+        const struct vfs_procfs_root_entry *root_entry = &vfs_procfs_root_entries[*index_io];
+
+        return vfs_procfs_emit_dir_entry(entry, index_io, root_entry->name, 0, 0);
     }
     {
-        uint32_t ordinal = *index_io - 9u;
+        uint32_t ordinal = *index_io - vfs_procfs_root_entry_count();
         uint32_t seen = 0;
 
         for (uint32_t i = 0; i < process_capacity(); i++) {
@@ -111,41 +119,13 @@ int vfs_procfs_lookup(const char *name, struct vfs_node *out) {
     if (name == 0 || out == 0) {
         return -1;
     }
-    if (streq(name, "meminfo")) {
-        vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_MEMINFO, 0);
-        return 0;
-    }
-    if (streq(name, "mounts")) {
-        vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_MOUNTS, 0);
-        return 0;
-    }
-    if (streq(name, "uptime")) {
-        vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_UPTIME, 0);
-        return 0;
-    }
-    if (streq(name, "kmsg")) {
-        vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_KMSG, 0);
-        return 0;
-    }
-    if (streq(name, "actions")) {
-        vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_ACTIONS, 0);
-        return 0;
-    }
-    if (streq(name, "rtc")) {
-        vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_RTC, 0);
-        return 0;
-    }
-    if (streq(name, "caps")) {
-        vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_CAPS, 0);
-        return 0;
-    }
-    if (streq(name, "devices")) {
-        vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_DEVICES, 0);
-        return 0;
-    }
-    if (streq(name, "drivers")) {
-        vfs_set_procfs_node(out, VFS_NODE_FILE, VFS_PROC_DRIVERS, 0);
-        return 0;
+    for (uint32_t i = 0; i < vfs_procfs_root_entry_count(); i++) {
+        const struct vfs_procfs_root_entry *root_entry = &vfs_procfs_root_entries[i];
+
+        if (streq(name, root_entry->name)) {
+            vfs_set_procfs_node(out, VFS_NODE_FILE, root_entry->aux_index, 0);
+            return 0;
+        }
     }
     slash = name;
     while (*slash != '\0' && *slash != '/') {

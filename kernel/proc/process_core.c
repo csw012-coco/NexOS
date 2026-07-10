@@ -361,6 +361,7 @@ void process_init(struct tty *tty, volatile uint32_t *timer_ticks) {
     g_user_session.elf_image_size = 0;
     g_user_session.elf_segment_count = 0;
     addrspace_reset(&g_user_session.address_space);
+    g_user_session.address_space.kernel_cr3 = vmm_current_root();
     process_reset_slots();
     process_reset_exit_record(&g_last_exited_process);
     process_clear_slot_state(&g_user_session.process);

@@ -12,7 +12,9 @@
 #include "drivers/usb/xhci.h"
 #include "fs/vfs.h"
 #include "fs/vfs_internal.h"
+#include "hal/hal.h"
 #include "kernel/internal/core/kernel_boot_internal.h"
+#include "kernel/internal/core/boot_log_internal.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/driver/driver.h"
 #include "kernel/public/mem/pmm.h"
@@ -37,7 +39,11 @@ enum {
     KERNEL_PAGE_FLAG_PRESENT = 1ull << 0,
     KERNEL_PAGE_FLAG_RW = 1ull << 1,
     KERNEL_PAGE_FLAG_USER = 1ull << 2,
-    KERNEL_PAGE_FLAG_NX = 1ull << 63
+    KERNEL_PAGE_FLAG_NX = 1ull << 63,
+    KERNEL_BOOT_VERBOSE_MEMMAP = 0u,
+    KERNEL_BOOT_VERBOSE_PAGING_MAPS = 0u,
+    KERNEL_ROOT_USB_RETRY_COUNT = 8u,
+    KERNEL_ROOT_USB_RETRY_RELAX_LOOPS = 200000u
 };
 
 static const char *kernel_memmap_type_name(uint32_t type) {
@@ -68,36 +74,18 @@ void kernel_log_boot_info(const struct bootx_boot_info *boot_info) {
         return;
     }
 
-    kprint("system: NexOS x86_64\n");
+    kernel_boot_log_system("x86_64");
     kprint("bootx: magic=%x version=%u size=%u\n",
            boot_info->hdr.magic,
            (uint32_t)boot_info->hdr.version,
            (uint32_t)boot_info->hdr.size);
-    kprint("boot: drive=0x%x part_lba=%u part_sectors=%u modules=%u cmdline=%x\n",
-           (uint32_t)boot_info->boot_drive,
-           boot_info->partition_lba,
-           boot_info->partition_sectors,
-           boot_info->module_count,
-           boot_info->cmdline);
+    kernel_boot_log_boot_info_common(boot_info);
+    kprint("boot: cmdline=%x\n", boot_info->cmdline);
     kprint("boot: kernel_phys=%lx kernel_size=%lx entry=%lx\n",
            boot_info->kernel_phys_addr,
            boot_info->kernel_phys_size,
            boot_info->kernel_entry);
-    if (boot_info->console.type == BOOTX_CONSOLE_FRAMEBUFFER) {
-        kprint("boot: console=framebuffer %ux%u pitch=%u bpp=%u text=%ux%u\n",
-               boot_info->console.width,
-               boot_info->console.height,
-               boot_info->console.pitch,
-               (uint32_t)boot_info->console.framebuffer_bpp,
-               (uint32_t)boot_info->console.width / 8u,
-               (uint32_t)boot_info->console.height /
-                   ((boot_info->console.height < 25u * 16u || boot_info->console.width < 80u * 8u) ? 8u : 16u));
-    } else {
-        kprint("boot: console=text %ux%u color=%u\n",
-               (uint32_t)boot_info->console.text_columns,
-               (uint32_t)boot_info->console.text_rows,
-               (uint32_t)boot_info->console.text_color);
-    }
+    kernel_boot_log_console(&boot_info->console);
     mapped = vmm_query((uint64_t)(uintptr_t)__kernel_start, &mapped_phys);
     detected_phys = kernel_detect_phys_base(boot_info);
     kprint("boot: kernel_phys(proto)=%lx kernel_phys(detect)=%lx kernel_phys(map)=%lx mapped=%u\n",
@@ -124,13 +112,14 @@ static void kernel_log_page_mapping(const char *label, uint64_t virt_addr) {
 }
 
 void kernel_log_paging_info(void) {
-    kprint("paging: root=%lx nx_supported=%u nx_enabled=%u\n",
-           vmm_current_root(),
-           (uint32_t)vmm_cpu_supports_nx(),
-           (uint32_t)vmm_nx_enabled());
-    kernel_log_page_mapping("kernel_text", (uint64_t)(uintptr_t)__kernel_text_start);
-    kernel_log_page_mapping("kernel_data", (uint64_t)(uintptr_t)__kernel_data_start);
-    kernel_log_page_mapping("kernel_start", (uint64_t)(uintptr_t)__kernel_start);
+    kernel_boot_log_paging_root(vmm_current_root(),
+                                (uint32_t)vmm_cpu_supports_nx(),
+                                (uint32_t)vmm_nx_enabled());
+    if (KERNEL_BOOT_VERBOSE_PAGING_MAPS) {
+        kernel_log_page_mapping("kernel_text", (uint64_t)(uintptr_t)__kernel_text_start);
+        kernel_log_page_mapping("kernel_data", (uint64_t)(uintptr_t)__kernel_data_start);
+        kernel_log_page_mapping("kernel_start", (uint64_t)(uintptr_t)__kernel_start);
+    }
 }
 
 void kernel_log_memmap(const struct bootx_memmap_entry *memmap, uint32_t memmap_count) {
@@ -142,26 +131,26 @@ void kernel_log_memmap(const struct bootx_memmap_entry *memmap, uint32_t memmap_
         return;
     }
 
-    kprint("memmap: entries=%u\n", memmap_count);
     for (i = 0; i < memmap_count; i++) {
         if (memmap[i].type == BOOTX_MEMMAP_USABLE) {
             total_usable += memmap[i].length;
         }
-        kprint("memmap[%u]: base=%lx len=%lx type=%s\n",
-               i,
-               memmap[i].base,
-               memmap[i].length,
-               kernel_memmap_type_name(memmap[i].type));
+        if (KERNEL_BOOT_VERBOSE_MEMMAP) {
+            kprint("memmap[%u]: base=%lx len=%lx type=%s\n",
+                   i,
+                   memmap[i].base,
+                   memmap[i].length,
+                   kernel_memmap_type_name(memmap[i].type));
+        }
     }
-    kprint("memmap: usable_total=%lx bytes\n", total_usable);
+    kernel_boot_log_memmap_summary(total_usable, memmap_count);
 }
 
 void kernel_log_pmm_info(void) {
-    kprint("pmm: total=%u free=%u used=%u dropped=%u\n",
-           pmm_total_pages(),
-           pmm_free_pages(),
-           pmm_used_pages(),
-           pmm_dropped_pages());
+    kernel_boot_log_pmm(pmm_total_pages(),
+                        pmm_free_pages(),
+                        pmm_used_pages(),
+                        pmm_dropped_pages());
 }
 
 void kernel_log_pci_info(void) {
@@ -424,6 +413,28 @@ static int kernel_extract_root_uuid(const char *cmdline, uint8_t uuid_out[16]) {
     return 0;
 }
 
+static void kernel_root_usb_retry_delay(void) {
+    for (uint32_t i = 0u; i < KERNEL_ROOT_USB_RETRY_RELAX_LOOPS; i++) {
+        hal_cpu_relax();
+    }
+}
+
+static int kernel_switch_root_to_uuid_with_usb_wait(struct vfs *vfs, const uint8_t uuid[16]) {
+    if (vfs_switch_root_to_nxfs_uuid(vfs, uuid) == 0) {
+        return 1;
+    }
+    for (uint32_t attempt = 0u; attempt < KERNEL_ROOT_USB_RETRY_COUNT; attempt++) {
+        ehci_hotplug_scan_now();
+        xhci_hotplug_scan_now();
+        if (vfs_switch_root_to_nxfs_uuid(vfs, uuid) == 0) {
+            kprint("root: switched by UUID after USB scan\n");
+            return 1;
+        }
+        kernel_root_usb_retry_delay();
+    }
+    return 0;
+}
+
 int kernel_apply_root_cmdline(struct vfs *vfs, const struct bootx_boot_info *boot_info) {
     uint8_t uuid[16];
     const char *cmdline;
@@ -435,7 +446,7 @@ int kernel_apply_root_cmdline(struct vfs *vfs, const struct bootx_boot_info *boo
     if (!kernel_extract_root_uuid(cmdline, uuid)) {
         return 0;
     }
-    if (vfs_switch_root_to_nxfs_uuid(vfs, uuid) != 0) {
+    if (!kernel_switch_root_to_uuid_with_usb_wait(vfs, uuid)) {
         kprint("root: UUID target not found\n");
         return -1;
     }

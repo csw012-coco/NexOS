@@ -10,3 +10,31 @@ typedef __INT64_TYPE__ int64_t;
 typedef __UINT64_TYPE__ uint64_t;
 typedef __INTPTR_TYPE__ intptr_t;
 typedef __UINTPTR_TYPE__ uintptr_t;
+typedef __INTMAX_TYPE__ intmax_t;
+typedef __UINTMAX_TYPE__ uintmax_t;
+
+#define INT8_MIN (-128)
+#define INT8_MAX 127
+#define UINT8_MAX 255u
+#define INT16_MIN (-32767 - 1)
+#define INT16_MAX 32767
+#define UINT16_MAX 65535u
+#define INT32_MIN (-2147483647 - 1)
+#define INT32_MAX 2147483647
+#define UINT32_MAX 4294967295u
+#define INT64_MIN (-9223372036854775807LL - 1LL)
+#define INT64_MAX 9223372036854775807LL
+#define UINT64_MAX 18446744073709551615ULL
+
+#define INTPTR_MIN __INTPTR_MIN__
+#define INTPTR_MAX __INTPTR_MAX__
+#define UINTPTR_MAX __UINTPTR_MAX__
+
+#define INT8_C(value) value
+#define UINT8_C(value) value##u
+#define INT16_C(value) value
+#define UINT16_C(value) value##u
+#define INT32_C(value) value
+#define UINT32_C(value) value##u
+#define INT64_C(value) value##LL
+#define UINT64_C(value) value##ULL

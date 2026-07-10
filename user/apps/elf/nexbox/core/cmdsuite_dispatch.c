@@ -21,7 +21,9 @@ static int cmdsuite_is_multicall_name(const char *name) {
     return streq_ignore_case_local(name, "cmdsuite") ||
            streq_ignore_case_local(name, "cmdsuite.elf") ||
            streq_ignore_case_local(name, "nexbox") ||
-           streq_ignore_case_local(name, "nexbox.elf");
+           streq_ignore_case_local(name, "nexbox.elf") ||
+           streq_ignore_case_local(name, "nexbox32") ||
+           streq_ignore_case_local(name, "nexbox32.elf");
 }
 
 typedef int (*cmdsuite_handler_fn)(int argc, char **argv);
@@ -181,6 +183,10 @@ static int cmd_wrap_cpuinfo(int argc, char **argv) {
     return cmd_cpuinfo();
 }
 
+static int cmd_wrap_drivers(int argc, char **argv) {
+    return cmd_drivers(argc, argv);
+}
+
 static int cmd_wrap_which(int argc, char **argv) {
     return cmd_which_like(argc, argv, "which");
 }
@@ -284,6 +290,9 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"blk", cmd_wrap_blk},
     {"parts", cmd_parts},
     {"fdisk", cmd_fdisk},
+    {"dd", cmd_dd},
+    {"mkfs", cmd_mkfs},
+    {"mkfs.nxfs", cmd_mkfs},
     {"df", cmd_df},
     {"mounts", cmd_wrap_mounts},
     {"mount", cmd_mount},
@@ -334,6 +343,7 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"minfo", cmd_wrap_minfo},
     {"uname", cmd_uname},
     {"cpuinfo", cmd_wrap_cpuinfo},
+    {"drivers", cmd_wrap_drivers},
     {"config", cmd_config},
     {"dbg", cmd_dbg},
 };
@@ -369,7 +379,7 @@ int cmdsuite_dispatch_main(int argc, char **argv) {
             write_str("NexBox multicall userland\n");
             write_str("usage: nexbox <applet> [args]\n");
             write_str("hint: run `help` for the applet list\n");
-            return 0;
+            return 127;
         }
         return cmdsuite_dispatch_main(argc - 1, argv + 1);
     }

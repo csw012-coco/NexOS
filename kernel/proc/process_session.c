@@ -93,6 +93,10 @@ int session_bind_user_context(struct process_session *session,
     if (proc->image_kind == PROCESS_IMAGE_NONE ||
         proc->address_space == 0 ||
         proc->address_space->user_cr3 == 0) {
+        if (session->address_space.kernel_cr3 != 0 &&
+            !vmm_root_is_current(session->address_space.kernel_cr3)) {
+            return vmm_switch_root_or_fail(session->address_space.kernel_cr3);
+        }
         return 1;
     }
     return vmm_switch_root_or_fail(proc->address_space->user_cr3);

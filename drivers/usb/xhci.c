@@ -208,7 +208,6 @@ int xhci_wait_transfer_event_spins(uint8_t slot_id,
                                expected_trb_phys,
                                completion);
                     }
-                    continue;
                 }
                 if (completion_out != 0) {
                     *completion_out = completion;
@@ -468,7 +467,9 @@ int xhci_control_transfer(struct xhci_enum_device *dev,
         wait_spins = XHCI_HUB_STATUS_WAIT_SPINS;
     }
     quiet_failure = (request_type == 0xa1u && request == USB_REQ_GET_REPORT) ||
-                    (request_type == 0xa3u && request == USB_REQ_GET_STATUS);
+                    (request_type == 0xa3u && request == USB_REQ_GET_STATUS) ||
+                    (request_type == 0x21u &&
+                     (request == USB_REQ_SET_IDLE || request == USB_REQ_SET_PROTOCOL));
     if (!xhci_wait_transfer_event_spins(dev->slot_id, 1u, &completion, 0u, wait_spins) ||
         completion != XHCI_CC_SUCCESS) {
         if (!quiet_failure) {
@@ -574,15 +575,15 @@ static void xhci_probe_descriptors(struct xhci_enum_device *dev) {
         kprint("xhci: slot%u device desc18 failed\n", (uint32_t)dev->slot_id);
         return;
     }
-    kprint("xhci: slot%u device desc class=%u subclass=%u proto=%u mps0=%u vendor=%x product=%x configs=%u\n",
-           (uint32_t)dev->slot_id,
-           (uint32_t)dev_desc[4],
-           (uint32_t)dev_desc[5],
-           (uint32_t)dev_desc[6],
-           (uint32_t)dev_desc[7],
-           (uint32_t)usb_read_u16le(dev_desc + 8),
-           (uint32_t)usb_read_u16le(dev_desc + 10),
-           (uint32_t)dev_desc[17]);
+    XHCI_ENUM_TRACE("xhci: slot%u device desc class=%u subclass=%u proto=%u mps0=%u vendor=%x product=%x configs=%u\n",
+                    (uint32_t)dev->slot_id,
+                    (uint32_t)dev_desc[4],
+                    (uint32_t)dev_desc[5],
+                    (uint32_t)dev_desc[6],
+                    (uint32_t)dev_desc[7],
+                    (uint32_t)usb_read_u16le(dev_desc + 8),
+                    (uint32_t)usb_read_u16le(dev_desc + 10),
+                    (uint32_t)dev_desc[17]);
 
     memset(cfg_head, 0, sizeof(cfg_head));
     if (!xhci_control_get_descriptor(dev, 2u, 0u, cfg_head, sizeof(cfg_head))) {
@@ -597,13 +598,13 @@ static void xhci_probe_descriptors(struct xhci_enum_device *dev) {
     if (!xhci_control_get_descriptor(dev, 2u, 0u, cfg, total_len)) {
         return;
     }
-    kprint("xhci: slot%u config desc total=%u interfaces=%u config=%u attrs=%x max_power=%u\n",
-           (uint32_t)dev->slot_id,
-           (uint32_t)total_len,
-           (uint32_t)cfg[4],
-           (uint32_t)cfg[5],
-           (uint32_t)cfg[7],
-           (uint32_t)cfg[8]);
+    XHCI_ENUM_TRACE("xhci: slot%u config desc total=%u interfaces=%u config=%u attrs=%x max_power=%u\n",
+                    (uint32_t)dev->slot_id,
+                    (uint32_t)total_len,
+                    (uint32_t)cfg[4],
+                    (uint32_t)cfg[5],
+                    (uint32_t)cfg[7],
+                    (uint32_t)cfg[8]);
     if (xhci_parse_msc_config(dev, cfg, total_len)) {
         xhci_probe_msc(dev);
         return;
@@ -635,20 +636,20 @@ int xhci_enumerate_device(struct xhci_enum_device *dev) {
     xhci_delay_ms(XHCI_ADDRESS_SETTLE_MS);
     dev->used = 1u;
     if (dev->parent_slot_id != 0u) {
-        kprint("xhci: enumerated hubslot=%u hubport=%u slot=%u rootport=%u route=%x speed=%u\n",
-               (uint32_t)dev->parent_slot_id,
-               (uint32_t)dev->parent_port,
-               (uint32_t)dev->slot_id,
-               (uint32_t)dev->port,
-               dev->route_string,
-               (uint32_t)dev->speed);
+        XHCI_ENUM_TRACE("xhci: enumerated hubslot=%u hubport=%u slot=%u rootport=%u route=%x speed=%u\n",
+                        (uint32_t)dev->parent_slot_id,
+                        (uint32_t)dev->parent_port,
+                        (uint32_t)dev->slot_id,
+                        (uint32_t)dev->port,
+                        dev->route_string,
+                        (uint32_t)dev->speed);
     } else {
-        kprint("xhci: enumerated port%u slot=%u speed=%u devctx=%x input=%x\n",
-               (uint32_t)dev->port,
-               (uint32_t)dev->slot_id,
-               (uint32_t)dev->speed,
-               (uint32_t)dev->device_context_phys,
-               (uint32_t)dev->input_context_phys);
+        XHCI_ENUM_TRACE("xhci: enumerated port%u slot=%u speed=%u devctx=%x input=%x\n",
+                        (uint32_t)dev->port,
+                        (uint32_t)dev->slot_id,
+                        (uint32_t)dev->speed,
+                        (uint32_t)dev->device_context_phys,
+                        (uint32_t)dev->input_context_phys);
     }
     xhci_probe_descriptors(dev);
     return 1;

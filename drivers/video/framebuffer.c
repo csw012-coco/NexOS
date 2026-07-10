@@ -1312,7 +1312,7 @@ int framebuffer_display_enable_backbuffer(void) {
     if (phys == 0u) {
         return 0;
     }
-    back = (volatile uint8_t *)hal_phys_direct_map(phys);
+    back = (volatile uint8_t *)hal_mmio_map(phys, bytes);
     if (back == 0) {
         for (uint32_t i = 0; i < pages; i++) {
             (void)pmm_free_page(phys + (uint64_t)i * 4096u);
@@ -1320,11 +1320,9 @@ int framebuffer_display_enable_backbuffer(void) {
         return 0;
     }
 
-    for (uint64_t i = 0; i < bytes; i++) {
-        back[i] = state->front_base[i];
-    }
     state->base = back;
     state->backbuffer_enabled = 1u;
+    framebuffer_render_all(state);
     framebuffer_mark_dirty(state, 0, 0, state->width, state->height);
     framebuffer_flush_dirty(state);
     return 1;

@@ -11,14 +11,18 @@ typedef unsigned int uint32_t;
 #include "gdt.h"
 #include "hal/early.h"
 #include "idt.h"
+#include "kernel/internal/core/boot_state_internal.h"
+#include "kernel/public/arch/arch_ops.h"
 #include "kernel/public/core/early_boot.h"
 #include "kernel/public/core/early_console.h"
+#include "kernel/public/core/kprint.h"
 #include "kernel/public/proc/context.h"
 #include "kernel/public/proc/process.h"
-#include "kernel/public/sys/syscall_dispatch.h"
+#include "kernel/internal/sys/syscall_compat32_internal.h"
 #include "keyboard.h"
 #include "lib/string.h"
 #include "paging.h"
+#include "process32.h"
 #include "arch/x86/common/pic.h"
 #include "pmm.h"
 #include "scheduler.h"
@@ -47,51 +51,18 @@ static volatile uint32_t user_syscall_number;
 static volatile uint32_t user_syscall_argument;
 static struct block_device early_test_block;
 static struct early_vfs early_filesystem;
-static int i386_load_command(const char *command,
-                             struct i386_user_image *image,
-                             char *name_out,
-                             uint32_t name_size);
 
-extern uint32_t kernel_i386_syscall_write(void *opaque,
-                                          uint32_t fd,
-                                          uint32_t user_address,
-                                          uint32_t size);
-extern uint32_t kernel_i386_syscall_open(void *opaque,
-                                         uint32_t user_path,
-                                         uint32_t flags);
-extern uint32_t kernel_i386_syscall_read(void *opaque,
-                                         uint32_t fd,
-                                         uint32_t user_address,
-                                         uint32_t size,
-                                         uint32_t flags);
-extern uint32_t kernel_i386_syscall_close(void *opaque, uint32_t fd);
-extern uint32_t kernel_i386_syscall_page_alloc(void *opaque);
-extern uint32_t kernel_i386_syscall_page_free(void *opaque,
-                                              uint32_t user_page);
-extern uint32_t kernel_i386_syscall_spawn(void *opaque,
-                                          uint32_t user_command,
-                                          uint32_t mode,
-                                          uint32_t flags);
-extern uint32_t kernel_i386_syscall_exec(void *opaque,
-                                         uint32_t user_command);
-extern uint32_t kernel_i386_syscall_chdir(void *opaque,
-                                          uint32_t user_path);
-extern uint32_t kernel_i386_syscall_getcwd(void *opaque,
-                                           uint32_t user_buffer,
-                                           uint32_t size);
-extern uint32_t kernel_i386_syscall_opendir(void *opaque,
-                                            uint32_t user_path);
-extern uint32_t kernel_i386_syscall_readdir(void *opaque,
-                                            uint32_t fd,
-                                            uint32_t user_entry);
-extern uint32_t kernel_i386_syscall_dup2(void *opaque,
-                                         uint32_t src_fd,
-                                         uint32_t dst_fd);
-extern uint32_t kernel_i386_syscall_pipe(void *opaque,
-                                         uint32_t user_pair);
-extern int kernel_i386_copy_user_string(uint32_t user_address,
-                                        char *buffer,
-                                        uint32_t size);
+extern void hal_display_load_font(const struct bootx_boot_info *boot_info);
+static uint32_t i386_context_action_to_frame(uintptr_t action);
+extern void hal_display_init(const struct bootx_console_info *console);
+extern void kernel_i386_query_init(const struct syscall_boot_info *info,
+                                   const struct syscall_framebuffer_info *fb_info,
+                                   const struct bootx_boot_info *raw_boot_info,
+                                   uint32_t cmdline,
+                                   uint32_t memmap,
+                                   uint32_t memmap_count);
+extern void kernel_i386_compat32_context(
+    struct syscall_compat32_context *ctx);
 
 static int early_test_block_read(struct block_device *dev,
                                  uint64_t lba,
@@ -239,10 +210,32 @@ static int gdt_verify(void) {
     return 0;
 }
 
-void i386_exception_handler(uint32_t vector, struct i386_exception_frame *frame) {
+static void i386_context_from_exception(struct process_context *context,
+                                        const struct i386_exception_frame *frame) {
+    if (context == 0 || frame == 0) {
+        return;
+    }
+    process_context_reset(context);
+    context->registers[PROCESS_CONTEXT_RETURN] = frame->eax;
+    context->registers[PROCESS_CONTEXT_ARG0] = frame->ebx;
+    context->registers[PROCESS_CONTEXT_ARG1] = frame->ecx;
+    context->registers[PROCESS_CONTEXT_ARG2] = frame->edx;
+    context->registers[PROCESS_CONTEXT_ARG3] = frame->esi;
+    context->registers[PROCESS_CONTEXT_GENERAL0] = frame->edi;
+    context->registers[PROCESS_CONTEXT_GENERAL1] = frame->ebp;
+    context->registers[PROCESS_CONTEXT_STACK_SNAPSHOT] = frame->saved_esp;
+    context->instruction_pointer = frame->eip;
+    context->stack_pointer = frame->user_esp;
+    context->flags = frame->eflags;
+    context->code_selector = (uint16_t)frame->cs;
+    context->stack_selector = (uint16_t)frame->user_ss;
+    context->user_mode = (frame->cs & 3u) == 3u;
+}
+
+uint32_t i386_exception_handler(uint32_t vector, struct i386_exception_frame *frame) {
     if (vector == I386_IDT_VECTOR_BREAKPOINT) {
         breakpoint_count++;
-        return;
+        return 0u;
     }
 
     if (vector == I386_IDT_VECTOR_PAGE_FAULT) {
@@ -253,7 +246,25 @@ void i386_exception_handler(uint32_t vector, struct i386_exception_frame *frame)
         if (page_fault_expected &&
             frame->eip == (uint32_t)i386_page_fault_test_fault) {
             frame->eip = (uint32_t)i386_page_fault_test_recovery;
-            return;
+            return 0u;
+        }
+        if ((frame->cs & 3u) == 3u &&
+            i386_scheduler_handle_page_fault(page_fault_cr2,
+                                              frame->error_code)) {
+            return 0u;
+        }
+        if ((frame->cs & 3u) == 3u) {
+            struct process_context context;
+            struct syscall_compat32_context service_context;
+            uintptr_t action;
+
+            i386_context_from_exception(&context, frame);
+            kernel_i386_compat32_context(&service_context);
+            service_context.pid = i386_scheduler_current_pid();
+            service_context.ticks = irq_line_count[0];
+            syscall_compat32_cleanup_pid(&service_context, service_context.pid);
+            action = i386_scheduler_fault_exit(&context, -14);
+            return i386_context_action_to_frame(action);
         }
     }
 
@@ -272,115 +283,88 @@ static uint32_t i386_context_action_to_frame(uintptr_t action) {
 
 uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
     struct process_context schedule_context;
-    struct syscall_register_request request = {
-        .number = frame->eax,
-        .arg0 = frame->ebx,
-        .arg1 = frame->ecx,
-        .arg2 = frame->edx,
-        .arg3 = frame->esi,
-        .instruction_pointer = frame->eip,
-        .stack_pointer = frame->user_esp
-    };
-    struct syscall_common_context context = {
-        .pid = i386_scheduler_current_pid(),
-        .ticks = irq_line_count[0],
-        .opaque = 0,
-        .open = kernel_i386_syscall_open,
-        .read = kernel_i386_syscall_read,
-        .write = kernel_i386_syscall_write,
-        .close = kernel_i386_syscall_close,
-        .page_alloc = kernel_i386_syscall_page_alloc,
-        .page_free = kernel_i386_syscall_page_free,
-        .spawn = kernel_i386_syscall_spawn,
-        .exec = kernel_i386_syscall_exec,
-        .chdir = kernel_i386_syscall_chdir,
-        .getcwd = kernel_i386_syscall_getcwd,
-        .opendir = kernel_i386_syscall_opendir,
-        .readdir = kernel_i386_syscall_readdir,
-        .dup2 = kernel_i386_syscall_dup2,
-        .pipe = kernel_i386_syscall_pipe
-    };
-    struct syscall_common_result result;
+    struct syscall_compat32_context service_context;
+    struct kernel_syscall_request request = {0};
+    struct kernel_syscall_result result;
 
-    if (request.number == SYS_EXEC ||
-        request.number == SYS_EXEC_REPLACE) {
+    kernel_i386_compat32_context(&service_context);
+    service_context.pid = i386_scheduler_current_pid();
+    service_context.ticks = irq_line_count[0];
+    arch->syscall_decode(frame, &request);
+    if (!syscall_compat32_dispatch_request(&service_context, &request, &result)) {
+        result.value = 0u;
+        result.action = SYSCALL_RESULT_RETURN;
+    }
+
+    user_syscall_count++;
+    user_syscall_number = request.number;
+    user_syscall_argument = kernel_syscall_arg_u32(&request, 0);
+
+    if (result.action == SYSCALL_RESULT_EXEC) {
         char command[512];
-        struct i386_user_image image;
-        char name[NOS_NAME_BUFFER_SIZE];
-        uint32_t current_root = i386_paging_root();
         uintptr_t action;
 
-        user_syscall_count++;
-        user_syscall_number = request.number;
-        user_syscall_argument = request.arg0;
-        if (!kernel_i386_copy_user_string(request.arg0,
-                                          command,
-                                          sizeof(command))) {
-            frame->eax = (uint32_t)-1;
+        if (!arch_copy_user_cstr(command, (uint32_t)result.value, sizeof(command))) {
+            arch->syscall_set_return(frame, (uint32_t)-1);
             return 0u;
         }
-        i386_paging_switch(i386_paging_kernel_root());
-        if (!i386_load_command(command, &image, name, sizeof(name))) {
-            i386_paging_switch(current_root);
-            frame->eax = (uint32_t)-1;
-            return 0u;
-        }
-        i386_paging_switch(current_root);
         i386_context_from_syscall(&schedule_context, frame);
-        action = i386_scheduler_exec(&schedule_context,
-                                     image.entry,
-                                     image.stack_top,
-                                     image.root,
-                                     name);
+        action = process32_exec_replace_from_user(&schedule_context, command);
+        if (action == 0u) {
+            arch->syscall_set_return(frame, (uint32_t)-1);
+            return 0u;
+        }
         return i386_context_action_to_frame(action);
     }
-    if (request.number == SYS_WAIT) {
+    if (result.action == SYSCALL_RESULT_WAIT) {
         int32_t status = -1;
         int blocked = 0;
         uintptr_t action;
 
         i386_context_from_syscall(&schedule_context, frame);
-        action = i386_scheduler_wait(&schedule_context,
-                                     request.arg0,
-                                     &status,
-                                     &blocked);
-
-        user_syscall_count++;
-        user_syscall_number = request.number;
-        user_syscall_argument = request.arg0;
+        action = syscall_compat32_wait(&service_context,
+                                        &schedule_context,
+                                        (uint32_t)result.value,
+                                        &status,
+                                        &blocked);
         if (blocked && action != 0u) {
             return i386_context_action_to_frame(action);
         }
-        frame->eax = (uint32_t)status;
+        arch->syscall_set_return(frame, (uint32_t)status);
         return 0u;
     }
-    result = syscall_dispatch_common(&request, &context);
+    if (result.action == SYSCALL_RESULT_SLEEP) {
+        uintptr_t action;
 
-    user_syscall_count++;
-    user_syscall_number = request.number;
-    user_syscall_argument = request.arg0;
-    frame->eax = result.value;
-
-    if (result.action == SYSCALL_COMMON_EXIT) {
+        arch->syscall_set_return(frame, 0u);
+        i386_context_from_syscall(&schedule_context, frame);
+        action = syscall_compat32_sleep(&service_context,
+                                         &schedule_context,
+                                         (uint32_t)result.value);
+        return i386_context_action_to_frame(action);
+    }
+    if (result.action == SYSCALL_RESULT_EXIT) {
         uintptr_t action;
 
         i386_context_from_syscall(&schedule_context, frame);
-        action = i386_scheduler_exit(&schedule_context,
-                                     (int)result.value);
+        action = syscall_compat32_exit(&service_context,
+                                        &schedule_context,
+                                        (int)result.value);
         return action != 0u
             ? i386_context_action_to_frame(action)
             : 1u;
     }
-    if (result.action == SYSCALL_COMMON_YIELD) {
+    if (result.action == SYSCALL_RESULT_YIELD) {
         uintptr_t action;
 
         i386_context_from_syscall(&schedule_context, frame);
-        action = i386_scheduler_yield(&schedule_context);
+        action = syscall_compat32_yield(&service_context,
+                                         &schedule_context);
         if (action != 0u) {
             return i386_context_action_to_frame(action);
         }
     }
-    frame->eax = result.value;
+    arch->syscall_set_return(frame, (uintptr_t)result.value);
     return 0;
 }
 
@@ -393,6 +377,7 @@ struct i386_irq_frame *i386_irq_handler(uint32_t irq,
     if ((frame->cs & 3u) == 3u) {
         irq_user_count++;
     }
+    kernel_irq_state_record(irq, (frame->cs & 3u) == 3u);
     if (irq == 1u) {
         i386_keyboard_handle_irq();
     }
@@ -484,6 +469,7 @@ static int i386_interrupts_init(void) {
 static int i386_irq_test(struct kernel_early_boot_report *report) {
     irq_count = 0;
     irq_user_count = 0;
+    kernel_irq_state_reset();
     for (uint32_t irq = 0; irq < 16u; irq++) {
         irq_line_count[irq] = 0;
     }
@@ -886,6 +872,7 @@ static const struct hal_early_ops i386_hal_early_ops = {
 
 extern int kernel_i386_shared_services_init(void);
 extern void kernel_i386_shared_services_run(void);
+extern int kernel_i386_selftest_verbose(void);
 
 int kernel_i386_run_test32(struct process_snapshot *process0,
                            struct process_snapshot *process1) {
@@ -893,132 +880,45 @@ int kernel_i386_run_test32(struct process_snapshot *process0,
         TEST_STACK_TOP = 0xbfffe000u
     };
     struct i386_user_image task0;
-    struct i386_user_image task1;
 
     if (!i386_user_load_elf_space(&early_filesystem,
                                   "/BOOT/TEST32.ELF",
                                   TEST_STACK_TOP,
                                   &task0) ||
-        !i386_user_load_elf_space(&early_filesystem,
-                                  "/BOOT/TEST32.ELF",
-                                  TEST_STACK_TOP,
-                                  &task1) ||
-        !i386_scheduler_run(task0.entry,
-                            task0.stack_top,
-                            task0.root,
-                            task1.entry,
-                            task1.stack_top,
-                            task1.root) ||
-        !i386_scheduler_process_snapshot(0u, process0) ||
-        !i386_scheduler_process_snapshot(1u, process1)) {
+        !(kernel_i386_selftest_verbose()
+              ? i386_scheduler_run_one(task0.entry,
+                                      task0.stack_top,
+                                      task0.root,
+                                      "test32")
+              : i386_scheduler_run_one_quiet(task0.entry,
+                                             task0.stack_top,
+                                             task0.root,
+                                             "test32")) ||
+        !i386_scheduler_process_snapshot(0u, process0)) {
         return 0;
     }
-    return process0->state == PROCESS_STATE_EXITED &&
-           process1->state == PROCESS_STATE_EXITED &&
-           process0->exit_code == 0 &&
-           process1->exit_code == 0;
-}
-
-static int i386_parse_command(char *command,
-                              const char *argv[],
-                              int *argc_out) {
-    int argc = 0;
-    char *cursor = command;
-
-    while (*cursor != '\0' && argc < I386_USER_ARG_MAX) {
-        while (*cursor == ' ') {
-            cursor++;
-        }
-        if (*cursor == '\0') {
-            break;
-        }
-        argv[argc++] = cursor;
-        while (*cursor != '\0' && *cursor != ' ') {
-            cursor++;
-        }
-        if (*cursor != '\0') {
-            *cursor++ = '\0';
-        }
-    }
-    *argc_out = argc;
-    return argc != 0;
-}
-
-static int i386_load_command(const char *command,
-                             struct i386_user_image *image,
-                             char *name_out,
-                             uint32_t name_size) {
-    char copy[512];
-    const char *argv[I386_USER_ARG_MAX + 1];
-    static const char *const envp[] = {
-        "ARCH=i386",
-        "OS=NexOS",
-        0
-    };
-    int argc;
-    uint32_t length = 0u;
-
-    if (command == 0 || image == 0) {
+    *process1 = *process0;
+    if (process0->state != PROCESS_STATE_EXITED ||
+        process0->exit_code != 0) {
+        early_console_write("test32: exit0=");
+        early_console_write_hex32((uint32_t)process0->exit_code);
+        early_console_write(" exit1=");
+        early_console_write_hex32((uint32_t)process0->exit_code);
+        early_console_write("\n");
         return 0;
     }
-    while (command[length] != '\0' && length + 1u < sizeof(copy)) {
-        copy[length] = command[length];
-        length++;
-    }
-    copy[length] = '\0';
-    if (!i386_parse_command(copy, argv, &argc)) {
-        return 0;
-    }
-    argv[argc] = 0;
-    if (name_out != 0 && name_size != 0u) {
-        uint32_t i = 0u;
-
-        while (argv[0][i] != '\0' && i + 1u < name_size) {
-            name_out[i] = argv[0][i];
-            i++;
-        }
-        name_out[i] = '\0';
-    }
-    return i386_user_load_elf_space_args(&early_filesystem,
-                                          argv[0],
-                                          0xbfffe000u,
-                                          argc,
-                                          argv,
-                                          envp,
-                                          image);
+    return 1;
 }
 
-int32_t kernel_i386_spawn_command(const char *command) {
-    struct i386_user_image image;
-    char name[NOS_NAME_BUFFER_SIZE];
-    uint32_t current_root = i386_paging_root();
-
-    i386_paging_switch(i386_paging_kernel_root());
-    if (!i386_load_command(command, &image, name, sizeof(name))) {
-        i386_paging_switch(current_root);
-        return -1;
-    }
-    i386_paging_switch(current_root);
-    return i386_scheduler_spawn(image.entry,
-                                image.stack_top,
-                                image.root,
-                                name);
+int32_t kernel_i386_spawn_command(const char *command,
+                                  uint32_t mode,
+                                  uint32_t flags) {
+    return process32_spawn_from_user(command, mode, flags);
 }
 
 int kernel_i386_run_command(const char *command,
                             struct process_snapshot *process) {
-    struct i386_user_image image;
-    char name[NOS_NAME_BUFFER_SIZE];
-
-    if (!i386_load_command(command, &image, name, sizeof(name)) ||
-        !i386_scheduler_run_one(image.entry,
-                                image.stack_top,
-                                image.root,
-                                name) ||
-        !i386_scheduler_process_snapshot(0u, process)) {
-        return 0;
-    }
-    return process->state == PROCESS_STATE_EXITED;
+    return process32_run_command(command, process);
 }
 
 static int i386_prepare_shared_kernel(const struct bootx_boot_info *boot_info) {
@@ -1036,16 +936,112 @@ static int i386_prepare_shared_kernel(const struct bootx_boot_info *boot_info) {
         !i386_scheduler_test(&report)) {
         return 0;
     }
+    process32_init(&early_filesystem);
+    serial_write("i386: architecture bootstrap passed\n");
     return 1;
 }
 
+static int i386_identity_map_range(uint64_t address, uint64_t size) {
+    uint64_t start;
+    uint64_t end;
+
+    if (address == 0u || size == 0u || address > 0xffffffffull ||
+        size - 1u > 0xffffffffull - address) {
+        return 0;
+    }
+    start = address & ~0xfffull;
+    end = (address + size + 0xfffull) & ~0xfffull;
+    for (uint64_t page = start; page < end; page += 0x1000u) {
+        uint32_t physical = 0u;
+
+        if (i386_paging_translate((uint32_t)page, &physical)) {
+            if (physical != (uint32_t)page) {
+                return 0;
+            }
+            continue;
+        }
+        if (!i386_paging_map_page((uint32_t)page, (uint32_t)page, 1, 0)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int i386_map_boot_modules(const struct bootx_boot_info *boot_info) {
+    const struct bootx_module *modules;
+
+    if (boot_info == 0 || boot_info->module_count == 0u ||
+        boot_info->modules == 0u) {
+        return 1;
+    }
+    if (!i386_identity_map_range(boot_info->modules,
+                                 boot_info->module_count *
+                                     sizeof(struct bootx_module))) {
+        return 0;
+    }
+    modules = (const struct bootx_module *)(uintptr_t)boot_info->modules;
+    for (uint32_t i = 0u; i < boot_info->module_count; i++) {
+        if (modules[i].address != 0u && modules[i].size != 0u &&
+            !i386_identity_map_range(modules[i].address, modules[i].size)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int i386_map_framebuffer_console(const struct bootx_console_info *console) {
+    uint64_t framebuffer_size;
+
+    if (console == 0 || console->type != BOOTX_CONSOLE_FRAMEBUFFER) {
+        return 1;
+    }
+    framebuffer_size = (uint64_t)console->pitch * console->height;
+    return i386_identity_map_range(console->framebuffer_addr, framebuffer_size);
+}
+
 void kernel_main32(const struct bootx_boot_info *boot_info) {
-    (void)boot_info;
+    struct syscall_boot_info query_boot_info;
+    struct syscall_framebuffer_info query_fb_info;
+
+    query_boot_info.boot_drive = boot_info->boot_drive;
+    query_boot_info.partition_lba = boot_info->partition_lba;
+    query_boot_info.partition_sectors = boot_info->partition_sectors;
+    query_boot_info.module_count = boot_info->module_count;
+    query_fb_info.present =
+        boot_info->console.type == BOOTX_CONSOLE_FRAMEBUFFER ? 1u : 0u;
+    query_fb_info.type = boot_info->console.type;
+    query_fb_info.addr = boot_info->console.framebuffer_addr;
+    query_fb_info.width = boot_info->console.width;
+    query_fb_info.height = boot_info->console.height;
+    query_fb_info.pitch = boot_info->console.pitch;
+    query_fb_info.bpp = boot_info->console.framebuffer_bpp;
+    query_fb_info.red_mask_size = boot_info->console.red_mask_size;
+    query_fb_info.red_mask_shift = boot_info->console.red_mask_shift;
+    query_fb_info.green_mask_size = boot_info->console.green_mask_size;
+    query_fb_info.green_mask_shift = boot_info->console.green_mask_shift;
+    query_fb_info.blue_mask_size = boot_info->console.blue_mask_size;
+    query_fb_info.blue_mask_shift = boot_info->console.blue_mask_shift;
+    query_fb_info.text_columns = boot_info->console.text_columns;
+    query_fb_info.text_rows = boot_info->console.text_rows;
+    query_fb_info.text_color = boot_info->console.text_color;
+    kernel_i386_query_init(&query_boot_info,
+                           &query_fb_info,
+                           boot_info,
+                           boot_info->cmdline,
+                           boot_info->memmap,
+                           boot_info->memmap_count);
+    if (!i386_map_boot_modules(boot_info) ||
+        !i386_map_framebuffer_console(&boot_info->console)) {
+        early_console_write("kernel_main32: display module mapping failed\n");
+        i386_halt();
+    }
+    hal_display_load_font(boot_info);
+    hal_display_init(&boot_info->console);
     if (!kernel_i386_shared_services_init()) {
         early_console_write("kernel_main32: shared service initialization failed\n");
         i386_halt();
     }
-    serial_write("kernel_main32: common VFS/TTY/HAL services online\n");
+    kprint("kernel: services online\n");
     kernel_i386_shared_services_run();
 }
 

@@ -1,11 +1,22 @@
 #pragma once
 
+#include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <errno.h>
+#include <ctype.h>
 #include <dirent.h>
+#include <file.h>
 #include <fcntl.h>
+#include <inttypes.h>
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/ipc.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <unistd.h>

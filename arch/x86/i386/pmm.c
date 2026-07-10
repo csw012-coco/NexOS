@@ -168,6 +168,22 @@ uint32_t i386_pmm_reserved_pages(void) {
     return managed_page_count - free_page_count;
 }
 
+uint32_t pmm_total_pages(void) {
+    return i386_pmm_total_pages();
+}
+
+uint32_t pmm_free_pages(void) {
+    return i386_pmm_free_pages();
+}
+
+uint32_t pmm_used_pages(void) {
+    return i386_pmm_reserved_pages();
+}
+
+uint32_t pmm_dropped_pages(void) {
+    return 0u;
+}
+
 uint32_t i386_pmm_highest_address(void) {
     return highest_address;
 }

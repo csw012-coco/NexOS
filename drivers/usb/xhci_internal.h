@@ -18,7 +18,7 @@ enum {
     XHCI_SECTOR_SIZE = 512u,
     XHCI_MSC_READAHEAD_SECTORS = XHCI_PAGE_SIZE / XHCI_SECTOR_SIZE,
     XHCI_TRB_SIZE = 16u,
-    XHCI_RING_TRBS = 64u,
+    XHCI_RING_TRBS = XHCI_PAGE_SIZE / XHCI_TRB_SIZE,
     XHCI_ERST_ENTRIES = 1u,
     XHCI_MAX_SCRATCHPADS = 32u,
     XHCI_MAX_CONTROLLERS = 4u,
@@ -34,7 +34,7 @@ enum {
     XHCI_HOTPLUG_SCAN_TICKS = 25u,
     XHCI_MMIO_MAP_SIZE = 0x100000u,
     XHCI_WAIT_SPINS_DEFAULT = 50000000u,
-    XHCI_MSC_BULK_WAIT_SPINS = 3000000000u,
+    XHCI_MSC_BULK_WAIT_SPINS = XHCI_WAIT_SPINS_DEFAULT,
     XHCI_MSC_CONFIG_SETTLE_MS = 150u,
     XHCI_MSC_RESET_SETTLE_MS = 250u,
     XHCI_MSC_RW_RETRIES = 4u,
@@ -43,6 +43,11 @@ enum {
     XHCI_HID_MAX_POLL_FAILURES = 3u,
     XHCI_ADDRESS_SETTLE_MS = 20u,
     XHCI_DESCRIPTOR_RETRIES = 1u,
+    XHCI_VERBOSE_ROOT_PORTS = 0u,
+    XHCI_VERBOSE_ENUM = 0u,
+    XHCI_VERBOSE_HID = 0u,
+    XHCI_VERBOSE_HUB = 0u,
+    XHCI_VERBOSE_MSC_TRANSPORT = 0u,
 
     XHCI_USBCMD_RS = 1u << 0,
     XHCI_USBCMD_HCRST = 1u << 1,
@@ -80,6 +85,30 @@ enum {
     XHCI_LEGACY_BIOS_OWNED = 1u << 16,
     XHCI_LEGACY_OS_OWNED = 1u << 24
 };
+
+#define XHCI_ENUM_TRACE(...) do { \
+    if (XHCI_VERBOSE_ENUM) { \
+        kprint(__VA_ARGS__); \
+    } \
+} while (0)
+
+#define XHCI_HID_TRACE(...) do { \
+    if (XHCI_VERBOSE_HID) { \
+        kprint(__VA_ARGS__); \
+    } \
+} while (0)
+
+#define XHCI_HUB_TRACE(...) do { \
+    if (XHCI_VERBOSE_HUB) { \
+        kprint(__VA_ARGS__); \
+    } \
+} while (0)
+
+#define XHCI_MSC_TRANSPORT_TRACE(...) do { \
+    if (XHCI_VERBOSE_MSC_TRANSPORT) { \
+        kprint(__VA_ARGS__); \
+    } \
+} while (0)
 
 enum {
     XHCI_TRB_LINK = 6u,
@@ -135,6 +164,7 @@ enum {
     USB_DESC_CONFIGURATION = 0x02u,
     USB_DESC_HUB = 0x29u,
     USB_DESC_SS_HUB = 0x2au,
+    USB_DESC_SS_ENDPOINT_COMPANION = 0x30u,
     USB_CLASS_HID = 0x03u,
     USB_CLASS_HUB = 0x09u,
     USB_CLASS_MASS_STORAGE = 0x08u,
@@ -239,6 +269,8 @@ struct xhci_enum_device {
     uint8_t bulk_out_ep;
     uint8_t bulk_in_epid;
     uint8_t bulk_out_epid;
+    uint8_t bulk_in_burst;
+    uint8_t bulk_out_burst;
     uint16_t bulk_in_mps;
     uint16_t bulk_out_mps;
     uint32_t route_string;

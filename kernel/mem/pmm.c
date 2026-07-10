@@ -3,7 +3,8 @@
 enum {
     PMM_PAGE_SIZE = 4096,
     PMM_MAX_TRACKED_PAGES = 131072,
-    PMM_PAGE_INDEX_SIZE = PMM_MAX_TRACKED_PAGES * 2
+    PMM_PAGE_INDEX_SIZE = PMM_MAX_TRACKED_PAGES * 2,
+    PMM_DIRECT_MAP_LIMIT = 0x100000000ull
 };
 
 static uint64_t free_page_stack[PMM_MAX_TRACKED_PAGES];
@@ -95,6 +96,14 @@ void pmm_init(const struct bootx_memmap_entry *memmap,
         if (region_end <= region_base) {
             continue;
         }
+        if (region_base >= PMM_DIRECT_MAP_LIMIT) {
+            dropped_page_count += (uint32_t)((region_end - region_base) / PMM_PAGE_SIZE);
+            continue;
+        }
+        if (region_end > PMM_DIRECT_MAP_LIMIT) {
+            dropped_page_count += (uint32_t)((region_end - PMM_DIRECT_MAP_LIMIT) / PMM_PAGE_SIZE);
+            region_end = PMM_DIRECT_MAP_LIMIT;
+        }
 
         if (region_base < 0x100000ull) {
             region_base = 0x100000ull;
@@ -107,8 +116,8 @@ void pmm_init(const struct bootx_memmap_entry *memmap,
                 continue;
             }
             if (tracked_page_count >= PMM_MAX_TRACKED_PAGES) {
-                dropped_page_count++;
-                continue;
+                dropped_page_count += (uint32_t)((page - region_base) / PMM_PAGE_SIZE);
+                break;
             }
             if (!page_index_add(page_base)) {
                 dropped_page_count++;

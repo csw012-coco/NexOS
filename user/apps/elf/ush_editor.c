@@ -1,5 +1,4 @@
 #include "user/apps/elf/ush_shared.h"
-#include "user/libc/include/unistd.h"
 
 static char g_ush_prompt_path[64] = "/";
 static const char *g_ush_prompt_override = NULL;
@@ -495,23 +494,90 @@ void ush_prompt_override(const char *prompt) {
 }
 
 int read_line_chars(struct ush_editor *editor, char *line, uint32_t max_len) {
-    ssize_t got;
-
     if (editor == NULL || line == NULL || max_len == 0) {
         return 0;
     }
-    do {
-        got = nex_read(STDIN_FILENO, line, max_len, NEX_READ_NONBLOCK);
-        if (got <= 0) {
+    ush_editor_set_line(editor, "");
+    ush_editor_sync_rendered_len(editor);
+    for (;;) {
+        char ch;
+
+        if (!ush_read_char_nonblock(&ch)) {
             yield();
+            continue;
         }
-    } while (got <= 0);
-    line[max_len - 1u] = '\0';
-    ush_editor_set_line(editor, line);
-    ush_editor_history_store(editor, line);
-    editor->history_index = -1;
-    editor->scratch_saved = 0;
-    return 1;
+        if (ch == '\r') {
+            continue;
+        }
+        if (ch == '\n') {
+            uint32_t len = editor->len;
+
+            if (len >= max_len) {
+                len = max_len - 1u;
+            }
+            for (uint32_t i = 0; i < len; i++) {
+                line[i] = editor->line[i];
+            }
+            line[len] = '\0';
+            trim_line(line);
+            ush_editor_set_line(editor, line);
+            ush_editor_history_store(editor, line);
+            editor->history_index = -1;
+            editor->scratch_saved = 0;
+            write_str("\n");
+            return 1;
+        }
+        if (ch == '\b' || ch == 0x7f) {
+            ush_editor_backspace(editor);
+            ush_editor_render(editor);
+            continue;
+        }
+        if (ch == '\t') {
+            ush_editor_complete(editor);
+            ush_editor_render(editor);
+            continue;
+        }
+        if (ch == '\x1b') {
+            char seq1;
+            char seq2;
+
+            if (!ush_read_escape_char(&seq1)) {
+                continue;
+            }
+            if (seq1 != '[' || !ush_read_escape_char(&seq2)) {
+                continue;
+            }
+            if (seq2 == 'A') {
+                ush_editor_history_up(editor);
+            } else if (seq2 == 'B') {
+                ush_editor_history_down(editor);
+            } else if (seq2 == 'C') {
+                if (editor->cursor < editor->len) {
+                    editor->cursor++;
+                }
+            } else if (seq2 == 'D') {
+                if (editor->cursor > 0u) {
+                    editor->cursor--;
+                }
+            } else if (seq2 == 'H') {
+                ush_editor_move_home(editor);
+            } else if (seq2 == 'F') {
+                ush_editor_move_end(editor);
+            } else if (seq2 == '3') {
+                char tilde;
+
+                if (ush_read_escape_char(&tilde) && tilde == '~') {
+                    ush_editor_delete(editor);
+                }
+            }
+            ush_editor_render(editor);
+            continue;
+        }
+        if (ch >= ' ' && ch <= '~') {
+            ush_editor_insert_char(editor, ch);
+            ush_editor_render(editor);
+        }
+    }
 }
 
 void ush_history_list(void) {

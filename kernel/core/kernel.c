@@ -2,6 +2,8 @@
 #include "bootx/bootx.h"
 #include "hal/hal.h"
 #include "kernel/internal/core/device_poll_internal.h"
+#include "kernel/internal/core/boot_log_internal.h"
+#include "kernel/internal/core/boot_state_internal.h"
 #include "kernel/internal/core/graphics_service_internal.h"
 #include "kernel/internal/core/kernel_boot_internal.h"
 #include "kernel/internal/core/kernel_init_internal.h"
@@ -39,7 +41,8 @@ enum {
     IRQ_VECTOR_KEYBOARD = 33u,
     IRQ_VECTOR_SERIAL = 36u,
     IRQ_VECTOR_MOUSE = 44u,
-    IRQ_VECTOR_LAST = 47u
+    IRQ_VECTOR_LAST = 47u,
+    KERNEL_RUN_MEMORY_BENCHMARK = 0u
 };
 
 static void kernel_boot_trace(const char *text);
@@ -243,6 +246,7 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
         struct keyboard_event uart_event;
         int usb_signal = 0;
 
+        kernel_irq_state_record(0u, frame != 0 && (frame->cs & 0x3u) == 0x3u);
         hal_timer_notify_tick();
         timer_ticks++;
         device_poll_poll_usb_mouse_events(&timer_ticks);
@@ -268,6 +272,7 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
         struct keyboard_event event;
         int signal = 0;
 
+        kernel_irq_state_record(1u, frame != 0 && (frame->cs & 0x3u) == 0x3u);
         event = device_poll_read_ps2_keyboard_event();
         signal = kernel_feed_keyboard_event(&event, frame);
         hal_irq_ack(1);
@@ -278,6 +283,7 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
     }
 
     if (vector == IRQ_VECTOR_MOUSE) {
+        kernel_irq_state_record(12u, frame != 0 && (frame->cs & 0x3u) == 0x3u);
         device_poll_handle_mouse_irq(&timer_ticks);
         hal_irq_ack(12);
         return IRQ_DISPATCH_CONTINUE;
@@ -287,6 +293,7 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
         struct keyboard_event event;
         int signal = 0;
 
+        kernel_irq_state_record(4u, frame != 0 && (frame->cs & 0x3u) == 0x3u);
         device_poll_handle_uart_irq();
         while (device_poll_poll_uart_keyboard_event(&event)) {
             if (kernel_feed_keyboard_event(&event, frame)) {
@@ -305,6 +312,7 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
     }
 
     irq_line = (uint8_t)(vector - IRQ_VECTOR_BASE);
+    kernel_irq_state_record(irq_line, frame != 0 && (frame->cs & 0x3u) == 0x3u);
     device_poll_handle_network_irq(irq_line);
     hal_irq_ack(irq_line);
     return IRQ_DISPATCH_CONTINUE;
@@ -345,11 +353,20 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     g_kernel_boot_trace_row = 1;
     tty_set_cursor(&shell_tty, g_kernel_boot_trace_row, 0);
     kernel_boot_trace("kernel: entered");
-    string_memory_benchmark();
+    if (KERNEL_RUN_MEMORY_BENCHMARK) {
+        string_memory_benchmark();
+    }
     if (!kernel_boot_info_valid(boot_info)) {
         kernel_boot_trace("kernel: bad boot info");
         kernel_halt_forever();
     }
+    kernel_boot_state_init(boot_info->cmdline != 0 ?
+                               (const char *)(uintptr_t)boot_info->cmdline :
+                               "",
+                           "kernel64",
+                           "0.1.1",
+                           "x86_64");
+    kernel_irq_state_reset();
 
     memmap = (const struct bootx_memmap_entry *)(uintptr_t)boot_info->memmap;
     kernel_log_boot_info(boot_info);
@@ -368,12 +385,12 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
             hal_paging_set_write_combining(boot_info->console.framebuffer_addr,
                                            framebuffer_size);
 
-        kprint("paging: framebuffer=%lx size=%lx write_combining=%u\n",
-               boot_info->console.framebuffer_addr,
-               framebuffer_size,
-               (uint32_t)framebuffer_wc);
+        kernel_boot_log_framebuffer(boot_info->console.framebuffer_addr,
+                                    framebuffer_size,
+                                    1,
+                                    (uint32_t)framebuffer_wc);
     }
-    (void)hal_display_enable_backbuffer();
+    kernel_boot_trace("kernel: framebuffer backbuffer skip");
     kernel_log_pmm_info();
 
     kernel_boot_trace("kernel: block devices");

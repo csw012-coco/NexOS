@@ -71,18 +71,21 @@ int64_t vfs_read_dir_eventfs(struct vfs_node *node, uint32_t *index_io, struct v
             return vfs_eventfs_emit_dir_entry(entry, index_io, "timer", 0, 0);
         }
         if (*index_io == 1) {
-            return vfs_eventfs_emit_dir_entry(entry, index_io, "input", 0, VFS_ATTR_DIR);
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "timer.json", 0, 0);
         }
         if (*index_io == 2) {
-            return vfs_eventfs_emit_dir_entry(entry, index_io, "net", 0, VFS_ATTR_DIR);
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "input", 0, VFS_ATTR_DIR);
         }
         if (*index_io == 3) {
-            return vfs_eventfs_emit_dir_entry(entry, index_io, "file", 0, VFS_ATTR_DIR);
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "net", 0, VFS_ATTR_DIR);
         }
         if (*index_io == 4) {
-            return vfs_eventfs_emit_dir_entry(entry, index_io, "block", 0, VFS_ATTR_DIR);
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "file", 0, VFS_ATTR_DIR);
         }
         if (*index_io == 5) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "block", 0, VFS_ATTR_DIR);
+        }
+        if (*index_io == 6) {
             return vfs_eventfs_emit_dir_entry(entry, index_io, "security", 0, VFS_ATTR_DIR);
         }
         return 0;
@@ -103,16 +106,40 @@ int64_t vfs_read_dir_eventfs(struct vfs_node *node, uint32_t *index_io, struct v
         return 0;
     }
     if (node->aux_index == VFS_EVENT_NET_DIR) {
-        return *index_io == 0 ? vfs_eventfs_emit_dir_entry(entry, index_io, "status", 0, 0) : 0;
+        if (*index_io == 0) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "status", 0, 0);
+        }
+        if (*index_io == 1) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "status.json", 0, 0);
+        }
+        return 0;
     }
     if (node->aux_index == VFS_EVENT_FILE_DIR) {
-        return *index_io == 0 ? vfs_eventfs_emit_dir_entry(entry, index_io, "change", 0, 0) : 0;
+        if (*index_io == 0) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "change", 0, 0);
+        }
+        if (*index_io == 1) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "change.json", 0, 0);
+        }
+        return 0;
     }
     if (node->aux_index == VFS_EVENT_BLOCK_DIR) {
-        return *index_io == 0 ? vfs_eventfs_emit_dir_entry(entry, index_io, "change", 0, 0) : 0;
+        if (*index_io == 0) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "change", 0, 0);
+        }
+        if (*index_io == 1) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "change.json", 0, 0);
+        }
+        return 0;
     }
     if (node->aux_index == VFS_EVENT_SECURITY_DIR) {
-        return *index_io == 0 ? vfs_eventfs_emit_dir_entry(entry, index_io, "capability", 0, 0) : 0;
+        if (*index_io == 0) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "capability", 0, 0);
+        }
+        if (*index_io == 1) {
+            return vfs_eventfs_emit_dir_entry(entry, index_io, "capability.json", 0, 0);
+        }
+        return 0;
     }
     return 0;
 }

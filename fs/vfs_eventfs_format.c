@@ -176,7 +176,6 @@ static uint32_t vfs_format_keyboard_events(struct vfs_node *node, char *text, ui
 
     if (node != 0 && node->aux_data == 0u) {
         node->aux_data = keyboard_event_queue_latest_seq();
-        return 0;
     }
     dropped = keyboard_event_queue_dropped();
     while (node != 0 && pos + 96u < size && keyboard_event_queue_get_after(&node->aux_data, &rec)) {
@@ -205,6 +204,10 @@ static uint32_t vfs_format_keyboard_events(struct vfs_node *node, char *text, ui
         pos = vfs_append_u32_text(text, pos, size, keyboard_event_queue_pending());
         pos = vfs_append_text(text, pos, size, "\ndropped ");
         pos = vfs_append_u32_text(text, pos, size, dropped);
+        pos = vfs_append_text(text, pos, size, "\nlatest_seq ");
+        pos = vfs_append_u32_text(text, pos, size, keyboard_event_queue_latest_seq());
+        pos = vfs_append_text(text, pos, size, "\ncursor ");
+        pos = vfs_append_u32_text(text, pos, size, node != 0 ? node->aux_data : 0u);
         pos = vfs_append_text(text, pos, size, "\nsource /event/input/keyboard\n");
     } else {
         pos = vfs_append_text(text, pos, size, "pending ");
@@ -356,7 +359,6 @@ static uint32_t vfs_format_mouse_events(struct vfs_node *node, char *text, uint3
 
     if (node != 0 && node->aux_data == 0u) {
         node->aux_data = mouse_event_latest_seq();
-        return 0;
     }
     while (node != 0 && pos + 96u < size && mouse_event_get_after(&node->aux_data, &rec)) {
         pos = vfs_append_text(text, pos, size, "event input.mouse seq=");
@@ -377,6 +379,10 @@ static uint32_t vfs_format_mouse_events(struct vfs_node *node, char *text, uint3
         pos = vfs_append_u32_text(text, pos, size, mouse_event_pending());
         pos = vfs_append_text(text, pos, size, "\ndropped ");
         pos = vfs_append_u32_text(text, pos, size, mouse_event_dropped());
+        pos = vfs_append_text(text, pos, size, "\nlatest_seq ");
+        pos = vfs_append_u32_text(text, pos, size, mouse_event_latest_seq());
+        pos = vfs_append_text(text, pos, size, "\ncursor ");
+        pos = vfs_append_u32_text(text, pos, size, node != 0 ? node->aux_data : 0u);
         pos = vfs_append_text(text, pos, size, "\nsource /event/input/mouse\n");
     }
     return pos;

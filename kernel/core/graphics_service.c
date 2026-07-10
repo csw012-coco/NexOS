@@ -36,6 +36,10 @@ static void kernel_gfx_fill_info(struct syscall_gfx_info *info) {
     info->text_rows = hal_display_text_rows();
 }
 
+void kernel_gfx_info(struct syscall_gfx_info *info) {
+    kernel_gfx_fill_info(info);
+}
+
 void kernel_gfx_dimensions(uint32_t *width_out, uint32_t *height_out) {
     if (width_out != 0) {
         *width_out = g_kernel_gfx_width;

@@ -56,14 +56,7 @@ static const struct file_ops g_file_ops_vfs = {
     .readdir = file_vfs_readdir,
 };
 
-void file_init_vfs(struct file *file, const struct vfs_node *node, const char *opened_path, void *console_handle) {
-    if (file_device_backend_bind(file, node, console_handle)) {
-        return;
-    }
-    file_init_with_ops(file, KERNEL_FILE_VFS, &g_file_ops_vfs);
-    if (node != 0) {
-        file->vfs_node = *node;
-    }
+static void file_copy_opened_path(struct file *file, const char *opened_path) {
     if (opened_path != 0) {
         uint32_t i = 0;
 
@@ -73,4 +66,16 @@ void file_init_vfs(struct file *file, const struct vfs_node *node, const char *o
         }
         file->opened_path[i] = '\0';
     }
+}
+
+void file_init_vfs(struct file *file, const struct vfs_node *node, const char *opened_path, void *console_handle) {
+    if (file_device_backend_bind(file, node, console_handle)) {
+        file_copy_opened_path(file, opened_path);
+        return;
+    }
+    file_init_with_ops(file, KERNEL_FILE_VFS, &g_file_ops_vfs);
+    if (node != 0) {
+        file->vfs_node = *node;
+    }
+    file_copy_opened_path(file, opened_path);
 }

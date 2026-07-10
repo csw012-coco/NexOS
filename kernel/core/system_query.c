@@ -492,3 +492,12 @@ int kernel_block_write(uint32_t disk_index, uint64_t lba, struct syscall_block_w
     info->lba = lba;
     return 1;
 }
+
+int kernel_block_flush(uint32_t disk_index) {
+    struct block_device *dev = blockdev_get(disk_index);
+
+    if (dev == 0) {
+        return 0;
+    }
+    return blockdev_flush(dev) == 0;
+}

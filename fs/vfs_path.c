@@ -1,5 +1,16 @@
 #include "fs/vfs_internal.h"
+#include "kernel/public/core/kprint.h"
 #include "lib/string.h"
+
+enum {
+    VFS_PATH_TRACE_ENABLED = 0u
+};
+
+#define VFS_PATH_TRACE(...) do { \
+    if (VFS_PATH_TRACE_ENABLED) { \
+        kprint(__VA_ARGS__); \
+    } \
+} while (0)
 
 static int vfs_is_root_path(const char *path) {
     if (path == 0) {
@@ -118,6 +129,9 @@ int vfs_open_nxfs(struct vfs *vfs, const struct vfs_path *parsed, uint32_t flags
     }
     nxfs = (struct nxfs_volume *)mount.fs_data;
     if (nxfs_lookup_root(nxfs, parsed->child, &inode_index, &nxfs_inode) != 0) {
+        VFS_PATH_TRACE("vfs: nxfs open lookup fail child=%s slot=%u\n",
+                       parsed->child,
+                       parsed->mount_slot);
         if ((flags & VFS_OPEN_CREATE) == 0 ||
             nxfs_create_path(nxfs, parsed->child, &inode_index, &nxfs_inode) != 0) {
             return -1;

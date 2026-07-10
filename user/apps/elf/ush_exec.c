@@ -17,7 +17,29 @@ static uint32_t g_ush_function_call_depth;
 static int g_ush_function_recursion_limit_enabled = 1;
 static int g_ush_suppress_background_report;
 static uint32_t g_ush_last_background_pid;
+static int g_ush_last_foreground_status;
 static const char *g_ush_action_caps_path = "/HOME/ACTION.CAPS";
+
+struct ush_execute_workspace {
+    char seq_left[USH_LINE_MAX + 1];
+    char seq_right[USH_LINE_MAX + 1];
+    char bg_left[USH_LINE_MAX + 1];
+    char bg_right[USH_LINE_MAX + 1];
+    char bg_command[USH_LINE_MAX + 1];
+    char or_left[USH_LINE_MAX + 1];
+    char or_right[USH_LINE_MAX + 1];
+    char and_left[USH_LINE_MAX + 1];
+    char and_right[USH_LINE_MAX + 1];
+    char background_line[USH_LINE_MAX + 1];
+    char expanded_line[USH_LINE_MAX + 1];
+    char expanded_command[USH_LINE_MAX + 1];
+    char pipeline_texts[USH_PIPELINE_STAGE_MAX][USH_LINE_MAX + 1];
+    struct ush_command_spec pipeline_stages[USH_PIPELINE_STAGE_MAX];
+};
+
+static struct ush_execute_workspace g_ush_execute_workspace;
+
+static int ush_wait_pipeline_pid(uint32_t pid, int *status_out);
 
 static int streq_local(const char *a, const char *b) {
     uint32_t i = 0;
@@ -958,6 +980,63 @@ static int ush_build_cmd_search_command_lower(const char *line, char *out, uint3
     return ush_build_cmd_search_command_from(line, "/cmd", 1, out, out_size);
 }
 
+static int ush_build_prefixed_command(const char *prefix,
+                                      const char *line,
+                                      char *out,
+                                      uint32_t out_size) {
+    uint32_t out_len;
+    uint32_t i = 0;
+
+    if (prefix == NULL || line == NULL || out == NULL || out_size == 0) {
+        return 0;
+    }
+    copy_line_local(out, prefix, out_size);
+    out_len = str_len_local(out);
+    if (out_len == 0 || out_len + 1u >= out_size) {
+        out[0] = '\0';
+        return 0;
+    }
+    out[out_len++] = ' ';
+    while (line[i] != '\0') {
+        if (out_len + 1u >= out_size) {
+            out[0] = '\0';
+            return 0;
+        }
+        out[out_len++] = line[i++];
+    }
+    out[out_len] = '\0';
+    return 1;
+}
+
+static int ush_is_nexbox32_applet_name(const char *name) {
+    static const char *const applets[] = {
+        "help", "actions", "action", "mapper", "echo", "yes", "clear",
+        "pwd", "tty", "env", "font", "which", "type", "ls", "cat",
+        "less", "hexdump", "grep", "date", "hwclock", "sleep", "watch",
+        "on", "events", "clipboard", "wc", "head", "tail", "find",
+        "as", "pick", "select", "sort-by", "count-by", "to", "view",
+        "ed", "vi", "vim", "touch", "mv", "cp", "mkdir", "rmdir",
+        "rm", "asm", "stat", "du", "tree", "file", "blk", "parts",
+        "fdisk", "dd", "mkfs", "df", "mounts", "progs", "fatls",
+        "fatfind", "fatread", "cpio", "mount", "umount", "hotplug",
+        "run", "runelf", "runbg", "ps", "session", "service", "jobs",
+        "wait", "alarm", "timeout", "kill", "fg", "bg", "switch_root",
+        "reboot", "dmesg", "lspci", "ac97", "hda", "rtl8139",
+        "rtl8139tx", "rtl8139rx", "arp", "route", "netstat", "ping",
+        "dns", "dhcp", "ifconfig", "http", "wget", "nc", "audio",
+        "tone", "wav", "mplay", "doctor", "nexctl", "sysinfo",
+        "meminfo", "minfo", "uname", "cpuinfo", "config", "dbg",
+        "nexbox", "nexbox32"
+    };
+
+    for (uint32_t i = 0u; i < sizeof(applets) / sizeof(applets[0]); i++) {
+        if (streq_local(name, applets[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int ush_build_action_command(const char *line, char *out, uint32_t out_size) {
     uint32_t prefix_len;
     uint32_t i = 0;
@@ -1169,53 +1248,9 @@ static int ush_last_foreground_status_local(void) {
     struct syscall_process_info info;
 
     if (proc_query(NEX_PROC_QUERY_LAST_EXIT, 0, &info) <= 0) {
-        return 0;
+        return g_ush_last_foreground_status;
     }
     return info.exit_code == 0 ? 0 : 1;
-}
-
-static void ush_capture_process_ids_local(uint32_t *out) {
-    struct syscall_process_info info;
-    uint32_t i;
-
-    if (out == NULL) {
-        return;
-    }
-    for (i = 0; i < NEX_PROC_SLOTS_MAX; i++) {
-        out[i] = 0u;
-        if (proc_query(NEX_PROC_QUERY_ALL, i, &info) > 0) {
-            out[i] = info.pid;
-        }
-    }
-}
-
-static int ush_pid_seen_local(const uint32_t *snapshot, uint32_t pid) {
-    uint32_t i;
-
-    if (snapshot == NULL) {
-        return 0;
-    }
-    for (i = 0; i < NEX_PROC_SLOTS_MAX; i++) {
-        if (snapshot[i] == pid) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static uint32_t ush_find_new_process_pid_local(const uint32_t *snapshot) {
-    struct syscall_process_info info;
-    uint32_t i;
-
-    for (i = 0; i < NEX_PROC_SLOTS_MAX; i++) {
-        if (proc_query(NEX_PROC_QUERY_ALL, i, &info) <= 0) {
-            continue;
-        }
-        if (info.pid != 0u && !ush_pid_seen_local(snapshot, info.pid)) {
-            return info.pid;
-        }
-    }
-    return 0u;
 }
 
 static void ush_report_background_start_local(uint32_t pid, const char *command) {
@@ -1244,6 +1279,10 @@ static int ush_spawn_command_local(const char *command, uint32_t mode, int backg
             ush_report_background_start_local(pid, command);
         }
     } else {
+        int status = 0;
+
+        (void)ush_wait_pipeline_pid((uint32_t)rc, &status);
+        g_ush_last_foreground_status = status;
         ush_report_foreground_exit_status();
     }
     return 0;
@@ -1319,32 +1358,32 @@ static int ush_try_external_command(char *cwd, const char *line, int background,
         return 1;
     }
 
+    if (ush_is_nexbox32_applet_name(token) &&
+        ush_build_prefixed_command("/BOOT/NEXBOX32.ELF",
+                                   line,
+                                   search_command,
+                                   sizeof(search_command))) {
+        rc = ush_spawn_command_local(search_command, SYS_SPAWN_ELF, background);
+        if (rc == 0) {
+            if (handled_out != NULL) {
+                *handled_out = 1;
+            }
+            return background ? 0 : ush_last_foreground_status_local();
+        }
+    }
+
     (void)cwd;
     /*
      * Let the kernel's program registry resolve built-in and NexBox applets
      * before probing wrapper scripts in /ram/CMD and /cmd. This avoids up to
      * three failed path lookups and an extra ush process for each applet.
      */
-    if (background) {
-        rc = ush_spawn_command_local(line, SYS_SPAWN_AUTO, 1);
-    } else {
-        rc = exec(line);
-    }
+    rc = ush_spawn_command_local(line, SYS_SPAWN_AUTO, background);
     if (rc == 0) {
-        if (!background) {
-            ush_report_foreground_exit_status();
-        }
         if (handled_out != NULL) {
             *handled_out = 1;
         }
         return background ? 0 : ush_last_foreground_status_local();
-    }
-    if (rc < 0 && rc != -2) {
-        ush_report_exec_load_failure_local(line, rc);
-        if (handled_out != NULL) {
-            *handled_out = 1;
-        }
-        return 1;
     }
 
     if (ush_build_cmd_search_command_from(line, "/ram/CMD", 0, search_command, sizeof(search_command))) {
@@ -1354,13 +1393,6 @@ static int ush_try_external_command(char *cwd, const char *line, int background,
                 *handled_out = 1;
             }
             return background ? 0 : ush_last_foreground_status_local();
-        }
-        if (rc < 0 && rc != -2) {
-            ush_report_exec_load_failure_local(search_command, rc);
-            if (handled_out != NULL) {
-                *handled_out = 1;
-            }
-            return 1;
         }
     }
 
@@ -1372,16 +1404,22 @@ static int ush_try_external_command(char *cwd, const char *line, int background,
             }
             return background ? 0 : ush_last_foreground_status_local();
         }
-        if (rc < 0 && rc != -2) {
-            ush_report_exec_load_failure_local(search_command, rc);
-            if (handled_out != NULL) {
-                *handled_out = 1;
-            }
-            return 1;
-        }
     }
 
     if (ush_build_cmd_search_command(line, search_command, sizeof(search_command))) {
+        rc = ush_spawn_command_local(search_command, SYS_SPAWN_ELF, background);
+        if (rc == 0) {
+            if (handled_out != NULL) {
+                *handled_out = 1;
+            }
+            return background ? 0 : ush_last_foreground_status_local();
+        }
+    }
+
+    if (ush_build_prefixed_command("/BOOT/NEXBOX32.ELF",
+                                   line,
+                                   search_command,
+                                   sizeof(search_command))) {
         rc = ush_spawn_command_local(search_command, SYS_SPAWN_ELF, background);
         if (rc == 0) {
             if (handled_out != NULL) {
@@ -1996,12 +2034,16 @@ static int ush_execute_with_redirection(char *cwd, const struct ush_command_spec
         write_err_str("redirect: stdio save failed\n");
         return 1;
     }
+
     if (!ush_apply_redirections(cwd, spec)) {
         ush_restore_stdio(saved);
         return 1;
     }
+
     rc = ush_execute_command_core(cwd, spec->command, background);
+
     ush_restore_stdio(saved);
+
     return rc;
 }
 
@@ -2186,20 +2228,7 @@ cleanup_pipe:
 }
 
 static int ush_execute_line_core(char *cwd, const char *line) {
-    char seq_left[USH_LINE_MAX + 1];
-    char seq_right[USH_LINE_MAX + 1];
-    char bg_left[USH_LINE_MAX + 1];
-    char bg_right[USH_LINE_MAX + 1];
-    char bg_command[USH_LINE_MAX + 1];
-    char or_left[USH_LINE_MAX + 1];
-    char or_right[USH_LINE_MAX + 1];
-    char and_left[USH_LINE_MAX + 1];
-    char and_right[USH_LINE_MAX + 1];
-    char background_line[USH_LINE_MAX + 1];
-    char expanded_line[USH_LINE_MAX + 1];
-    char expanded_command[USH_LINE_MAX + 1];
-    char pipeline_texts[USH_PIPELINE_STAGE_MAX][USH_LINE_MAX + 1];
-    struct ush_command_spec pipeline_stages[USH_PIPELINE_STAGE_MAX];
+    struct ush_execute_workspace *workspace = &g_ush_execute_workspace;
     uint32_t pipeline_stage_count = 0;
     uint32_t i;
     int seq_rc;
@@ -2210,74 +2239,94 @@ static int ush_execute_line_core(char *cwd, const char *line) {
     int background_rc;
     int pipeline_rc;
 
-    seq_rc = ush_split_sequence(line, seq_left, sizeof(seq_left), seq_right, sizeof(seq_right));
+    seq_rc = ush_split_sequence(line,
+                                workspace->seq_left,
+                                sizeof(workspace->seq_left),
+                                workspace->seq_right,
+                                sizeof(workspace->seq_right));
     if (seq_rc < 0) {
         write_err_str("parse error\n");
         return 1;
     }
     if (seq_rc > 0) {
-        (void)ush_execute_line(cwd, seq_left);
-        return ush_execute_line(cwd, seq_right);
+        (void)ush_execute_line(cwd, workspace->seq_left);
+        return ush_execute_line(cwd, workspace->seq_right);
     }
-    bg_list_rc = ush_split_background_list(line, bg_left, sizeof(bg_left), bg_right, sizeof(bg_right));
+    bg_list_rc = ush_split_background_list(line,
+                                           workspace->bg_left,
+                                           sizeof(workspace->bg_left),
+                                           workspace->bg_right,
+                                           sizeof(workspace->bg_right));
     if (bg_list_rc < 0) {
         write_err_str("parse error\n");
         return 1;
     }
     if (bg_list_rc > 0) {
-        uint32_t bg_len = str_len_local(bg_left);
+        uint32_t bg_len = str_len_local(workspace->bg_left);
 
-        if (bg_len + 3u > sizeof(bg_command)) {
+        if (bg_len + 3u > sizeof(workspace->bg_command)) {
             write_err_str("parse error\n");
             return 1;
         }
-        copy_line_local(bg_command, bg_left, sizeof(bg_command));
-        bg_command[bg_len++] = ' ';
-        bg_command[bg_len++] = '&';
-        bg_command[bg_len] = '\0';
-        (void)ush_execute_line(cwd, bg_command);
-        return ush_execute_line(cwd, bg_right);
+        copy_line_local(workspace->bg_command,
+                        workspace->bg_left,
+                        sizeof(workspace->bg_command));
+        workspace->bg_command[bg_len++] = ' ';
+        workspace->bg_command[bg_len++] = '&';
+        workspace->bg_command[bg_len] = '\0';
+        (void)ush_execute_line(cwd, workspace->bg_command);
+        return ush_execute_line(cwd, workspace->bg_right);
     }
-    or_rc = ush_split_orif(line, or_left, sizeof(or_left), or_right, sizeof(or_right));
+    or_rc = ush_split_orif(line,
+                           workspace->or_left,
+                           sizeof(workspace->or_left),
+                           workspace->or_right,
+                           sizeof(workspace->or_right));
     if (or_rc < 0) {
         write_err_str("parse error\n");
         return 1;
     }
     if (or_rc > 0) {
-        int left_status = ush_execute_line(cwd, or_left);
+        int left_status = ush_execute_line(cwd, workspace->or_left);
 
         if (left_status == 0) {
             return 0;
         }
-        return ush_execute_line(cwd, or_right);
+        return ush_execute_line(cwd, workspace->or_right);
     }
-    and_rc = ush_split_andif(line, and_left, sizeof(and_left), and_right, sizeof(and_right));
+    and_rc = ush_split_andif(line,
+                             workspace->and_left,
+                             sizeof(workspace->and_left),
+                             workspace->and_right,
+                             sizeof(workspace->and_right));
     if (and_rc < 0) {
         write_err_str("parse error\n");
         return 1;
     }
     if (and_rc > 0) {
-        int left_status = ush_execute_line(cwd, and_left);
+        int left_status = ush_execute_line(cwd, workspace->and_left);
 
         if (left_status != 0) {
             return left_status;
         }
-        return ush_execute_line(cwd, and_right);
+        return ush_execute_line(cwd, workspace->and_right);
     }
     background_rc = ush_strip_trailing_background_local(line,
-                                                       background_line,
-                                                       sizeof(background_line),
+                                                       workspace->background_line,
+                                                       sizeof(workspace->background_line),
                                                        &background);
     if (background_rc < 0) {
         write_err_str("parse error\n");
         return 1;
     }
-    if (!ush_expand_variables_local(background_line, expanded_line, sizeof(expanded_line))) {
+    if (!ush_expand_variables_local(workspace->background_line,
+                                    workspace->expanded_line,
+                                    sizeof(workspace->expanded_line))) {
         write_err_str("expand error\n");
         return 1;
     }
-    pipeline_rc = ush_split_pipeline_stages_local(expanded_line,
-                                                  pipeline_texts,
+    pipeline_rc = ush_split_pipeline_stages_local(workspace->expanded_line,
+                                                  workspace->pipeline_texts,
                                                   USH_PIPELINE_STAGE_MAX,
                                                   &pipeline_stage_count);
     if (pipeline_rc < 0) {
@@ -2285,34 +2334,40 @@ static int ush_execute_line_core(char *cwd, const char *line) {
         return 1;
     }
     for (i = 0; i < pipeline_stage_count; i++) {
-        if (!ush_parse_command_spec(pipeline_texts[i], &pipeline_stages[i])) {
+        if (!ush_parse_command_spec(workspace->pipeline_texts[i],
+                                    &workspace->pipeline_stages[i])) {
             write_err_str("parse error\n");
             return 1;
         }
-        if (!ush_expand_command_text_local(pipeline_stages[i].command,
-                                           expanded_command,
-                                           sizeof(expanded_command))) {
+        if (!ush_expand_command_text_local(workspace->pipeline_stages[i].command,
+                                           workspace->expanded_command,
+                                           sizeof(workspace->expanded_command))) {
             write_err_str("expand error\n");
             return 1;
         }
-        copy_line_local(pipeline_stages[i].command,
-                        expanded_command,
-                        sizeof(pipeline_stages[i].command));
+        copy_line_local(workspace->pipeline_stages[i].command,
+                        workspace->expanded_command,
+                        sizeof(workspace->pipeline_stages[i].command));
     }
     if (pipeline_stage_count == 1u) {
-        return ush_execute_with_redirection(cwd, &pipeline_stages[0], background);
+        return ush_execute_with_redirection(cwd,
+                                            &workspace->pipeline_stages[0],
+                                            background);
     }
     if (background) {
         write_err_str("background: pipelines are not supported\n");
         return 1;
     }
-    return ush_execute_pipeline(cwd, pipeline_stages, pipeline_stage_count);
+    return ush_execute_pipeline(cwd,
+                                workspace->pipeline_stages,
+                                pipeline_stage_count);
 }
 
 int ush_execute_line(char *cwd, const char *line) {
     int function_handled = 0;
-    int function_rc = ush_try_function_call_local(cwd, line, 1, &function_handled);
+    int function_rc;
 
+    function_rc = ush_try_function_call_local(cwd, line, 1, &function_handled);
     if (function_handled) {
         return function_rc;
     }

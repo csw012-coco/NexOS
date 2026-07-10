@@ -4,9 +4,9 @@
 #include <string.h>
 #include <unistd.h>
 
-static FILE standard_input = {STDIN_FILENO, 0, 0};
-static FILE standard_output = {STDOUT_FILENO, 0, 0};
-static FILE standard_error = {STDERR_FILENO, 0, 0};
+static FILE standard_input = {STDIN_FILENO, 0, 0, 0};
+static FILE standard_output = {STDOUT_FILENO, 0, 0, 0};
+static FILE standard_error = {STDERR_FILENO, 0, 0, 0};
 
 FILE *stdin = &standard_input;
 FILE *stdout = &standard_output;
@@ -61,6 +61,7 @@ FILE *fopen(const char *path, const char *mode) {
     stream->fd = fd;
     stream->error = 0;
     stream->eof = 0;
+    stream->owned = 1;
     return stream;
 }
 
@@ -119,10 +120,101 @@ size_t fread(void *buffer, size_t size, size_t count, FILE *stream) {
 int fclose(FILE *stream) {
     int result;
 
-    if (stream == 0) {
+    if (stream == 0 || !stream->owned) {
         return EOF;
     }
     result = close(stream->fd);
     free(stream);
     return result;
+}
+
+int fflush(FILE *stream) {
+    (void)stream;
+    return 0;
+}
+
+int fgetc(FILE *stream) {
+    char value;
+    ssize_t result;
+
+    if (stream == 0) {
+        return EOF;
+    }
+    result = read(stream->fd, &value, 1u);
+    if (result < 0) {
+        stream->error = 1;
+        return EOF;
+    }
+    if (result == 0) {
+        stream->eof = 1;
+        return EOF;
+    }
+    return (unsigned char)value;
+}
+
+char *fgets(char *buffer, int size, FILE *stream) {
+    int used = 0;
+
+    if (buffer == 0 || size <= 0 || stream == 0) {
+        return 0;
+    }
+    while (used + 1 < size) {
+        int ch = fgetc(stream);
+
+        if (ch == EOF) {
+            break;
+        }
+        buffer[used++] = (char)ch;
+        if (ch == '\n') {
+            break;
+        }
+    }
+    if (used == 0) {
+        return 0;
+    }
+    buffer[used] = '\0';
+    return buffer;
+}
+
+int getchar(void) {
+    return fgetc(stdin);
+}
+
+int fseek(FILE *stream, long offset, int whence) {
+    if (stream == 0 || lseek(stream->fd, offset, whence) < 0) {
+        if (stream != 0) {
+            stream->error = 1;
+        }
+        return -1;
+    }
+    stream->eof = 0;
+    return 0;
+}
+
+long ftell(FILE *stream) {
+    long result;
+
+    if (stream == 0) {
+        return -1;
+    }
+    result = lseek(stream->fd, 0, SEEK_CUR);
+    if (result < 0) {
+        stream->error = 1;
+    }
+    return result;
+}
+
+int feof(FILE *stream) {
+    return stream != 0 ? stream->eof : 0;
+}
+
+int ferror(FILE *stream) {
+    return stream != 0 ? stream->error : 0;
+}
+
+void clearerr(FILE *stream) {
+    if (stream != 0) {
+        stream->error = 0;
+        stream->eof = 0;
+    }
 }

@@ -1,16 +1,27 @@
 #pragma once
 
-#include "user/libc/include/fcntl.h"
-#include "user/libc/include/file.h"
-#include "user/libc/include/stdio.h"
-#include "user/libc/include/stdlib.h"
-#include "user/libc/include/string.h"
-#include "user/libc/include/strings.h"
-#include "user/libc/include/nexos/file.h"
-#include "user/libc/include/nexos/fs.h"
-#include "user/libc/include/nexos/process.h"
-#include "user/libc/include/nexos/string.h"
-#include "user/libc/include/nexos/system.h"
+#include <fcntl.h>
+#include <file.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <unistd.h>
+
+#include <abi/syscall_abi.h>
+#include <nexos/fs.h>
+#include <nexos/process.h>
+#include <nexos/system.h>
+
+#ifndef NEX_READ_BLOCKING
+#define NEX_READ_BLOCKING SYS_READ_BLOCKING
+#endif
+#ifndef NEX_READ_NONBLOCK
+#define NEX_READ_NONBLOCK SYS_READ_NONBLOCK
+#endif
+#ifndef NEX_READ_CHAR
+#define NEX_READ_CHAR SYS_READ_CHAR
+#endif
 
 #define USH_LINE_MAX 63u
 #define USH_HISTORY_MAX 8u

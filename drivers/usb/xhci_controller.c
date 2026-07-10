@@ -100,29 +100,29 @@ static int xhci_init_controller(uint8_t controller_index, const struct pci_xhci_
             uint32_t speed = (portsc >> 10) & 0x0fu;
 
             g_xhci.connected_ports++;
-            kprint("xhci: port%u connected speed=%u enabled=%u powered=%u portsc=%x\n",
-                   port,
-                   speed,
-                   (uint32_t)((portsc & XHCI_PORTSC_PED) != 0u),
-                   (uint32_t)((portsc & XHCI_PORTSC_PP) != 0u),
-                   portsc);
+            XHCI_ENUM_TRACE("xhci: port%u connected speed=%u enabled=%u powered=%u portsc=%x\n",
+                            port,
+                            speed,
+                            (uint32_t)((portsc & XHCI_PORTSC_PED) != 0u),
+                            (uint32_t)((portsc & XHCI_PORTSC_PP) != 0u),
+                            portsc);
         }
     }
     xhci_enumerate_connected_ports();
     g_xhci.initialized = 1u;
     xhci_save_active_controller();
-    kprint("xhci%u: controller bdf=%u:%u.%u mmio=%lx slots=%u intrs=%u ports=%u ctx=%u scratch=%u hcc=%x rev=msc-v2\n",
-           (uint32_t)controller_index,
-           (uint32_t)xhci->bus,
-           (uint32_t)xhci->slot,
-           (uint32_t)xhci->function,
-           mmio,
-           (uint32_t)g_xhci.max_slots,
-           (uint32_t)g_xhci.max_intrs,
-           (uint32_t)g_xhci.max_ports,
-           (uint32_t)g_xhci.context_size,
-           scratchpads,
-           hcc1);
+    XHCI_ENUM_TRACE("xhci%u: controller bdf=%u:%u.%u mmio=%lx slots=%u intrs=%u ports=%u ctx=%u scratch=%u hcc=%x rev=msc-v2\n",
+                    (uint32_t)controller_index,
+                    (uint32_t)xhci->bus,
+                    (uint32_t)xhci->slot,
+                    (uint32_t)xhci->function,
+                    mmio,
+                    (uint32_t)g_xhci.max_slots,
+                    (uint32_t)g_xhci.max_intrs,
+                    (uint32_t)g_xhci.max_ports,
+                    (uint32_t)g_xhci.context_size,
+                    scratchpads,
+                    hcc1);
     return 1;
 }
 

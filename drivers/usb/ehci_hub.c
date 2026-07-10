@@ -588,17 +588,10 @@ static void ehci_mark_root_port_detached(uint32_t port_index) {
     }
 }
 
-void ehci_hotplug_poll(void) {
-    uint32_t tick;
-
+static void ehci_hotplug_scan_ports(void) {
     if (g_ehci.cap == 0 || g_ehci.op == 0 || g_ehci.port_count == 0u) {
         return;
     }
-    tick = hal_timer_current_ticks();
-    if ((uint32_t)(tick - g_ehci_last_hotplug_tick) < EHCI_HOTPLUG_SCAN_TICKS) {
-        return;
-    }
-    g_ehci_last_hotplug_tick = tick;
     for (uint32_t port = 0u; port < g_ehci.port_count; port++) {
         uint32_t port_off = 0x44u + port * 4u;
         uint32_t portsc = ehci_read_op(port_off);
@@ -620,4 +613,22 @@ void ehci_hotplug_poll(void) {
         kprint("ehci: hotplug port%u connected portsc=%x\n", port, portsc);
         (void)ehci_enumerate_port(port);
     }
+}
+
+void ehci_hotplug_poll(void) {
+    uint32_t tick;
+
+    if (g_ehci.cap == 0 || g_ehci.op == 0 || g_ehci.port_count == 0u) {
+        return;
+    }
+    tick = hal_timer_current_ticks();
+    if ((uint32_t)(tick - g_ehci_last_hotplug_tick) < EHCI_HOTPLUG_SCAN_TICKS) {
+        return;
+    }
+    g_ehci_last_hotplug_tick = tick;
+    ehci_hotplug_scan_ports();
+}
+
+void ehci_hotplug_scan_now(void) {
+    ehci_hotplug_scan_ports();
 }

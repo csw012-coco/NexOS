@@ -12,8 +12,8 @@ int main(int argc, char **argv, char **envp) {
            argc > 1 ? argv[1] : "(none)",
            envp != 0 && envp[0] != 0 ? envp[0] : "(none)");
 
-    page = page_alloc();
-    if (page == 0 || page_free(page) != 0) {
+    page = (void *)(uintptr_t)page_alloc();
+    if (page == 0 || page_free((uint64_t)(uintptr_t)page) != 0) {
         printf("[app32] SYS_PAGE_ALLOC/FREE failed\n");
         return 2;
     }
@@ -52,7 +52,7 @@ int main(int argc, char **argv, char **envp) {
     }
     if (argc > 1 && strcmp(argv[1], "exec") == 0) {
         printf("[app32] exec source pid=%d\n", getpid());
-        (void)exec("/BOOT/APP32.ELF exec-target");
+        (void)exec("./BOOT/APP32.ELF 'exec-target'");
         return 10;
     }
     if (argc > 1 && strcmp(argv[1], "exec-target") == 0) {
@@ -61,7 +61,7 @@ int main(int argc, char **argv, char **envp) {
     }
 
     {
-        pid_t child = spawn("/BOOT/APP32.ELF child");
+        pid_t child = spawn_ex("/BOOT/APP32.ELF child", SYS_SPAWN_ELF, 0u);
         int status;
 
         if (child <= 0) {
@@ -76,7 +76,7 @@ int main(int argc, char **argv, char **envp) {
     }
 
     {
-        pid_t child = spawn("/BOOT/APP32.ELF exec");
+        pid_t child = spawn_ex("/BOOT/APP32.ELF exec", SYS_SPAWN_ELF, 0u);
         int status;
 
         if (child <= 0) {

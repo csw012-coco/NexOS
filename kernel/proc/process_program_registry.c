@@ -59,10 +59,28 @@ static const struct process_program g_process_programs[] = {
     { "reboot", "NEXBOX.ELF" },
 };
 
+static int process_program_name_has_path(const char *name) {
+    uint32_t i = 0;
+
+    if (name == NULL) {
+        return 0;
+    }
+    while (name[i] != '\0') {
+        if (name[i] == '/') {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
 const struct process_program *process_find_program_internal(const char *name) {
     uint32_t i;
 
     if (name == NULL) {
+        return NULL;
+    }
+    if (process_program_name_has_path(name)) {
         return NULL;
     }
     for (i = 0; i < process_program_count(); i++) {

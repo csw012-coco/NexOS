@@ -175,13 +175,13 @@ void xhci_log_supported_protocols(uint32_t hccparams1) {
             proto[2] = (char)((name >> 16) & 0xffu);
             proto[3] = (char)((name >> 24) & 0xffu);
             proto[4] = '\0';
-            kprint("xhci: protocol %s rev=%u.%u ports=%u..%u raw=%x\n",
-                   proto,
-                   (cap >> 24) & 0xffu,
-                   (cap >> 16) & 0xffu,
-                   port_offset,
-                   port_count != 0u ? port_offset + port_count - 1u : 0u,
-                   ports);
+            XHCI_ENUM_TRACE("xhci: protocol %s rev=%u.%u ports=%u..%u raw=%x\n",
+                            proto,
+                            (cap >> 24) & 0xffu,
+                            (cap >> 16) & 0xffu,
+                            port_offset,
+                            port_count != 0u ? port_offset + port_count - 1u : 0u,
+                            ports);
         }
         if (next == 0u) {
             break;
@@ -206,15 +206,18 @@ void xhci_log_root_ports(uint8_t controller_index, const char *phase) {
     for (uint32_t port = 1u; port <= g_xhci.max_ports; port++) {
         uint32_t portsc = xhci_read32(g_xhci.op, XHCI_OP_PORT_BASE + (port - 1u) * XHCI_PORT_REG_STRIDE);
 
-        kprint("xhci%u: root port%u %s conn=%u enabled=%u powered=%u speed=%u portsc=%x\n",
-               (uint32_t)controller_index,
-               port,
-               phase,
-               (uint32_t)((portsc & XHCI_PORTSC_CCS) != 0u),
-               (uint32_t)((portsc & XHCI_PORTSC_PED) != 0u),
-               (uint32_t)((portsc & XHCI_PORTSC_PP) != 0u),
-               (portsc >> 10) & 0x0fu,
-               portsc);
+        if (!XHCI_VERBOSE_ROOT_PORTS && (portsc & XHCI_PORTSC_CCS) == 0u) {
+            continue;
+        }
+        XHCI_ENUM_TRACE("xhci%u: root port%u %s conn=%u enabled=%u powered=%u speed=%u portsc=%x\n",
+                        (uint32_t)controller_index,
+                        port,
+                        phase,
+                        (uint32_t)((portsc & XHCI_PORTSC_CCS) != 0u),
+                        (uint32_t)((portsc & XHCI_PORTSC_PED) != 0u),
+                        (uint32_t)((portsc & XHCI_PORTSC_PP) != 0u),
+                        (portsc >> 10) & 0x0fu,
+                        portsc);
     }
 }
 

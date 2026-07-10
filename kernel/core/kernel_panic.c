@@ -277,6 +277,7 @@ static const char *kernel_syscall_name(uint64_t number) {
         case SYS_FORK: return "fork";
         case SYS_MMAP: return "mmap";
         case SYS_MUNMAP: return "munmap";
+        case SYS_MPROTECT: return "mprotect";
         case SYS_PAGE_ALLOC: return "page_alloc";
         case SYS_PAGE_FREE: return "page_free";
         case SYS_GFX: return "gfx";

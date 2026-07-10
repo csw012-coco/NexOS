@@ -71,14 +71,14 @@ static int request_pages(size_t size) {
     uint8_t *base = 0;
 
     for (uint32_t i = 0; i < pages; i++) {
-        uint8_t *page = page_alloc();
+        uint8_t *page = (uint8_t *)(uintptr_t)page_alloc();
 
         if (page == 0 || (i != 0u && page != base + i * MALLOC_PAGE_SIZE)) {
             if (page != 0) {
-                (void)page_free(page);
+                (void)page_free((uint64_t)(uintptr_t)page);
             }
             for (uint32_t j = 0; j < i; j++) {
-                (void)page_free(base + j * MALLOC_PAGE_SIZE);
+                (void)page_free((uint64_t)(uintptr_t)(base + j * MALLOC_PAGE_SIZE));
             }
             return 0;
         }

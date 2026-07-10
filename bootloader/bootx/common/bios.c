@@ -56,6 +56,26 @@ static inline void outb(uint16_t port, uint8_t value) {
 
 static uint8_t bios_key_extended;
 
+static uint16_t bios_int16_poll_key(void) {
+    struct rm_regs r;
+
+    memset(&r, 0, sizeof(r));
+    r.eax = 0x0100u;
+    if (bios_interrupt(0x16, &r, &r) != 0) {
+        return 0;
+    }
+    if ((r.eflags & 0x40u) != 0) {
+        return 0;
+    }
+
+    memset(&r, 0, sizeof(r));
+    r.eax = 0x0000u;
+    if (bios_interrupt(0x16, &r, &r) != 0) {
+        return 0;
+    }
+    return (uint16_t)(r.eax & 0xFFFFu);
+}
+
 static int ata_wait_ready(void) {
     for (uint32_t i = 0; i < 200000u; i++) {
         uint8_t status = inb(0x1F7);
@@ -191,6 +211,11 @@ int bios_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void *buffer) 
 }
 
 uint16_t bios_poll_key(void) {
+    uint16_t bios_key = bios_int16_poll_key();
+    if (bios_key != 0) {
+        return bios_key;
+    }
+
     if ((inb(0x64) & 1u) == 0) {
         return 0;
     }

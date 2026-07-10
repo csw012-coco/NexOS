@@ -5,6 +5,7 @@
 #include "fs/vfs.h"
 #include "fs/vfs_internal.h"
 #include "kernel/public/core/tty.h"
+#include "kernel/public/core/kprint.h"
 #include "kernel/public/mem/vmm.h"
 #include "kernel/public/proc/scheduler.h"
 #include "lib/string.h"
@@ -19,6 +20,16 @@ struct job_terminal_ref {
     uint8_t kind;
     struct tty *tty;
 };
+
+enum {
+    JOB_TRACE_ENABLED = 0u
+};
+
+#define JOB_TRACE(...) do { \
+    if (JOB_TRACE_ENABLED) { \
+        kprint(__VA_ARGS__); \
+    } \
+} while (0)
 
 static uint32_t g_serial_foreground_pid;
 
@@ -195,13 +206,20 @@ void job_clear_process_foreground_pid(const struct process *proc) {
 }
 
 static void job_restore_bound_session(struct process_session *session, struct user_page_mapping *mappings) {
+    uint64_t target_root = 0;
+
     if (session == 0 || mappings == 0) {
         job_bind_foreground_session();
         return;
     }
     process_bind_session(session, mappings);
     if (session->address_space.user_cr3 != 0) {
-        (void)vmm_switch_root_or_fail(session->address_space.user_cr3);
+        target_root = session->address_space.user_cr3;
+    } else if (session->address_space.kernel_cr3 != 0) {
+        target_root = session->address_space.kernel_cr3;
+    }
+    if (target_root != 0 && !vmm_root_is_current(target_root)) {
+        (void)vmm_switch_root_or_fail(target_root);
     }
 }
 
@@ -224,6 +242,7 @@ static void job_update_ready_work_while_foreground_waits(struct process_session 
 }
 
 static int job_start_runtime_session(struct job_runtime *runtime, struct process *proc, uint64_t kernel_cr3) {
+    JOB_TRACE("job: runtime start pid=%u\n", proc != 0 ? proc->pid : 0u);
     runtime->used = 1;
     process_bind_session(&runtime->session, runtime->mappings);
     runtime->session.fpu_state_valid = 0u;
@@ -236,6 +255,9 @@ static int job_start_runtime_session(struct job_runtime *runtime, struct process
     runtime->session.process.exit_code = 0;
     runtime->session.process.wake_tick = 0;
     runtime->session.address_space.kernel_cr3 = kernel_cr3 != 0 ? kernel_cr3 : vmm_current_root();
+    JOB_TRACE("job: runtime kernel_cr3=%lx current=%lx\n",
+              runtime->session.address_space.kernel_cr3,
+              vmm_current_root());
     if (!vmm_root_is_current(runtime->session.address_space.kernel_cr3) &&
         !vmm_switch_root_or_fail(runtime->session.address_space.kernel_cr3)) {
         g_process_slot_used[proc->slot] = 0;
@@ -243,7 +265,9 @@ static int job_start_runtime_session(struct job_runtime *runtime, struct process
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
     }
+    JOB_TRACE("job: runtime user root begin\n");
     runtime->session.address_space.user_cr3 = vmm_create_user_root();
+    JOB_TRACE("job: runtime user root=%lx\n", runtime->session.address_space.user_cr3);
     if (runtime->session.address_space.user_cr3 == 0) {
         g_process_slot_used[proc->slot] = 0;
         job_reset_runtime(runtime);
@@ -298,8 +322,10 @@ int job_run_background_with_pid(struct vfs *vfs,
     struct process_session *caller_session = process_current_session();
     struct user_page_mapping *caller_mappings = process_current_mappings();
     const struct process *parent_proc = process_current();
+    uint64_t caller_root = vmm_current_root();
 
     g_process_exec_last_error = PROCESS_EXEC_OK;
+    JOB_TRACE("job: bg start %s\n", name != 0 ? name : "(null)");
     if (vfs == 0 || name == 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
         return 0;
@@ -312,7 +338,9 @@ int job_run_background_with_pid(struct vfs *vfs,
         g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
         return 0;
     }
+    JOB_TRACE("job: bg command %s\n", command_name);
     image_name = mode == PROCESS_EXEC_ELF ? command_name : process_resolve_image_name(command_name);
+    JOB_TRACE("job: bg resolve begin %s\n", image_name != 0 ? image_name : "(null)");
     if (!process_resolve_exec_target(vfs,
                                      image_name,
                                      name,
@@ -324,13 +352,26 @@ int job_run_background_with_pid(struct vfs *vfs,
                                      &bytes_read)) {
         return 0;
     }
+    JOB_TRACE("job: bg resolve ok image=%s bytes=%u\n", resolved_image_name, bytes_read);
+    JOB_TRACE("job: bg caller root=%lx user=%lx kernel=%lx\n",
+              caller_root,
+              caller_session != 0 ? caller_session->address_space.user_cr3 : 0,
+              caller_session != 0 ? caller_session->address_space.kernel_cr3 : 0);
+    if (caller_session != 0 &&
+        caller_session->process.image_kind == PROCESS_IMAGE_NONE &&
+        caller_session->address_space.user_cr3 == 0 &&
+        caller_session->address_space.kernel_cr3 == 0) {
+        caller_session->address_space.kernel_cr3 = caller_root;
+    }
 
     job_ensure_process_terminal_owner(parent_proc);
+    JOB_TRACE("job: bg alloc slot begin\n");
     proc = process_alloc_slot(0, parent_proc);
     if (proc == 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ENTER;
         return 0;
     }
+    JOB_TRACE("job: bg alloc slot ok pid=%u slot=%u\n", proc->pid, proc->slot);
     if (pid_out != 0) {
         *pid_out = proc->pid;
     }
@@ -342,39 +383,51 @@ int job_run_background_with_pid(struct vfs *vfs,
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
+    JOB_TRACE("job: bg runtime ok user_cr3=%lx\n", runtime->session.address_space.user_cr3);
     job_ensure_process_terminal_owner(&runtime->session.process);
+    JOB_TRACE("job: bg switch user root begin\n");
     if (!vmm_switch_root_or_fail(runtime->session.address_space.user_cr3)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         job_cleanup_runtime(runtime);
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
+    JOB_TRACE("job: bg switch user root ok\n");
     addrspace_unmap_range_if_present(USER_ELF_BASE, USER_ELF_LIMIT);
     addrspace_unmap_range_if_present(USER_ELF_STACK_BOTTOM, USER_ELF_STACK_TOP);
     vmm_allow_user_range(USER_ELF_BASE, USER_ELF_LIMIT);
     vmm_allow_user_range(USER_ELF_STACK_BOTTOM, USER_ELF_STACK_TOP);
     process_set_name(&runtime->session.process, resolved_image_name);
 
+    JOB_TRACE("job: bg load elf begin\n");
     if (!process_load_elf_image(g_elf_file_buffer, bytes_read, &entry)) {
         job_cleanup_runtime(runtime);
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
+    JOB_TRACE("job: bg load elf ok entry=%lx\n", entry);
+    JOB_TRACE("job: bg stack map begin\n");
     if (!addrspace_map_range(USER_ELF_STACK_BOTTOM, USER_ELF_STACK_TOP)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_STACK_ALLOC;
         job_cleanup_runtime(runtime);
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
+    JOB_TRACE("job: bg stack map ok\n");
 
     runtime->entry = entry;
+    JOB_TRACE("job: bg args begin\n");
     if (!process_prepare_arguments(resolved_command_line, envp, &runtime->stack_top)) {
         job_cleanup_runtime(runtime);
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
+    JOB_TRACE("job: bg args ok stack=%lx\n", runtime->stack_top);
+    JOB_TRACE("job: bg restore caller begin\n");
     job_restore_bound_session(caller_session, caller_mappings);
+    JOB_TRACE("job: bg restore caller ok current=%lx\n", vmm_current_root());
     g_process_exec_last_error = PROCESS_EXEC_OK;
+    JOB_TRACE("job: bg ok pid=%u\n", runtime->session.process.pid);
     return 1;
 }
 

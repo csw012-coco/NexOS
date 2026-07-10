@@ -98,6 +98,17 @@ uint32_t i386_keyboard_dropped(void) {
     return key_dropped;
 }
 
+uint32_t i386_keyboard_pending(void) {
+    if (key_head >= key_tail) {
+        return key_head - key_tail;
+    }
+    return (KEY_QUEUE_SIZE - key_tail) + key_head;
+}
+
+uint32_t i386_keyboard_queue_capacity(void) {
+    return KEY_QUEUE_SIZE - 1u;
+}
+
 int i386_keyboard_inject_scancode(uint8_t scancode) {
     if (!ps2_wait_input_empty()) {
         return 0;

@@ -3,6 +3,19 @@
 enum {
     NXFS_READ_RUN_MAX_BLOCKS = 128u
 };
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
+#define NXFS_BOOT_TRACE(...) ((void)0)
+#else
+#include "kernel/public/core/kprint.h"
+enum {
+    NXFS_BOOT_TRACE_ENABLED = 0u
+};
+#define NXFS_BOOT_TRACE(...) do { \
+    if (NXFS_BOOT_TRACE_ENABLED) { \
+        kprint(__VA_ARGS__); \
+    } \
+} while (0)
+#endif
 #include "kernel/public/sys/system_limits.h"
 #include "lib/string.h"
 
@@ -48,6 +61,21 @@ static int nxfs_logical_to_physical(const struct nxfs_inode *inode, uint32_t log
     }
 
     return -1;
+}
+
+static int nxfs_trace_file_read(const struct nxfs_inode *inode,
+                                uint32_t offset,
+                                uint32_t buffer_size,
+                                uint32_t block_idx) {
+#if !(defined(__STDC_HOSTED__) && __STDC_HOSTED__)
+    if (!NXFS_BOOT_TRACE_ENABLED) {
+        return 0;
+    }
+#endif
+    return (inode != 0 && inode->size <= NXFS_BLOCK_SIZE) ||
+           buffer_size <= NXFS_BLOCK_SIZE ||
+           (offset >= 40960u && offset < 53248u) ||
+           (block_idx >= 80u && block_idx < 104u);
 }
 
 static int nxfs_append_extent(struct nxfs_inode *inode, uint32_t start, uint32_t len) {
@@ -948,29 +976,22 @@ int nxfs_read_file_range(struct nxfs_volume *vol,
             block_idx++;
             continue;
         }
-        if (copy_start == block_start && chunk == NXFS_BLOCK_SIZE) {
-            uint32_t run = 1u;
-
-            while (run < NXFS_READ_RUN_MAX_BLOCKS && block_idx + run < last_block) {
-                uint32_t next_start = (block_idx + run) * NXFS_BLOCK_SIZE;
-                int next_phys = nxfs_logical_to_physical(inode, block_idx + run);
-
-                if (next_start < offset ||
-                    next_start + NXFS_BLOCK_SIZE > request_end ||
-                    next_phys != phys + (int)run) {
-                    break;
-                }
-                run++;
-            }
-            if (nxfs_read_blocks(vol, (uint32_t)phys, run, out + done) != 0) {
-                return -1;
-            }
-            done += run * NXFS_BLOCK_SIZE;
-            block_idx += run;
-            continue;
+        if (nxfs_trace_file_read(inode, offset, buffer_size, block_idx)) {
+            NXFS_BOOT_TRACE("nxfs: file block l=%u p=%u lba=%lx chunk=%u dev=%s\n",
+                            block_idx,
+                            (uint32_t)phys,
+                            (uint64_t)vol->partition_lba + (uint32_t)phys,
+                            chunk,
+                            vol->bdev != 0 && vol->bdev->name != 0 ? vol->bdev->name : "(null)");
         }
         if (nxfs_read_block(vol, (uint32_t)phys, block) != 0) {
+            if (nxfs_trace_file_read(inode, offset, buffer_size, block_idx)) {
+                NXFS_BOOT_TRACE("nxfs: file block fail l=%u\n", block_idx);
+            }
             return -1;
+        }
+        if (nxfs_trace_file_read(inode, offset, buffer_size, block_idx)) {
+            NXFS_BOOT_TRACE("nxfs: file block ok l=%u\n", block_idx);
         }
         nxfs_mem_copy(out + done, block + (copy_start - block_start), chunk);
         done += chunk;

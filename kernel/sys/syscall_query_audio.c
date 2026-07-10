@@ -1,30 +1,15 @@
 #include "kernel/internal/sys/syscall_internal.h"
+#include "kernel/internal/core/runtime_internal.h"
 #include "kernel/internal/core/system_query_internal.h"
 #include "kernel/internal/fs/fs_service_fd_internal.h"
 #include "kernel/internal/proc/process_types_internal.h"
 #include "drivers/audio/audio.h"
-#include "hal/hal.h"
 
 enum {
     SYSCALL_AUDIO_BUFFER_MAX = 1048576u
 };
 
 static uint8_t g_syscall_audio_buffer[SYSCALL_AUDIO_BUFFER_MAX];
-
-static int syscall_audio_run_with_irqs_local(int (*play)(void *ctx), void *ctx) {
-    int result;
-
-    /*
-     * Syscalls enter through an interrupt gate, so IF remains clear for the
-     * whole handler unless explicitly enabled. Audio playback can wait for
-     * DMA for a long time; allow timer and input IRQs only during that wait,
-     * then restore the syscall handler's IRQ-off state before returning.
-     */
-    hal_cpu_sti();
-    result = play(ctx);
-    hal_cpu_cli();
-    return result;
-}
 
 struct syscall_audio_tone_call {
     uint32_t index;
@@ -127,7 +112,7 @@ uint64_t syscall_handle_audio_tone(uint32_t index, uint32_t hz, uint32_t duratio
     call.index = index;
     call.hz = hz;
     call.duration_ms = duration_ms;
-    return syscall_audio_run_with_irqs_local(syscall_audio_play_tone_local, &call) ? 1u : 0u;
+    return kernel_runtime_run_with_irqs_enabled(syscall_audio_play_tone_local, &call) ? 1u : 0u;
 }
 
 uint64_t syscall_handle_audio_play(uint32_t index, uint64_t user_info_addr) {
@@ -152,7 +137,7 @@ uint64_t syscall_handle_audio_play(uint32_t index, uint64_t user_info_addr) {
     call.index = index;
     call.info = &info;
     call.buffer = g_syscall_audio_buffer;
-    return syscall_audio_run_with_irqs_local(syscall_audio_play_buffer_local, &call) ? 1u : 0u;
+    return kernel_runtime_run_with_irqs_enabled(syscall_audio_play_buffer_local, &call) ? 1u : 0u;
 }
 
 uint64_t syscall_handle_audio_play_fd(uint32_t index, uint64_t user_info_addr) {
@@ -189,5 +174,5 @@ uint64_t syscall_handle_audio_play_fd(uint32_t index, uint64_t user_info_addr) {
 
     call.index = index;
     call.stream = &stream;
-    return syscall_audio_run_with_irqs_local(syscall_audio_play_stream_local, &call) ? 1u : 0u;
+    return kernel_runtime_run_with_irqs_enabled(syscall_audio_play_stream_local, &call) ? 1u : 0u;
 }

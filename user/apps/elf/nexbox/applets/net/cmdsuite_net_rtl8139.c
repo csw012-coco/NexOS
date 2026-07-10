@@ -112,8 +112,8 @@ int cmd_rtl8139(void) {
     uint32_t i;
 
     if (rtl8139_query(&info) <= 0 || !info.present) {
-        write_err_str("rtl8139: controller not found\n");
-        return 1;
+        write_str("rtl8139: controller not found\n");
+        return 0;
     }
     write_str("RTL8139 controller\n");
     write_str("bdf ");

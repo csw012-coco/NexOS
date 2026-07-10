@@ -5,6 +5,10 @@
 
 ssize_t write_stdout(const void *buf, size_t count);
 ssize_t write_stderr(const void *buf, size_t count);
+uint32_t write_fd(uint32_t fd, const char *data, uint32_t len);
+uint32_t write_str(const char *text);
+uint32_t write_err(const char *data, uint32_t len);
+uint32_t write_err_str(const char *text);
 ssize_t nex_read(int fd, void *buf, size_t count, uint32_t flags);
 uint32_t read_char_nonblock(char *ch);
 uint32_t read_line(uint32_t fd, char *buf, uint32_t size);

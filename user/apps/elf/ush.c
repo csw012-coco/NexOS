@@ -110,7 +110,11 @@ int ush_build_invoked_command_line(int argc, char **argv, char *out, uint32_t ou
     }
     base = ush_basename_local(argv[0]);
     copy_lowercase_line_local(program, sizeof(program), base);
-    if (program[0] == '\0' || streq_local(program, "ush") || streq_local(program, "ush.elf")) {
+    if (program[0] == '\0' ||
+        streq_local(program, "ush") ||
+        streq_local(program, "ush.elf") ||
+        streq_local(program, "ush32") ||
+        streq_local(program, "ush32.elf")) {
         return 0;
     }
     copy_line_local(out, program, out_size);
@@ -458,7 +462,11 @@ static int ush_is_direct_shell_invocation(const char *path) {
     return streq_local(base, "ush") ||
            streq_local(base, "USH") ||
            streq_local(base, "USH.ELF") ||
-           streq_local(base, "ush.elf");
+           streq_local(base, "ush.elf") ||
+           streq_local(base, "USH32") ||
+           streq_local(base, "ush32") ||
+           streq_local(base, "USH32.ELF") ||
+           streq_local(base, "ush32.elf");
 }
 
 static int ush_bind_interactive_stdio_path(const char *path) {

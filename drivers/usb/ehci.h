@@ -10,5 +10,6 @@ uint32_t ehci_hid_keyboard_count(void);
 int ehci_poll_keyboard_event(struct keyboard_event *out);
 void ehci_poll_mouse_events(uint32_t tick);
 void ehci_hotplug_poll(void);
+void ehci_hotplug_scan_now(void);
 
 extern const struct kernel_driver ehci_kernel_driver;

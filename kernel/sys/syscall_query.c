@@ -75,6 +75,17 @@ uint64_t syscall_handle_pmm_query(uint64_t user_info_addr) {
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }
 
+uint64_t syscall_handle_vm_query(uint64_t user_info_addr) {
+    struct syscall_vm_info info;
+
+    if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
+        return syscall_kill_bad_user_pointer();
+    }
+    memset(&info, 0, sizeof(info));
+    info.user_stack_pages = NOS_USER_STACK_SIZE / NOS_PAGE_SIZE;
+    return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
+}
+
 uint64_t syscall_handle_block_read(uint32_t disk_index, uint64_t lba, uint64_t user_info_addr) {
     struct syscall_block_read_info info;
 
@@ -101,6 +112,10 @@ uint64_t syscall_handle_block_write(uint32_t disk_index, uint64_t lba, uint64_t 
         return 0;
     }
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
+}
+
+uint64_t syscall_handle_block_flush(uint32_t disk_index) {
+    return kernel_block_flush(disk_index) ? 1u : 0u;
 }
 
 uint64_t syscall_handle_program_query(uint32_t index, uint64_t user_info_addr) {
@@ -219,6 +234,47 @@ uint64_t syscall_handle_tty_query(uint32_t fd, uint64_t user_info_addr) {
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }
 
+uint64_t syscall_handle_fd_query(uint32_t fd, uint64_t user_info_addr) {
+    struct syscall_fd_info info;
+    const struct process *proc;
+    const struct file *file;
+
+    if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
+        return syscall_kill_bad_user_pointer();
+    }
+    if (fd >= NOS_PROCESS_FILE_MAX) {
+        return 0;
+    }
+    proc = process_current();
+    if (proc == 0) {
+        return 0;
+    }
+    file = &proc->files[fd];
+    for (uint32_t i = 0; i < sizeof(info); i++) {
+        ((uint8_t *)&info)[i] = 0;
+    }
+    info.fd = fd;
+    info.kind = file->kind;
+    info.flags = file->flags;
+    info.offset = file->offset;
+    info.node_kind = file->vfs_node.kind;
+    info.mount_kind = file->vfs_node.mount_kind;
+    info.readable =
+        file->kind == KERNEL_FILE_TTY_STDIN ||
+        file->kind == KERNEL_FILE_PIPE_READ ||
+        ((file->flags & KERNEL_FILE_ACCESS_READ) != 0u);
+    info.writable =
+        file->kind == KERNEL_FILE_TTY_STDOUT ||
+        file->kind == KERNEL_FILE_TTY_STDERR ||
+        file->kind == KERNEL_FILE_PIPE_WRITE ||
+        ((file->flags & KERNEL_FILE_ACCESS_WRITE) != 0u);
+    syscall_copy_name(info.path, sizeof(info.path), file->opened_path);
+    if (file->kind == KERNEL_FILE_NONE) {
+        return 0;
+    }
+    return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
+}
+
 uint64_t syscall_handle_profile_query(uint32_t index,
                                       uint32_t flags,
                                       uint64_t user_info_addr) {
@@ -244,6 +300,8 @@ uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint6
             return syscall_handle_memmap_query((uint32_t)arg0, user_info_addr);
         case SYS_QUERY_PMM:
             return syscall_handle_pmm_query(user_info_addr);
+        case SYS_QUERY_VM:
+            return syscall_handle_vm_query(user_info_addr);
         case SYS_QUERY_BLOCK:
             return syscall_handle_block_query((uint32_t)arg0, user_info_addr);
         case SYS_QUERY_PART:
@@ -282,6 +340,8 @@ uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint6
             return syscall_handle_profile_query((uint32_t)arg0,
                                                 (uint32_t)arg1,
                                                 user_info_addr);
+        case SYS_QUERY_FD:
+            return syscall_handle_fd_query((uint32_t)arg0, user_info_addr);
         default:
             return 0;
     }

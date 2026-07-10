@@ -8,7 +8,8 @@ enum sched_runqueue_reason {
     SCHED_RUNQUEUE_PREEMPT = 0,
     SCHED_RUNQUEUE_YIELD = 1,
     SCHED_RUNQUEUE_BLOCK = 2,
-    SCHED_RUNQUEUE_EXIT = 3
+    SCHED_RUNQUEUE_EXIT = 3,
+    SCHED_RUNQUEUE_SLEEP = 4
 };
 
 enum {
