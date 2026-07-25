@@ -1,13 +1,7 @@
-#include "block/blockdev.h"
-#include "drivers/bus/pci.h"
-#include "drivers/rtc/cmos.h"
 #include "fs/vfs.h"
-#include "kernel/internal/core/system_query_internal.h"
 #include "kernel/internal/fs/file_internal.h"
 #include "kernel/public/core/kprint.h"
-#include "kernel/public/core/profile.h"
 #include "kernel/public/arch/arch_ops.h"
-#include "kernel/public/proc/process.h"
 #include "kernel/internal/sys/syscall_compat32_internal.h"
 #include "lib/string.h"
 
@@ -81,58 +75,95 @@ static int compat32_root_find(struct vfs *vfs,
     return 0;
 }
 
-static void compat32_fill_pci_info(uint32_t index, struct syscall_pci_info *info) {
-    struct pci_device_info device;
+struct compat32_query_ops {
+    struct syscall_compat32_context *ctx;
+    int (*copy_to_user)(uint64_t user_addr, const void *src, uint32_t size);
+    int (*copy_user_cstr)(char *dest, uint64_t user_addr, uint32_t size);
+    uint32_t (*fd_kind)(struct syscall_compat32_context *ctx, uint32_t fd);
+    int32_t (*fd_query)(struct syscall_compat32_context *ctx,
+                        uint32_t fd,
+                        struct syscall_fd_info *info);
+    int (*fill_mount_info)(struct syscall_compat32_context *ctx,
+                           struct syscall_mount_info *info,
+                           uint32_t index);
+    void (*fill_machine_info)(struct syscall_compat32_context *ctx,
+                              struct syscall_machine_info *info);
+    void (*vm_snapshot)(struct syscall_compat32_context *ctx,
+                        struct syscall_vm_info *info);
+};
 
-    for (uint32_t i = 0u; i < sizeof(*info); i++) {
-        ((uint8_t *)info)[i] = 0u;
+static int compat32_query_copy_to_user(uint64_t user_addr,
+                                       const void *src,
+                                       uint32_t size) {
+    if (user_addr > 0xffffffffu) {
+        return 0;
     }
-    if (!pci_find_device_by_index(index, &device)) {
-        return;
-    }
-    info->present = 1u;
-    info->bus = device.bus;
-    info->slot = device.slot;
-    info->function = device.function;
-    info->class_code = device.class_code;
-    info->subclass = device.subclass;
-    info->prog_if = device.prog_if;
-    info->irq_line = device.irq_line;
-    info->irq_pin = device.irq_pin;
-    info->vendor_id = device.vendor_id;
-    info->device_id = device.device_id;
-    info->bar0 = device.bar0;
-    info->bar1 = device.bar1;
-    info->bar2 = device.bar2;
-    info->bar3 = device.bar3;
-    info->bar4 = device.bar4;
-    info->bar5 = device.bar5;
+    return arch_copy_to_user((uint32_t)user_addr, src, size);
 }
 
-static void compat32_fill_rtc_info(struct syscall_rtc_info *info) {
-    struct cmos_rtc_info rtc;
-
-    for (uint32_t i = 0u; i < sizeof(*info); i++) {
-        ((uint8_t *)info)[i] = 0u;
+static int compat32_query_copy_user_cstr(char *dest,
+                                         uint64_t user_addr,
+                                         uint32_t size) {
+    if (user_addr > 0xffffffffu) {
+        return 0;
     }
-    (void)cmos_rtc_query(&rtc);
-    info->present = rtc.present;
-    info->updating = rtc.updating;
-    info->valid = rtc.valid;
-    info->binary_mode = rtc.binary_mode;
-    info->hour_24 = rtc.hour_24;
-    info->status_a = rtc.status_a;
-    info->status_b = rtc.status_b;
-    info->century = rtc.century;
-    info->raw_year = rtc.raw_year;
-    info->second = rtc.second;
-    info->minute = rtc.minute;
-    info->hour = rtc.hour;
-    info->weekday = rtc.weekday;
-    info->day = rtc.day;
-    info->month = rtc.month;
-    info->year = rtc.year;
-    info->unix_time = rtc.unix_time;
+    return arch_copy_user_cstr(dest, (uint32_t)user_addr, size);
+}
+
+static uint32_t compat32_query_fd_kind(struct syscall_compat32_context *ctx,
+                                       uint32_t fd) {
+    return ctx != 0 && ctx->fd_kind != 0 ? ctx->fd_kind(fd) : 0u;
+}
+
+static int32_t compat32_query_fd_query(struct syscall_compat32_context *ctx,
+                                       uint32_t fd,
+                                       struct syscall_fd_info *info) {
+    return ctx != 0 && ctx->fd_query != 0 ? ctx->fd_query(fd, info) : 0;
+}
+
+static int compat32_query_fill_mount_info(
+    struct syscall_compat32_context *ctx,
+    struct syscall_mount_info *info,
+    uint32_t index) {
+    return ctx != 0 && ctx->fill_mount_info != 0
+        ? ctx->fill_mount_info(info, index)
+        : 0;
+}
+
+static void compat32_query_fill_machine_info(
+    struct syscall_compat32_context *ctx,
+    struct syscall_machine_info *info) {
+    if (ctx != 0 && ctx->fill_machine_info != 0) {
+        ctx->fill_machine_info(info);
+    }
+}
+
+static void compat32_query_vm_snapshot(struct syscall_compat32_context *ctx,
+                                       struct syscall_vm_info *info) {
+    syscall_compat32_vm_snapshot(ctx, info);
+}
+
+static void compat32_query_ops_init(struct compat32_query_ops *ops,
+                                    struct syscall_compat32_context *ctx) {
+    if (ops == 0) {
+        return;
+    }
+    ops->ctx = ctx;
+    ops->copy_to_user = compat32_query_copy_to_user;
+    ops->copy_user_cstr = compat32_query_copy_user_cstr;
+    ops->fd_kind = compat32_query_fd_kind;
+    ops->fd_query = compat32_query_fd_query;
+    ops->fill_mount_info = compat32_query_fill_mount_info;
+    ops->fill_machine_info = compat32_query_fill_machine_info;
+    ops->vm_snapshot = compat32_query_vm_snapshot;
+}
+
+static uint32_t compat32_query_copy_out(const struct compat32_query_ops *ops,
+                                        uint32_t user_info,
+                                        const void *info,
+                                        uint32_t size) {
+    return ops != 0 && ops->copy_to_user != 0 &&
+           ops->copy_to_user(user_info, info, size) ? 1u : 0u;
 }
 
 uint32_t syscall_compat32_query(struct syscall_compat32_context *ctx,
@@ -140,13 +171,17 @@ uint32_t syscall_compat32_query(struct syscall_compat32_context *ctx,
                                  uint32_t arg0,
                                  uint32_t arg1,
                                  uint32_t user_info) {
+    struct compat32_query_ops ops;
+
     if (ctx == 0) {
         return 0u;
     }
+    compat32_query_ops_init(&ops, ctx);
+    (void)arg1;
     if (kind == SYS_QUERY_TTY) {
         struct syscall_tty_info info = {0};
         static const char tty_path[] = "/dev/tty0";
-        uint32_t fd_kind = ctx->fd_kind != 0 ? ctx->fd_kind(arg0) : 0u;
+        uint32_t fd_kind = ops.fd_kind != 0 ? ops.fd_kind(ctx, arg0) : 0u;
 
         if (fd_kind == KERNEL_FILE_TTY_STDIN ||
             fd_kind == KERNEL_FILE_TTY_STDOUT ||
@@ -160,114 +195,48 @@ uint32_t syscall_compat32_query(struct syscall_compat32_context *ctx,
                     break;
                 }
             }
-            return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
+            return compat32_query_copy_out(
+                &ops, user_info, &info, sizeof(info));
         }
         return 0u;
     }
     if (kind == SYS_QUERY_FD) {
         struct syscall_fd_info info;
-        int found = ctx->fd_query != 0 ? ctx->fd_query(arg0, &info) : 0;
+        int found = ops.fd_query != 0 ? ops.fd_query(ctx, arg0, &info) : 0;
 
         if (found <= 0) {
             return (uint32_t)found;
         }
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_BLOCK) {
-        struct syscall_block_info info = {0};
-        struct block_device *dev = blockdev_get(arg0);
-
-        if (dev == 0 || ctx->fill_block_info == 0) {
-            return 0u;
-        }
-        ctx->fill_block_info(&info, arg0, dev);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_PART) {
-        struct syscall_partition_info info = {0};
-        struct block_device *dev = blockdev_get(arg0);
-        struct blockdev_partition part;
-
-        if (dev == 0 || ctx->fill_part_info == 0 ||
-            blockdev_partition_get(dev, arg1, &part) != 0) {
-            return 0u;
-        }
-        ctx->fill_part_info(&info, arg0, arg1, &part);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
+        return compat32_query_copy_out(&ops, user_info, &info, sizeof(info));
     }
     if (kind == SYS_QUERY_MOUNT) {
         struct syscall_mount_info info;
-        int found = ctx->fill_mount_info != 0
-            ? ctx->fill_mount_info(&info, arg0)
+        int found = ops.fill_mount_info != 0
+            ? ops.fill_mount_info(ctx, &info, arg0)
             : 0;
 
         if (found <= 0) {
             return (uint32_t)found;
         }
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
+        return compat32_query_copy_out(&ops, user_info, &info, sizeof(info));
     }
     if (kind == SYS_QUERY_MACHINE_INFO) {
         struct syscall_machine_info info;
 
-        if (ctx->fill_machine_info == 0) {
+        if (ops.fill_machine_info == 0) {
             return 0u;
         }
-        ctx->fill_machine_info(&info);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_BOOT_INFO) {
-        return ctx->boot_info != 0 &&
-               arch_copy_to_user(user_info, ctx->boot_info, sizeof(*ctx->boot_info))
-            ? 1u
-            : 0u;
-    }
-    if (kind == SYS_QUERY_FB) {
-        return ctx->fb_info != 0 &&
-               arch_copy_to_user(user_info, ctx->fb_info, sizeof(*ctx->fb_info))
-            ? 1u
-            : 0u;
-    }
-    if (kind == SYS_QUERY_MEMMAP) {
-        struct syscall_memmap_info info;
-
-        if (ctx->memmap == 0 || arg0 >= ctx->memmap_count) {
-            return 0u;
-        }
-        info.base = ctx->memmap[arg0].base;
-        info.length = ctx->memmap[arg0].length;
-        info.type = ctx->memmap[arg0].type;
-        info.reserved = ctx->memmap[arg0].reserved;
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_PMM) {
-        struct syscall_pmm_info info;
-
-        if (ctx->pmm_total_pages == 0 ||
-            ctx->pmm_free_pages == 0 ||
-            ctx->pmm_reserved_pages == 0) {
-            return 0u;
-        }
-        info.total_pages = ctx->pmm_total_pages();
-        info.free_pages = ctx->pmm_free_pages();
-        info.used_pages = ctx->pmm_reserved_pages();
-        info.dropped_pages = 0u;
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
+        ops.fill_machine_info(ctx, &info);
+        return compat32_query_copy_out(&ops, user_info, &info, sizeof(info));
     }
     if (kind == SYS_QUERY_VM) {
         struct syscall_vm_info info;
 
-        syscall_compat32_vm_snapshot(ctx, &info);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_PROGRAM) {
-        struct syscall_program_info info;
-        const char *name = process_program_name(arg0);
-
-        if (name == 0) {
+        if (ops.vm_snapshot == 0) {
             return 0u;
         }
-        compat32_copy_name(info.name, sizeof(info.name), name);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
+        ops.vm_snapshot(ctx, &info);
+        return compat32_query_copy_out(&ops, user_info, &info, sizeof(info));
     }
     if (kind == SYS_QUERY_ROOT || kind == SYS_QUERY_FAT_ROOT) {
         struct syscall_root_entry_info root_info;
@@ -282,15 +251,18 @@ uint32_t syscall_compat32_query(struct syscall_compat32_context *ctx,
             fat_info.first_cluster = root_info.native_id;
             fat_info.size = root_info.size;
             fat_info.attributes = root_info.attributes;
-            return arch_copy_to_user(user_info, &fat_info, sizeof(fat_info)) ? 1u : 0u;
+            return compat32_query_copy_out(
+                &ops, user_info, &fat_info, sizeof(fat_info));
         }
-        return arch_copy_to_user(user_info, &root_info, sizeof(root_info)) ? 1u : 0u;
+        return compat32_query_copy_out(
+            &ops, user_info, &root_info, sizeof(root_info));
     }
     if (kind == SYS_QUERY_ROOT_FIND || kind == SYS_QUERY_FAT_ROOT_FIND) {
         char name[NOS_NAME_BUFFER_SIZE];
         struct syscall_root_entry_info root_info;
 
-        if (!arch_copy_user_cstr(name, arg0, sizeof(name)) ||
+        if (ops.copy_user_cstr == 0 ||
+            !ops.copy_user_cstr(name, arg0, sizeof(name)) ||
             !compat32_root_find(ctx->vfs, name, &root_info)) {
             return 0u;
         }
@@ -301,9 +273,11 @@ uint32_t syscall_compat32_query(struct syscall_compat32_context *ctx,
             fat_info.first_cluster = root_info.native_id;
             fat_info.size = root_info.size;
             fat_info.attributes = root_info.attributes;
-            return arch_copy_to_user(user_info, &fat_info, sizeof(fat_info)) ? 1u : 0u;
+            return compat32_query_copy_out(
+                &ops, user_info, &fat_info, sizeof(fat_info));
         }
-        return arch_copy_to_user(user_info, &root_info, sizeof(root_info)) ? 1u : 0u;
+        return compat32_query_copy_out(
+            &ops, user_info, &root_info, sizeof(root_info));
     }
     if (kind == SYS_QUERY_KMSG) {
         struct syscall_kmsg_info info;
@@ -320,54 +294,7 @@ uint32_t syscall_compat32_query(struct syscall_compat32_context *ctx,
             return 0u;
         }
         info.bytes_copied = copied;
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_PCI) {
-        struct syscall_pci_info info;
-
-        compat32_fill_pci_info(arg0, &info);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_RTC) {
-        struct syscall_rtc_info info;
-
-        compat32_fill_rtc_info(&info);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_PROFILE) {
-        struct syscall_profile_info info;
-
-        if ((arg1 & SYS_PROFILE_QUERY_RESET) != 0u) {
-            kernel_profile_reset();
-        }
-        if (!kernel_profile_query(arg0, &info)) {
-            return 0u;
-        }
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_AC97) {
-        struct syscall_ac97_info info = {0};
-
-        kernel_query_ac97_info(&info);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_HDA) {
-        struct syscall_hda_info info = {0};
-
-        kernel_query_hda_info(&info);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_RTL8139) {
-        struct syscall_rtl8139_info info = {0};
-
-        kernel_query_rtl8139_info(&info);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
-    }
-    if (kind == SYS_QUERY_AUDIO) {
-        struct syscall_audio_info info = {0};
-
-        (void)kernel_query_audio_info(arg0, &info);
-        return arch_copy_to_user(user_info, &info, sizeof(info)) ? 1u : 0u;
+        return compat32_query_copy_out(&ops, user_info, &info, sizeof(info));
     }
     return 0u;
 }

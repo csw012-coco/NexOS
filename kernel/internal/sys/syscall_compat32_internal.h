@@ -34,6 +34,7 @@ uint32_t syscall_compat32_exec(struct syscall_compat32_context *ctx,
 uintptr_t syscall_compat32_wait(struct syscall_compat32_context *ctx,
                                 const struct process_context *context,
                                 uint32_t pid,
+                                uint32_t user_info,
                                 int32_t *status,
                                 int *blocked);
 uintptr_t syscall_compat32_exit(struct syscall_compat32_context *ctx,
@@ -53,6 +54,11 @@ void syscall_compat32_vm_snapshot(struct syscall_compat32_context *ctx,
                                   struct syscall_vm_info *info);
 void syscall_compat32_cleanup_pid(struct syscall_compat32_context *ctx,
                                   uint32_t pid);
+int syscall_compat32_page_is_shared(uint32_t pid, uint32_t user_page);
+uint32_t syscall_compat32_fg(struct syscall_compat32_context *ctx,
+                             uint32_t pid);
+uint32_t syscall_compat32_bg(struct syscall_compat32_context *ctx,
+                             uint32_t pid);
 uint32_t syscall_compat32_chdir(struct syscall_compat32_context *ctx,
                                 uint32_t user_path);
 uint32_t syscall_compat32_getcwd(struct syscall_compat32_context *ctx,
@@ -87,35 +93,35 @@ uint32_t syscall_compat32_proc_query(struct syscall_compat32_context *ctx,
 uint32_t syscall_compat32_kill(struct syscall_compat32_context *ctx,
                                uint32_t pid);
 
-int syscall_compat32_request_core_io(
+int syscall_i386_request_adapter_io(
     struct syscall_compat32_context *ctx,
     const struct kernel_syscall_request *request,
     struct kernel_syscall_result *result);
-int syscall_compat32_request_core_fs(
+int syscall_i386_request_adapter_fs(
     struct syscall_compat32_context *ctx,
     const struct kernel_syscall_request *request,
     struct kernel_syscall_result *result);
-int syscall_compat32_request_core_proc(
+int syscall_i386_request_adapter_proc(
     struct syscall_compat32_context *ctx,
     const struct kernel_syscall_request *request,
     struct kernel_syscall_result *result);
-int syscall_compat32_request_core_mount(
+int syscall_i386_request_adapter_mount(
     struct syscall_compat32_context *ctx,
     const struct kernel_syscall_request *request,
     struct kernel_syscall_result *result);
-int syscall_compat32_request_core_query(
+int syscall_i386_request_adapter_query(
     struct syscall_compat32_context *ctx,
     const struct kernel_syscall_request *request,
     struct kernel_syscall_result *result);
-int syscall_compat32_request_core_mem(
+int syscall_i386_request_adapter_mem(
     struct syscall_compat32_context *ctx,
     const struct kernel_syscall_request *request,
     struct kernel_syscall_result *result);
-int syscall_compat32_request_core_ipc(
+int syscall_i386_request_adapter_ipc(
     struct syscall_compat32_context *ctx,
     const struct kernel_syscall_request *request,
     struct kernel_syscall_result *result);
-int syscall_compat32_request_core_misc(
+int syscall_i386_request_adapter_misc(
     struct syscall_compat32_context *ctx,
     const struct kernel_syscall_request *request,
     struct kernel_syscall_result *result);

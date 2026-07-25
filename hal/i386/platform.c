@@ -10,12 +10,19 @@ enum {
     VGA_COLUMNS = 80,
     VGA_ROWS = 25,
     VGA_CRTC_INDEX = 0x3d4,
-    VGA_CRTC_DATA = 0x3d5
+    VGA_CRTC_DATA = 0x3d5,
+    I386_HAL_DIRECT_MAP_BASE = 0xf9400000u,
+    I386_HAL_DIRECT_MAP_PAGES_PER_SLOT = 16u,
+    I386_HAL_DIRECT_MAP_SLOTS = 128u,
+    I386_HAL_MMIO_MAP_BASE = 0xf8000000u,
+    I386_HAL_MMIO_MAP_PAGES = 512u
 };
 
 static volatile uint16_t *const vga = (volatile uint16_t *)0xb8000;
 static volatile uint32_t timer_ticks;
 static uint32_t timer_hz;
+static uint32_t direct_map_slots_used;
+static uint32_t mmio_map_pages_used;
 
 static uint16_t display_cell_to_vga(uint32_t cell) {
     uint32_t codepoint = cell & HAL_DISPLAY_CELL_CODEPOINT_MASK;
@@ -345,6 +352,73 @@ uint64_t hal_paging_current_root(void) {
 
 void hal_paging_switch_root(uint64_t cr3) {
     i386_paging_switch((uint32_t)cr3);
+}
+
+void *hal_phys_direct_map(uint64_t phys_addr) {
+    uint32_t phys;
+    uint32_t virt;
+
+    if (phys_addr > 0xffffffffull) {
+        return 0;
+    }
+    phys = (uint32_t)phys_addr;
+    if (phys < I386_PAGING_IDENTITY_LIMIT) {
+        return (void *)(uintptr_t)phys;
+    }
+    for (uint32_t slot = 0u; slot < direct_map_slots_used; slot++) {
+        uint32_t base = I386_HAL_DIRECT_MAP_BASE +
+                        slot * I386_HAL_DIRECT_MAP_PAGES_PER_SLOT * I386_PAGE_SIZE;
+        uint32_t mapped;
+
+        if (i386_paging_translate(base, &mapped) &&
+            mapped == (phys & ~(uint32_t)(I386_PAGE_SIZE - 1u))) {
+            return (void *)(uintptr_t)(base + (phys & (I386_PAGE_SIZE - 1u)));
+        }
+    }
+    if (direct_map_slots_used >= I386_HAL_DIRECT_MAP_SLOTS) {
+        return 0;
+    }
+    virt = I386_HAL_DIRECT_MAP_BASE +
+           direct_map_slots_used * I386_HAL_DIRECT_MAP_PAGES_PER_SLOT * I386_PAGE_SIZE;
+    direct_map_slots_used++;
+    phys &= ~(uint32_t)(I386_PAGE_SIZE - 1u);
+    for (uint32_t i = 0u; i < I386_HAL_DIRECT_MAP_PAGES_PER_SLOT; i++) {
+        if (!i386_paging_map_page(virt + i * I386_PAGE_SIZE,
+                                  phys + i * I386_PAGE_SIZE,
+                                  1,
+                                  0)) {
+            return 0;
+        }
+    }
+    return (void *)(uintptr_t)(virt + ((uint32_t)phys_addr & (I386_PAGE_SIZE - 1u)));
+}
+
+void *hal_mmio_map(uint64_t phys_addr, uint64_t length) {
+    uint32_t phys;
+    uint32_t offset;
+    uint32_t pages;
+    uint32_t virt;
+
+    if (phys_addr > 0xffffffffull || length == 0u) {
+        return 0;
+    }
+    phys = (uint32_t)phys_addr & ~(uint32_t)(I386_PAGE_SIZE - 1u);
+    offset = (uint32_t)phys_addr & (I386_PAGE_SIZE - 1u);
+    pages = (uint32_t)((offset + length + I386_PAGE_SIZE - 1u) / I386_PAGE_SIZE);
+    if (pages == 0u || mmio_map_pages_used + pages > I386_HAL_MMIO_MAP_PAGES) {
+        return 0;
+    }
+    virt = I386_HAL_MMIO_MAP_BASE + mmio_map_pages_used * I386_PAGE_SIZE;
+    mmio_map_pages_used += pages;
+    for (uint32_t i = 0u; i < pages; i++) {
+        if (!i386_paging_map_page(virt + i * I386_PAGE_SIZE,
+                                  phys + i * I386_PAGE_SIZE,
+                                  1,
+                                  0)) {
+            return 0;
+        }
+    }
+    return (void *)(uintptr_t)(virt + offset);
 }
 
 void hal_cpu_cli(void) {

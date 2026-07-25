@@ -24,6 +24,7 @@ uint32_t syscall_compat32_getcwd(struct syscall_compat32_context *ctx,
                                   uint32_t size) {
     char path[NOS_PATH_BUFFER_SIZE];
     int32_t result;
+    uint32_t length = 0u;
 
     if (ctx == 0 || ctx->getcwd == 0 ||
         size == 0u || size > sizeof(path)) {
@@ -33,8 +34,14 @@ uint32_t syscall_compat32_getcwd(struct syscall_compat32_context *ctx,
     if (result < 0) {
         return (uint32_t)result;
     }
-    return arch_copy_to_user(user_buffer, path, (uint32_t)result)
-        ? (uint32_t)result
+    while (length < sizeof(path) && path[length] != '\0') {
+        length++;
+    }
+    if (length == sizeof(path) || length + 1u > size) {
+        return (uint32_t)-1;
+    }
+    return arch_copy_to_user(user_buffer, path, length + 1u)
+        ? length
         : (uint32_t)-1;
 }
 
@@ -266,6 +273,7 @@ uint32_t syscall_compat32_mount(struct syscall_compat32_context *ctx,
     }
     if (streq(name, "dev") ||
         streq(name, "proc") ||
+        streq(name, "boot") ||
         streq(name, "fat") ||
         streq(name, "nxfs")) {
         return compat32_mount_error(SYS_MOUNT_ERR_RESERVED_TARGET);

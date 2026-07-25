@@ -110,6 +110,7 @@ uint64_t syscall_handle_boot_info_query(uint64_t user_info_addr);
 uint64_t syscall_handle_memmap_query(uint32_t index, uint64_t user_info_addr);
 uint64_t syscall_handle_pmm_query(uint64_t user_info_addr);
 uint64_t syscall_handle_vm_query(uint64_t user_info_addr);
+uint64_t syscall_handle_fb_query(uint64_t user_info_addr);
 uint64_t syscall_handle_block_read(uint32_t disk_index, uint64_t lba, uint64_t user_info_addr);
 uint64_t syscall_handle_block_write(uint32_t disk_index, uint64_t lba, uint64_t user_info_addr);
 uint64_t syscall_handle_block_flush(uint32_t disk_index);

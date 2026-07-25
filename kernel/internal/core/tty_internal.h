@@ -8,7 +8,14 @@ enum {
     TTY_CHAR_QUEUE_SIZE = 128,
     TTY_ANSI_PARAM_MAX = 4,
     TTY_HISTORY_MAX = 8,
-    TTY_PROMPT_CACHE_SIZE = 192
+    TTY_PROMPT_CACHE_SIZE = 192,
+    TTY_TAB_WIDTH = 8
+};
+
+enum {
+    TTY_ANSI_STATE_NONE = 0,
+    TTY_ANSI_STATE_ESC = 1,
+    TTY_ANSI_STATE_CSI = 2
 };
 
 struct tty {
@@ -58,3 +65,42 @@ struct tty {
     char output_utf8[4];
     uint16_t ansi_params[TTY_ANSI_PARAM_MAX];
 };
+
+uint8_t tty_codepoint_width(uint32_t codepoint);
+uint8_t tty_utf8_encode(uint32_t codepoint, char out[4]);
+int tty_utf8_is_continuation(uint8_t ch);
+uint8_t tty_utf8_expected_length(uint8_t first);
+uint32_t tty_utf8_decode_next(const char *data, uint32_t len, uint32_t offset, uint32_t *codepoint);
+uint8_t tty_utf8_previous_offset(const char *data, uint8_t offset);
+uint8_t tty_utf8_next_offset(const char *data, uint8_t len, uint8_t offset);
+
+void tty_ansi_reset_output(struct tty *tty);
+void tty_write_parsed_char(struct tty *tty, char ch, uint8_t color);
+void tty_write_parsed_codepoint(struct tty *tty, uint32_t codepoint, uint8_t color);
+
+int tty_can_queue_chars(const struct tty *tty, uint8_t count);
+void tty_queue_char(struct tty *tty, char ch);
+void tty_queue_escape_bracket(struct tty *tty, char suffix);
+void tty_queue_escape_bracket_tilde(struct tty *tty, char code);
+int tty_pop_char(struct tty *tty, char *out);
+void tty_clear_char_queue(struct tty *tty);
+
+void tty_hangul_clear(struct tty *tty);
+void tty_hangul_commit(struct tty *tty);
+void tty_hangul_render_mode(const struct tty *tty);
+void tty_raw_hangul_commit(struct tty *tty);
+int tty_raw_hangul_backspace(struct tty *tty);
+int tty_raw_hangul_feed(struct tty *tty, const struct keyboard_event *event);
+int tty_hangul_backspace(struct tty *tty);
+int tty_hangul_feed(struct tty *tty, const struct keyboard_event *event);
+
+void tty_render_prompt(struct tty *tty);
+void tty_emit_ctrl_c_local(struct tty *tty);
+void tty_copy_selection(struct tty *tty);
+void tty_insert_input_char(struct tty *tty, char ch);
+void tty_insert_input_tab(struct tty *tty);
+void tty_history_store(struct tty *tty);
+void tty_history_up(struct tty *tty);
+void tty_history_down(struct tty *tty);
+void tty_delete_input_range(struct tty *tty, uint8_t start, uint8_t end);
+void tty_paste_text(struct tty *tty, const char *text, uint32_t len, int preserve_newlines);

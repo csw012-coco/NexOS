@@ -86,12 +86,174 @@ static int cmd_dbg_profile_local(int argc, char **argv) {
     return 0;
 }
 
+struct cmd_driver_status {
+    int found;
+    char state[24];
+    char reason[24];
+    char result[16];
+    char source[24];
+    char device[32];
+    char path[96];
+};
+
+static void cmd_copy_token_local(char *dst, uint32_t dst_size, const char *src) {
+    uint32_t i = 0u;
+
+    if (dst == NULL || dst_size == 0u) {
+        return;
+    }
+    if (src == NULL) {
+        dst[0] = '\0';
+        return;
+    }
+    while (i + 1u < dst_size && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+static uint32_t cmd_split_driver_line_local(char *line, char **tokens, uint32_t max_tokens) {
+    uint32_t count = 0u;
+    char *p = line;
+
+    while (p != NULL && *p != '\0' && count < max_tokens) {
+        while (*p == ' ' || *p == '\t' || *p == '\r') {
+            p++;
+        }
+        if (*p == '\0') {
+            break;
+        }
+        tokens[count++] = p;
+        while (*p != '\0' && *p != ' ' && *p != '\t' && *p != '\r') {
+            p++;
+        }
+        if (*p == '\0') {
+            break;
+        }
+        *p++ = '\0';
+    }
+    return count;
+}
+
+static void cmd_driver_status_from_tokens_local(struct cmd_driver_status *status,
+                                                char **tokens,
+                                                uint32_t token_count) {
+    if (status == NULL || tokens == NULL || token_count < 8u) {
+        return;
+    }
+    status->found = 1;
+    cmd_copy_token_local(status->state, sizeof(status->state), tokens[3]);
+    cmd_copy_token_local(status->result, sizeof(status->result), tokens[4]);
+    cmd_copy_token_local(status->source, sizeof(status->source), tokens[5]);
+    cmd_copy_token_local(status->reason, sizeof(status->reason), tokens[7]);
+    cmd_copy_token_local(status->device,
+                         sizeof(status->device),
+                         token_count > 8u ? tokens[8] : "-");
+    cmd_copy_token_local(status->path,
+                         sizeof(status->path),
+                         token_count > 9u ? tokens[9] : "-");
+}
+
+static int cmd_query_driver_status_local(const char *driver_name, struct cmd_driver_status *status) {
+    int fd;
+    struct cmd_driver_status file_status;
+    char line[256];
+    uint32_t line_len = 0u;
+
+    if (driver_name == NULL || status == NULL) {
+        return 0;
+    }
+    memset(status, 0, sizeof(*status));
+    memset(&file_status, 0, sizeof(file_status));
+    fd = open("/proc/drivers", O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    for (;;) {
+        char ch;
+        char *tokens[12];
+        uint32_t token_count;
+        ssize_t got = read(fd, &ch, 1u);
+
+        if (got < 0) {
+            close(fd);
+            return 0;
+        }
+        if (got > 0 && ch != '\n') {
+            if (line_len + 1u < sizeof(line)) {
+                line[line_len++] = ch;
+            }
+            continue;
+        }
+        if (got == 0 && line_len == 0u) {
+            break;
+        }
+        line[line_len] = '\0';
+        token_count = cmd_split_driver_line_local(line, tokens, 12u);
+        if (token_count >= 8u && !streq_local(tokens[0], "name")) {
+            int name_matches = streq_local(tokens[0], driver_name);
+            int driver_matches = token_count > 2u && streq_local(tokens[2], driver_name);
+
+            if ((name_matches || driver_matches) && !streq_local(tokens[1], "file")) {
+                cmd_driver_status_from_tokens_local(status, tokens, token_count);
+                close(fd);
+                return 1;
+            }
+            if (driver_matches && streq_local(tokens[1], "file") && !file_status.found) {
+                cmd_driver_status_from_tokens_local(&file_status, tokens, token_count);
+            }
+        }
+        line_len = 0u;
+        if (got == 0) {
+            break;
+        }
+    }
+    close(fd);
+    if (file_status.found) {
+        *status = file_status;
+        return 1;
+    }
+    return 0;
+}
+
+static void cmd_print_driver_status_local(const char *label, const char *driver_name) {
+    struct cmd_driver_status status;
+
+    write_str(label);
+    write_str(": driver ");
+    write_str(driver_name);
+    if (!cmd_query_driver_status_local(driver_name, &status)) {
+        write_str(" not registered\n");
+        return;
+    }
+    write_str(" state=");
+    write_str(status.state[0] != '\0' ? status.state : "-");
+    write_str(" reason=");
+    write_str(status.reason[0] != '\0' ? status.reason : "-");
+    write_str(" result=");
+    write_str(status.result[0] != '\0' ? status.result : "-");
+    write_str(" source=");
+    write_str(status.source[0] != '\0' ? status.source : "-");
+    if (status.device[0] != '\0' && !streq_local(status.device, "-")) {
+        write_str(" device=");
+        write_str(status.device);
+    }
+    if (status.path[0] != '\0' && !streq_local(status.path, "-")) {
+        write_str(" path=");
+        write_str(status.path);
+    }
+    write_str("\n");
+}
+
 int cmd_dmesg(void) {
     struct syscall_kmsg_info info;
     uint32_t offset = 0;
     int printed = 0;
+    int queried = 0;
 
     while (kmsg_query(offset, &info) > 0) {
+        queried = 1;
         if (info.bytes_copied == 0) {
             break;
         }
@@ -100,7 +262,7 @@ int cmd_dmesg(void) {
         printed = 1;
     }
     if (!printed) {
-        write_str("(no kernel log)\n");
+        write_str(queried ? "(kernel log empty)\n" : "(kernel log unavailable)\n");
     }
     return 0;
 }
@@ -138,8 +300,7 @@ int cmd_lspci(void) {
     }
 
     if (!printed) {
-        write_err_str("lspci: no PCI devices found\n");
-        return 1;
+        write_str("(no PCI devices)\n");
     }
     return 0;
 }
@@ -147,6 +308,7 @@ int cmd_lspci(void) {
 int cmd_ac97(void) {
     struct syscall_ac97_info info;
 
+    cmd_print_driver_status_local("ac97", "AC97");
     if (ac97_query(&info) <= 0 || !info.present) {
         write_str("ac97: controller not found\n");
         return 0;
@@ -196,6 +358,7 @@ int cmd_ac97(void) {
 int cmd_hda(void) {
     struct syscall_hda_info info;
 
+    cmd_print_driver_status_local("hda", "HDA");
     if (hda_query(&info) <= 0 || !info.present) {
         write_str("hda: controller not found\n");
         return 0;

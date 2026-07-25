@@ -15,7 +15,7 @@ void kernel_log_hda_info(void);
 void kernel_log_rtl8139_info(void);
 void kernel_log_block_devices(void);
 void kernel_init_storage_devices(const struct bootx_boot_info *boot_info);
-struct vfs *kernel_bootstrap_vfs(void);
+struct vfs *kernel_bootstrap_vfs(const struct bootx_boot_info *boot_info);
 int kernel_apply_root_cmdline(struct vfs *vfs, const struct bootx_boot_info *boot_info);
 void kernel_reserve_boot_modules(const struct bootx_boot_info *boot_info);
 int kernel_extract_init_path(const char *cmdline, char *out, uint32_t out_size);

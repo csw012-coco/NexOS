@@ -264,8 +264,9 @@ int cmd_netstat(int argc, char **argv) {
         return 1;
     }
     if (rtl8139_query(&nic) <= 0 || !nic.present) {
-        write_err_str("netstat: rtl8139 not present\n");
-        return 1;
+        write_str("Iface    State Link Speed  Address         Gateway         DNS             ARP  RXOFF  CBR\n");
+        write_str("rtl8139  absent\n");
+        return 0;
     }
     for (i = 0; i < (uint32_t)(sizeof(g_arp_cache_local) / sizeof(g_arp_cache_local[0])); i++) {
         if (g_arp_cache_local[i].valid) {
@@ -307,7 +308,7 @@ int cmd_ifconfig(int argc, char **argv) {
     }
     if (rtl8139_query(&nic) <= 0 || !nic.present) {
         write_str("ifconfig: rtl8139 not present\n");
-        return 1;
+        return 0;
     }
 
     write_str("rtl8139\n");

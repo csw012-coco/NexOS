@@ -124,61 +124,6 @@ int cmd_uname(int argc, char **argv) {
     return 0;
 }
 
-int cmd_fb(int argc, char **argv) {
-    struct syscall_framebuffer_info info;
-
-    (void)argv;
-    if (argc != 1) {
-        write_err_usage("fb", "\n");
-        return 1;
-    }
-    if (framebuffer_query(&info) <= 0) {
-        write_err_str("fb: framebuffer query failed\n");
-        return 1;
-    }
-    write_str("framebuffer info\n");
-    write_str("console: ");
-    if (info.type == 2u) {
-        write_str("framebuffer\n");
-    } else if (info.type == 1u) {
-        write_str("text\n");
-    } else {
-        write_str("none\n");
-    }
-    write_str("present: ");
-    write_dec(info.present);
-    write_str("\naddr:    0x");
-    write_hex_u64(info.addr);
-    write_str("\nsize:    ");
-    write_dec(info.width);
-    write_str("x");
-    write_dec(info.height);
-    write_str(" pitch=");
-    write_dec(info.pitch);
-    write_str(" bpp=");
-    write_dec(info.bpp);
-    write_str("\nrgb:     r");
-    write_dec(info.red_mask_size);
-    write_str("@");
-    write_dec(info.red_mask_shift);
-    write_str(" g");
-    write_dec(info.green_mask_size);
-    write_str("@");
-    write_dec(info.green_mask_shift);
-    write_str(" b");
-    write_dec(info.blue_mask_size);
-    write_str("@");
-    write_dec(info.blue_mask_shift);
-    write_str("\ntext:    ");
-    write_dec(info.text_columns);
-    write_str("x");
-    write_dec(info.text_rows);
-    write_str(" color=0x");
-    write_hex_u32(info.text_color);
-    write_str("\n");
-    return 0;
-}
-
 int cmd_drivers(int argc, char **argv) {
     char buffer[256];
     int fd;

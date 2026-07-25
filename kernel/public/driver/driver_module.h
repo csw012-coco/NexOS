@@ -103,6 +103,28 @@ struct driver_hda_device_info {
     uint32_t codec_mask;
 };
 
+struct driver_ac97_device_info {
+    uint32_t present;
+    uint32_t initialized;
+    uint32_t irq_line;
+    uint32_t irq_pin;
+    uint32_t bus;
+    uint32_t slot;
+    uint32_t function;
+    uint32_t prog_if;
+    uint32_t vendor_id;
+    uint32_t device_id;
+    uint32_t nambar;
+    uint32_t nabmbar;
+    uint32_t mixer_reset;
+    uint32_t powerdown;
+    uint32_t ext_audio_id;
+    uint32_t ext_audio_ctrl;
+    uint32_t codec_id;
+    uint32_t global_status;
+    uint32_t global_control;
+};
+
 uint32_t driver_str_len(const char *text);
 int driver_streq(const char *lhs, const char *rhs);
 int driver_starts_with(const char *text, const char *prefix);
@@ -122,6 +144,7 @@ int driver_audio_register_device(const struct driver_audio_device_info *info,
                                  const struct driver_audio_device_ops *ops,
                                  void *ctx,
                                  uint32_t *index_out);
+int driver_ac97_publish_device(const struct driver_ac97_device_info *info);
 int driver_hda_publish_device(const struct driver_hda_device_info *info);
 
 uint8_t driver_io_in8(uint16_t port);

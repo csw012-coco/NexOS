@@ -399,8 +399,34 @@ int cmd_fatfind(int argc, char **argv) {
     return 0;
 }
 
+static int fatread_emit_file_local(const char *path) {
+    char buf[128];
+    int fd = open(path, 0);
+
+    if (fd < 0) {
+        return -1;
+    }
+    for (;;) {
+        int got = read(fd, buf, sizeof(buf));
+
+        if (got < 0) {
+            close((uint32_t)fd);
+            return -1;
+        }
+        if (got == 0) {
+            break;
+        }
+        if (write(STDOUT_FILENO, buf, (uint32_t)got) != got) {
+            close((uint32_t)fd);
+            return -1;
+        }
+    }
+    close((uint32_t)fd);
+    return 0;
+}
+
 int cmd_fatread(int argc, char **argv) {
-    char path[CMD_PATH_MAX] = "/fat/";
+    char path[CMD_PATH_MAX] = "/boot/";
     uint32_t len = str_len_local(path);
 
     if (argc < 2) {
@@ -412,12 +438,14 @@ int cmd_fatread(int argc, char **argv) {
         return 1;
     }
     copy_line_local(path + len, argv[1], sizeof(path) - len);
-    {
-        char *cat_argv[3];
-
-        cat_argv[0] = "cat";
-        cat_argv[1] = path;
-        cat_argv[2] = NULL;
-        return cmd_cat(2, cat_argv);
+    if (fatread_emit_file_local(path) == 0) {
+        return 0;
     }
+    path[0] = '/';
+    copy_line_local(path + 1u, argv[1], sizeof(path) - 1u);
+    if (fatread_emit_file_local(path) == 0) {
+        return 0;
+    }
+    write_err_str("fatread: open failed\n");
+    return 1;
 }

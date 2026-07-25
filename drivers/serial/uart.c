@@ -26,6 +26,10 @@ enum {
     UART_TTY_LINE_SIZE = 256u
 };
 
+static void uart_debugcon_write_char(char ch) {
+    hal_io_out8(0xe9u, (uint8_t)ch);
+}
+
 static uint16_t g_uart_base = UART_PORT_COM1;
 static int g_uart_ready = 0;
 
@@ -268,6 +272,7 @@ uint32_t uart_read_tty(char *buffer, uint32_t size, int raw) {
 void uart_write_char(char ch) {
     uint32_t spin = 0;
 
+    uart_debugcon_write_char(ch);
     if (!g_uart_ready) {
         return;
     }
@@ -284,7 +289,7 @@ void uart_write_char(char ch) {
 uint32_t uart_write_buffer(const char *data, uint32_t size) {
     uint32_t written = 0;
 
-    if (data == 0 || !g_uart_ready) {
+    if (data == 0) {
         return 0;
     }
     while (written < size) {
@@ -298,7 +303,7 @@ uint32_t uart_write_buffer(const char *data, uint32_t size) {
 }
 
 void uart_write(const char *text) {
-    if (text == 0 || !g_uart_ready) {
+    if (text == 0) {
         return;
     }
     while (*text != '\0') {

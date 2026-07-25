@@ -111,18 +111,18 @@ static int xhci_init_controller(uint8_t controller_index, const struct pci_xhci_
     xhci_enumerate_connected_ports();
     g_xhci.initialized = 1u;
     xhci_save_active_controller();
-    XHCI_ENUM_TRACE("xhci%u: controller bdf=%u:%u.%u mmio=%lx slots=%u intrs=%u ports=%u ctx=%u scratch=%u hcc=%x rev=msc-v2\n",
-                    (uint32_t)controller_index,
-                    (uint32_t)xhci->bus,
-                    (uint32_t)xhci->slot,
-                    (uint32_t)xhci->function,
-                    mmio,
-                    (uint32_t)g_xhci.max_slots,
-                    (uint32_t)g_xhci.max_intrs,
-                    (uint32_t)g_xhci.max_ports,
-                    (uint32_t)g_xhci.context_size,
-                    scratchpads,
-                    hcc1);
+    kprint("xhci%u: controller bdf=%u:%u.%u mmio=%lx slots=%u intrs=%u ports=%u ctx=%u scratch=%u hcc=%x rev=msc-v2\n",
+           (uint32_t)controller_index,
+           (uint32_t)xhci->bus,
+           (uint32_t)xhci->slot,
+           (uint32_t)xhci->function,
+           mmio,
+           (uint32_t)g_xhci.max_slots,
+           (uint32_t)g_xhci.max_intrs,
+           (uint32_t)g_xhci.max_ports,
+           (uint32_t)g_xhci.context_size,
+           scratchpads,
+           hcc1);
     return 1;
 }
 

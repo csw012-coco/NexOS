@@ -171,6 +171,7 @@ struct ncc_global {
     uint8_t *initializer_data;
     uint32_t initializer_size;
     uint8_t has_initializer;
+    uint8_t extern_only;
     struct ncc_global *next;
 };
 

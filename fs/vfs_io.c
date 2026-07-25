@@ -15,6 +15,9 @@ static int64_t vfs_emit_dir_entry(struct vfs_dirent *entry,
 }
 
 static int vfs_mountpoint_hidden_from_root(const struct vfs *vfs, uint8_t kind, uint32_t mount_slot) {
+    if (kind == VFS_MOUNT_FAT32 && mount_slot == 0u) {
+        return 0;
+    }
     return vfs_has_root_override(vfs) && vfs->root_kind == kind && vfs->root_slot == mount_slot;
 }
 

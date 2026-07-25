@@ -11,7 +11,12 @@ enum {
 
 int i386_pmm_init(const struct bootx_boot_info *boot_info);
 uint32_t i386_pmm_alloc_page(void);
+uint32_t i386_pmm_alloc_page_below(uint32_t max_phys_exclusive);
+uint32_t i386_pmm_alloc_contiguous_below(uint32_t page_count,
+                                         uint32_t max_phys_exclusive);
+int i386_pmm_retain_page(uint32_t physical_address);
 int i386_pmm_free_page(uint32_t physical_address);
+uint32_t i386_pmm_refcount(uint32_t physical_address);
 uint32_t i386_pmm_total_pages(void);
 uint32_t i386_pmm_free_pages(void);
 uint32_t i386_pmm_reserved_pages(void);

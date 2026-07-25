@@ -274,11 +274,7 @@ static int kprint_snprintf(char *buf, int size, const char *fmt, va_list ap) {
     return count;
 }
 
-/**
- * Core kernel print function
- */
-void kprint(const char *fmt, ...) {
-    va_list ap;
+void vkprint(const char *fmt, va_list ap) {
     int len;
     int ts_len;
     char final_buffer[512];  /* Timestamp + message */
@@ -294,9 +290,7 @@ void kprint(const char *fmt, ...) {
         ts_len = kprint_format_timestamp(final_buffer, (int)sizeof(final_buffer), elapsed);
     }
 
-    va_start(ap, fmt);
     len = kprint_snprintf(g_kprint_buffer, (int)sizeof(g_kprint_buffer), fmt, ap);
-    va_end(ap);
 
     if (len > 0) {
         /* Combine timestamp + message */
@@ -324,6 +318,17 @@ void kprint(const char *fmt, ...) {
             uart_write(g_kprint_buffer);
         }
     }
+}
+
+/**
+ * Core kernel print function
+ */
+void kprint(const char *fmt, ...) {
+    va_list ap;
+
+    va_start(ap, fmt);
+    vkprint(fmt, ap);
+    va_end(ap);
 }
 
 /**

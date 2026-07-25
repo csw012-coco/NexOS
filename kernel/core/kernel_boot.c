@@ -10,6 +10,7 @@
 #include "drivers/storage/ramdisk.h"
 #include "drivers/usb/ehci.h"
 #include "drivers/usb/xhci.h"
+#include "fs/fat32.h"
 #include "fs/vfs.h"
 #include "fs/vfs_internal.h"
 #include "hal/hal.h"
@@ -337,8 +338,56 @@ static void kernel_mount_ramdisk_root(struct vfs *vfs) {
     }
 }
 
-struct vfs *kernel_bootstrap_vfs(void) {
+static struct block_device *kernel_find_boot_partition_disk(uint32_t partition_lba,
+                                                            uint32_t partition_sectors) {
+    struct blockdev_partition part;
+
+    if (partition_lba == 0u) {
+        return 0;
+    }
+    for (uint32_t disk_index = 0u; disk_index < blockdev_count(); disk_index++) {
+        struct block_device *disk = blockdev_get(disk_index);
+
+        if (disk == 0) {
+            continue;
+        }
+        for (uint32_t part_index = 0u; part_index < blockdev_partition_count(disk); part_index++) {
+            if (blockdev_partition_get(disk, part_index, &part) == 0 &&
+                part.start_lba == partition_lba &&
+                (partition_sectors == 0u || part.sector_count == partition_sectors)) {
+                return disk;
+            }
+        }
+    }
+    for (uint32_t disk_index = 0u; disk_index < blockdev_count(); disk_index++) {
+        struct block_device *disk = blockdev_get(disk_index);
+
+        if (disk != 0 &&
+            (uint64_t)partition_lba < disk->block_count &&
+            (partition_sectors == 0u ||
+             (uint64_t)partition_sectors <= disk->block_count - (uint64_t)partition_lba)) {
+            return disk;
+        }
+    }
+    return 0;
+}
+
+static void kernel_mount_boot_partition(struct vfs *vfs, const struct bootx_boot_info *boot_info) {
+    struct block_device *disk;
+
+    if (vfs == 0 || boot_info == 0 || boot_info->partition_lba == 0u ||
+        (disk = kernel_find_boot_partition_disk(boot_info->partition_lba,
+                                                boot_info->partition_sectors)) == 0) {
+        return;
+    }
+    if (fat32_mount(&vfs->fat32, disk, boot_info->partition_lba) == 0) {
+        kprint("boot: FAT32 /boot mounted\n");
+    }
+}
+
+struct vfs *kernel_bootstrap_vfs(const struct bootx_boot_info *boot_info) {
     vfs_init(&g_kernel_vfs);
+    kernel_mount_boot_partition(&g_kernel_vfs, boot_info);
     kernel_mount_ramdisk_root(&g_kernel_vfs);
     return &g_kernel_vfs;
 }

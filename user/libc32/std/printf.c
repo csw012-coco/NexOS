@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 static void emit_char(char *buffer, size_t size, size_t *position, char value) {
@@ -253,6 +254,166 @@ int fprintf(FILE *stream, const char *format, ...) {
 
     va_start(args, format);
     result = vfprintf(stream, format, args);
+    va_end(args);
+    return result;
+}
+
+static const char *scan_skip_space(const char *text) {
+    while (*text == ' ' || *text == '\t' || *text == '\n' ||
+           *text == '\r' || *text == '\f' || *text == '\v') {
+        text++;
+    }
+    return text;
+}
+
+int vsscanf(const char *text, const char *format, va_list args) {
+    int assigned = 0;
+
+    if (text == 0 || format == 0) {
+        return -1;
+    }
+    while (*format != '\0') {
+        int suppress = 0;
+        int width = 0;
+
+        if (*format == ' ' || *format == '\t' || *format == '\n' ||
+            *format == '\r' || *format == '\f' || *format == '\v') {
+            format = scan_skip_space(format);
+            text = scan_skip_space(text);
+            continue;
+        }
+        if (*format != '%') {
+            if (*text != *format) {
+                break;
+            }
+            text++;
+            format++;
+            continue;
+        }
+        format++;
+        if (*format == '%') {
+            if (*text != '%') {
+                break;
+            }
+            text++;
+            format++;
+            continue;
+        }
+        if (*format == '*') {
+            suppress = 1;
+            format++;
+        }
+        while (*format >= '0' && *format <= '9') {
+            width = width * 10 + (*format++ - '0');
+        }
+        switch (*format) {
+            case 'd':
+            case 'i':
+            case 'o':
+            case 'x':
+            case 'X': {
+                char *end = 0;
+                int base = 10;
+                long value;
+
+                text = scan_skip_space(text);
+                if (*format == 'i') {
+                    base = 0;
+                } else if (*format == 'o') {
+                    base = 8;
+                } else if (*format == 'x' || *format == 'X') {
+                    base = 16;
+                }
+                value = strtol(text, &end, base);
+                if (end == text) {
+                    return assigned;
+                }
+                if (!suppress) {
+                    *va_arg(args, int *) = (int)value;
+                    assigned++;
+                }
+                text = end;
+                break;
+            }
+            case 's': {
+                char *out = suppress ? 0 : va_arg(args, char *);
+                int copied = 0;
+
+                text = scan_skip_space(text);
+                while (*text != '\0' && *text != ' ' && *text != '\t' &&
+                       *text != '\n' && *text != '\r' &&
+                       (width == 0 || copied < width)) {
+                    if (out != 0) {
+                        out[copied] = *text;
+                    }
+                    copied++;
+                    text++;
+                }
+                if (copied == 0) {
+                    return assigned;
+                }
+                if (out != 0) {
+                    out[copied] = '\0';
+                    assigned++;
+                }
+                break;
+            }
+            case '[': {
+                char *out = suppress ? 0 : va_arg(args, char *);
+                char end_char = ']';
+                int copied = 0;
+                int invert = 0;
+                int stop_on_newline = 0;
+
+                format++;
+                if (*format == '^') {
+                    invert = 1;
+                    format++;
+                }
+                if (*format == '\n') {
+                    stop_on_newline = 1;
+                    format++;
+                }
+                while (*format != '\0' && *format != end_char) {
+                    format++;
+                }
+                while (*text != '\0' && (width == 0 || copied < width)) {
+                    int match = stop_on_newline ? (*text == '\n') : 0;
+
+                    if ((match && invert) || (!match && !invert)) {
+                        break;
+                    }
+                    if (out != 0) {
+                        out[copied] = *text;
+                    }
+                    copied++;
+                    text++;
+                }
+                if (copied == 0) {
+                    return assigned;
+                }
+                if (out != 0) {
+                    out[copied] = '\0';
+                    assigned++;
+                }
+                break;
+            }
+            default:
+                return assigned;
+        }
+        if (*format != '\0') {
+            format++;
+        }
+    }
+    return assigned;
+}
+
+int sscanf(const char *text, const char *format, ...) {
+    va_list args;
+    int result;
+
+    va_start(args, format);
+    result = vsscanf(text, format, args);
     va_end(args);
     return result;
 }

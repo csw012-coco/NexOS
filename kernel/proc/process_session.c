@@ -81,6 +81,19 @@ static int session_user_frame_mapped(const struct process *proc,
     return 1;
 }
 
+static int session_user_stack_pointer_mapped(uint64_t user_cr3, uint64_t rsp) {
+    uint64_t phys;
+    uint64_t flags;
+
+    if (rsp == 0u) {
+        return 0;
+    }
+    if (vmm_query_mapping_in_context(user_cr3, rsp, &phys, &flags)) {
+        return 1;
+    }
+    return rsp >= 8u && vmm_query_mapping_in_context(user_cr3, rsp - 8u, &phys, &flags);
+}
+
 int session_bind_user_context(struct process_session *session,
                               struct user_page_mapping *mappings) {
     const struct process *proc;
@@ -135,8 +148,7 @@ int session_prepare_user_frame_return(struct process_session *session,
     if (!vmm_query_mapping_in_context(proc->address_space->user_cr3, frame->rip, &phys, &flags)) {
         return 0;
     }
-    if (frame->rsp != 0 &&
-        !vmm_query_mapping_in_context(proc->address_space->user_cr3, frame->rsp, &phys, &flags)) {
+    if (frame->rsp != 0 && !session_user_stack_pointer_mapped(proc->address_space->user_cr3, frame->rsp)) {
         return 0;
     }
     if (!session_bind_user_context(session, mappings)) {

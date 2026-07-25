@@ -1,9 +1,52 @@
 #include "kernel/internal/sys/syscall_internal.h"
+#include "kernel/internal/sys/syscall_common_request_core.h"
 #include "kernel/internal/sys/syscall_native_request_core.h"
 
+enum {
+    SYSCALL_NATIVE_AUDIO_BUFFER_MAX = 1048576u
+};
+
+static uint8_t g_syscall_native_audio_buffer[SYSCALL_NATIVE_AUDIO_BUFFER_MAX];
+static uint8_t g_syscall_native_rtl8139_tx_buffer[1600u];
+
+static int syscall_native_copy_from_user_ops(void *dest,
+                                             uint64_t user_addr,
+                                             uint32_t size) {
+    return syscall_user_readable(user_addr, size) &&
+           syscall_copy_from_user(dest, user_addr, size);
+}
+
+static int syscall_native_copy_to_user_ops(uint64_t user_addr,
+                                           const void *src,
+                                           uint32_t size) {
+    return syscall_user_writable(user_addr, size) &&
+           syscall_copy_to_user(user_addr, src, size);
+}
+
+static int syscall_native_capability_event_copy_from_user(void *dest,
+                                                          uint64_t user_addr,
+                                                          uint32_t size) {
+    return syscall_native_copy_from_user_ops(dest, user_addr, size);
+}
+
+static uint64_t syscall_native_misc_clear(void *ctx) {
+    (void)ctx;
+    return syscall_handle_clear();
+}
+
+static uint64_t syscall_native_misc_ticks(void *ctx) {
+    (void)ctx;
+    return g_syscall_ticks != 0 ? *g_syscall_ticks : 0u;
+}
+
+static uint64_t syscall_native_misc_reboot(void *ctx) {
+    (void)ctx;
+    return syscall_handle_reboot();
+}
+
 int syscall_native_request_core_io(const struct kernel_syscall_request *request,
-                            const struct syscall_frame *frame,
-                            struct kernel_syscall_result *result) {
+                                   const struct syscall_frame *frame,
+                                   struct kernel_syscall_result *result) {
     struct syscall_user_buffer buffer;
 
     if (request == 0 || result == 0) {
@@ -213,10 +256,19 @@ int syscall_native_request_core_mount(const struct kernel_syscall_request *reque
 
 int syscall_native_request_core_query(const struct kernel_syscall_request *request,
                                struct kernel_syscall_result *result) {
+    struct syscall_common_user_copy_ops ops;
+
     if (request == 0 || result == 0 || request->number != SYS_QUERY) {
         return 0;
     }
     result->action = SYSCALL_RESULT_RETURN;
+    ops.copy_from_user = syscall_native_copy_from_user_ops;
+    ops.copy_to_user = syscall_native_copy_to_user_ops;
+    ops.bad_pointer = syscall_kill_bad_user_pointer;
+    ops.bad_pointer_value = SYSCALL_EXIT_TO_KERNEL;
+    if (syscall_common_request_core_query_request(request, result, &ops)) {
+        return 1;
+    }
     result->value = syscall_handle_query(kernel_syscall_arg_u32(request, 0),
                                          kernel_syscall_arg_u64(request, 1),
                                          kernel_syscall_arg_u64(request, 2),
@@ -318,6 +370,10 @@ int syscall_native_request_core_block(const struct kernel_syscall_request *reque
     }
     result->action = SYSCALL_RESULT_RETURN;
     switch (request->number) {
+        case SYS_BLOCK_FLUSH:
+            result->value = syscall_common_request_core_block_flush_dispatch(
+                kernel_syscall_arg_u32(request, 0));
+            return 1;
         case SYS_BLOCK_READ:
             result->value = syscall_handle_block_read(
                 kernel_syscall_arg_u32(request, 0),
@@ -330,10 +386,6 @@ int syscall_native_request_core_block(const struct kernel_syscall_request *reque
                 kernel_syscall_arg_u64(request, 1),
                 kernel_syscall_arg_u64(request, 2));
             return 1;
-        case SYS_BLOCK_FLUSH:
-            result->value = syscall_handle_block_flush(
-                kernel_syscall_arg_u32(request, 0));
-            return 1;
         default:
             return 0;
     }
@@ -341,22 +393,28 @@ int syscall_native_request_core_block(const struct kernel_syscall_request *reque
 
 int syscall_native_request_core_audio(const struct kernel_syscall_request *request,
                                struct kernel_syscall_result *result) {
+    struct syscall_common_user_copy_ops ops;
+
     if (request == 0 || result == 0) {
         return 0;
     }
     result->action = SYSCALL_RESULT_RETURN;
+    ops.copy_from_user = syscall_native_copy_from_user_ops;
+    ops.copy_to_user = syscall_native_copy_to_user_ops;
+    ops.bad_pointer = syscall_kill_bad_user_pointer;
+    ops.bad_pointer_value = SYSCALL_EXIT_TO_KERNEL;
+    if (syscall_common_request_core_audio_play_request(
+            request,
+            result,
+            &ops,
+            g_syscall_native_audio_buffer,
+            sizeof(g_syscall_native_audio_buffer),
+            (uint64_t)-1)) {
+        return 1;
+    }
     switch (request->number) {
         case SYS_AUDIO_TONE:
-            result->value = syscall_handle_audio_tone(
-                kernel_syscall_arg_u32(request, 0),
-                kernel_syscall_arg_u32(request, 1),
-                kernel_syscall_arg_u32(request, 2));
-            return 1;
-        case SYS_AUDIO_PLAY:
-            result->value = syscall_handle_audio_play(
-                kernel_syscall_arg_u32(request, 0),
-                kernel_syscall_arg_u64(request, 1));
-            return 1;
+            return syscall_common_request_core_backend(request, result);
         case SYS_AUDIO_PLAY_FD:
             result->value = syscall_handle_audio_play_fd(
                 kernel_syscall_arg_u32(request, 0),
@@ -369,22 +427,28 @@ int syscall_native_request_core_audio(const struct kernel_syscall_request *reque
 
 int syscall_native_request_core_net(const struct kernel_syscall_request *request,
                              struct kernel_syscall_result *result) {
+    struct syscall_common_user_copy_ops ops;
+
     if (request == 0 || result == 0) {
         return 0;
     }
     result->action = SYSCALL_RESULT_RETURN;
+    ops.copy_from_user = syscall_native_copy_from_user_ops;
+    ops.copy_to_user = syscall_native_copy_to_user_ops;
+    ops.bad_pointer = syscall_kill_bad_user_pointer;
+    ops.bad_pointer_value = SYSCALL_EXIT_TO_KERNEL;
+    if (syscall_common_request_core_rtl8139_request(
+            request,
+            result,
+            &ops,
+            g_syscall_native_rtl8139_tx_buffer,
+            sizeof(g_syscall_native_rtl8139_tx_buffer),
+            (uint64_t)-1)) {
+        return 1;
+    }
     switch (request->number) {
         case SYS_RTL8139_TX_TEST:
-            result->value = syscall_handle_rtl8139_tx_test();
-            return 1;
-        case SYS_RTL8139_TX_SEND:
-            result->value = syscall_handle_rtl8139_tx_send(
-                kernel_syscall_arg_u64(request, 0));
-            return 1;
-        case SYS_RTL8139_RX_DUMP:
-            result->value = syscall_handle_rtl8139_rx_dump(
-                kernel_syscall_arg_u64(request, 0));
-            return 1;
+            return syscall_common_request_core_backend(request, result);
         default:
             return 0;
     }
@@ -403,11 +467,21 @@ int syscall_native_request_core_gfx(const struct kernel_syscall_request *request
                 kernel_syscall_arg_u64(request, 1));
             return 1;
         case SYS_GUI_EVENT:
+            if (syscall_common_request_core_gui_event_request(
+                    request,
+                    result,
+                    (uint32_t)syscall_handle_getpid(),
+                    job_current_process_foreground_allowed())) {
+                return 1;
+            }
             result->value = syscall_handle_gui_event(
                 kernel_syscall_arg_u32(request, 0),
                 kernel_syscall_arg_u64(request, 1));
             return 1;
         case SYS_CLIPBOARD:
+            if (syscall_common_request_core_clipboard(request, result)) {
+                return 1;
+            }
             result->value = syscall_handle_clipboard(
                 kernel_syscall_arg_u32(request, 0),
                 kernel_syscall_arg_u64(request, 1));
@@ -420,27 +494,34 @@ int syscall_native_request_core_gfx(const struct kernel_syscall_request *request
 int syscall_native_request_core_misc(const struct kernel_syscall_request *request,
                               const struct syscall_frame *frame,
                               struct kernel_syscall_result *result) {
+    struct syscall_common_misc_ops misc_ops;
+
     if (request == 0 || result == 0) {
         return 0;
     }
     result->action = SYSCALL_RESULT_RETURN;
+    misc_ops.clear = syscall_native_misc_clear;
+    misc_ops.ticks = syscall_native_misc_ticks;
+    misc_ops.reboot = syscall_native_misc_reboot;
+    misc_ops.ctx = 0;
+    if (syscall_common_request_core_misc_request(
+            request, result, &misc_ops)) {
+        return 1;
+    }
     switch (request->number) {
-        case SYS_CLEAR:
-            result->value = syscall_handle_clear();
-            return 1;
-        case SYS_TICKS:
-            result->value = g_syscall_ticks != 0 ? *g_syscall_ticks : 0u;
-            return 1;
         case SYS_FORK:
             result->value = syscall_handle_fork(frame);
             return 1;
-        case SYS_REBOOT:
-            result->value = syscall_handle_reboot();
-            return 1;
         case SYS_CAPABILITY_EVENT:
-            result->value = syscall_handle_capability_event(
-                kernel_syscall_arg_u64(request, 0));
-            return 1;
+            {
+                struct syscall_common_user_input_ops ops;
+
+                ops.copy_from_user = syscall_native_capability_event_copy_from_user;
+                ops.bad_pointer = syscall_kill_bad_user_pointer;
+                ops.bad_pointer_value = SYSCALL_EXIT_TO_KERNEL;
+                return syscall_common_request_core_capability_event_request(
+                    request, result, &ops);
+            }
         default:
             result->value = 0;
             return 1;

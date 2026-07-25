@@ -75,10 +75,23 @@ static const struct ac97_pcm_policy ac97_common_pcm_policy = {
 struct ac97_mod_state {
     uint8_t initialized;
     uint8_t audio_registered;
+    uint8_t irq_line;
+    uint8_t irq_pin;
+    uint8_t bus;
+    uint8_t slot;
+    uint8_t function;
+    uint8_t prog_if;
+    uint16_t vendor_id;
+    uint16_t device_id;
     uint16_t nambar;
     uint16_t nabmbar;
+    uint16_t mixer_reset;
+    uint16_t powerdown;
+    uint16_t ext_audio_id;
+    uint16_t ext_audio_ctrl;
     uint32_t codec_id;
     uint32_t global_status;
+    uint32_t global_control;
     uint64_t bdl_phys;
     uint64_t buffer_phys[AC97_BDL_ENTRIES];
     struct ac97_mod_bdl_entry *bdl;
@@ -1256,6 +1269,7 @@ static int ac97_mod_play_stream_local(void *ctx,
     struct ac97_mod_stream_source source;
     uint32_t src_frame_bytes;
     uint32_t read_capacity;
+    uint32_t read_pages;
     uint64_t read_phys;
     uint8_t *read_buffer;
     uint64_t src_pos;
@@ -1266,39 +1280,97 @@ static int ac97_mod_play_stream_local(void *ctx,
 
     (void)ctx;
     if (stream == NULL || stream->read == NULL) {
+        ac97_mod_log("driver: AC97MOD stream invalid callback\n");
         return 0;
     }
     if (!g_ac97_mod.initialized) {
+        ac97_mod_log("driver: AC97MOD stream not initialized\n");
         return 0;
     }
     if (stream->channels == 0u || stream->channels > 2u) {
+        ac97_mod_log("driver: AC97MOD stream bad channels=%u\n", stream->channels);
         return 0;
     }
     if (stream->bits_per_sample != 8u && stream->bits_per_sample != 16u) {
+        ac97_mod_log("driver: AC97MOD stream bad bits=%u\n", stream->bits_per_sample);
         return 0;
     }
     if (stream->sample_rate < 8000u || stream->sample_rate > AC97_SAMPLE_RATE) {
+        ac97_mod_log("driver: AC97MOD stream bad rate=%u\n", stream->sample_rate);
         return 0;
     }
     if ((stream->flags & ~DRIVER_AUDIO_PLAY_F_ASYNC) != 0u) {
+        ac97_mod_log("driver: AC97MOD stream bad flags=%u\n", stream->flags);
         return 0;
     }
     src_frame_bytes = stream->channels * (stream->bits_per_sample / 8u);
     if (src_frame_bytes == 0u || stream->data_bytes < src_frame_bytes) {
+        ac97_mod_log("driver: AC97MOD stream bad bytes=%u frame=%u\n",
+                     stream->data_bytes,
+                     src_frame_bytes);
         return 0;
     }
-    if (!ac97_mod_prepare_dma_local() ||
-        !ac97_mod_prepare_buffer_pages_local(AC97_BDL_ENTRIES)) {
+    if (stream->data_bytes <= AC97_PAGE_BYTES) {
+        uint32_t read_total = 0u;
+        uint32_t aligned_bytes = stream->data_bytes - (stream->data_bytes % src_frame_bytes);
+        uint8_t *short_buffer;
+
+        if (aligned_bytes == 0u) {
+            return 0;
+        }
+        short_buffer = (uint8_t *)driver_alloc_pages(1u, &read_phys);
+        (void)read_phys;
+        if (short_buffer == NULL) {
+            ac97_mod_log("driver: AC97MOD stream short allocation failed\n");
+            return 0;
+        }
+        while (read_total < aligned_bytes) {
+            uint32_t got = stream->read(stream->ctx,
+                                        short_buffer + read_total,
+                                        aligned_bytes - read_total);
+
+            if (got == 0u) {
+                break;
+            }
+            read_total += got;
+        }
+        read_total -= read_total % src_frame_bytes;
+        if (read_total != 0u) {
+            (void)ac97_mod_play_pcm_local(ctx,
+                                          short_buffer,
+                                          read_total,
+                                          stream->sample_rate,
+                                          stream->channels,
+                                          stream->bits_per_sample,
+                                          stream->flags);
+            ok = read_total == aligned_bytes;
+        }
+        driver_free_pages(short_buffer, 1u);
+        return ok;
+    }
+    if (!ac97_mod_prepare_dma_local()) {
+        ac97_mod_log("driver: AC97MOD stream prepare dma failed\n");
         return 0;
     }
-    read_buffer = (uint8_t *)driver_alloc_pages(AC97_STREAM_READ_PAGES, &read_phys);
+    if (!ac97_mod_prepare_buffer_pages_local(AC97_BDL_ENTRIES)) {
+        ac97_mod_log("driver: AC97MOD stream prepare buffers failed\n");
+        return 0;
+    }
+    read_pages = (stream->data_bytes + AC97_PAGE_BYTES - 1u) / AC97_PAGE_BYTES;
+    if (read_pages == 0u) {
+        read_pages = 1u;
+    }
+    if (read_pages > AC97_STREAM_READ_PAGES) {
+        read_pages = AC97_STREAM_READ_PAGES;
+    }
+    read_buffer = (uint8_t *)driver_alloc_pages(read_pages, &read_phys);
     (void)read_phys;
     if (read_buffer == NULL) {
         ac97_mod_log("driver: AC97MOD stream read allocation failed pages=%u\n",
-                     AC97_STREAM_READ_PAGES);
+                     read_pages);
         return 0;
     }
-    read_capacity = AC97_STREAM_READ_PAGES * AC97_PAGE_BYTES;
+    read_capacity = read_pages * AC97_PAGE_BYTES;
     if (read_capacity > g_ac97_mod.q_read_chunk_desc * AC97_BUFFER_BYTES) {
         read_capacity = g_ac97_mod.q_read_chunk_desc * AC97_BUFFER_BYTES;
     }
@@ -1384,7 +1456,7 @@ done:
     if (!ok) {
         ac97_mod_reset_stream_local();
     }
-    driver_free_pages(read_buffer, AC97_STREAM_READ_PAGES);
+    driver_free_pages(read_buffer, read_pages);
     return ok;
 }
 
@@ -1424,6 +1496,32 @@ static int ac97_mod_register_audio_local(void) {
     return 1;
 }
 
+static int ac97_mod_publish_status_local(void) {
+    struct driver_ac97_device_info info;
+
+    driver_memset(&info, 0, sizeof(info));
+    info.present = 1u;
+    info.initialized = g_ac97_mod.initialized;
+    info.irq_line = g_ac97_mod.irq_line;
+    info.irq_pin = g_ac97_mod.irq_pin;
+    info.bus = g_ac97_mod.bus;
+    info.slot = g_ac97_mod.slot;
+    info.function = g_ac97_mod.function;
+    info.prog_if = g_ac97_mod.prog_if;
+    info.vendor_id = g_ac97_mod.vendor_id;
+    info.device_id = g_ac97_mod.device_id;
+    info.nambar = g_ac97_mod.nambar;
+    info.nabmbar = g_ac97_mod.nabmbar;
+    info.mixer_reset = g_ac97_mod.mixer_reset;
+    info.powerdown = g_ac97_mod.powerdown;
+    info.ext_audio_id = g_ac97_mod.ext_audio_id;
+    info.ext_audio_ctrl = g_ac97_mod.ext_audio_ctrl;
+    info.codec_id = g_ac97_mod.codec_id;
+    info.global_status = g_ac97_mod.global_status;
+    info.global_control = g_ac97_mod.global_control;
+    return driver_ac97_publish_device(&info);
+}
+
 static int ac97_mod_init(void) {
     struct driver_pci_device ac97;
     uint16_t command;
@@ -1435,6 +1533,14 @@ static int ac97_mod_init(void) {
         ac97_mod_log("driver: AC97MOD controller not found\n");
         return 0;
     }
+    g_ac97_mod.bus = ac97.bus;
+    g_ac97_mod.slot = ac97.slot;
+    g_ac97_mod.function = ac97.function;
+    g_ac97_mod.prog_if = ac97.prog_if;
+    g_ac97_mod.irq_line = ac97.irq_line;
+    g_ac97_mod.irq_pin = ac97.irq_pin;
+    g_ac97_mod.vendor_id = ac97.vendor_id;
+    g_ac97_mod.device_id = ac97.device_id;
     g_ac97_mod.nambar = ac97_mod_io_base_from_bar_local(ac97.bar[0]);
     g_ac97_mod.nabmbar = ac97_mod_io_base_from_bar_local(ac97.bar[1]);
     if (g_ac97_mod.nambar == 0u || g_ac97_mod.nabmbar == 0u) {
@@ -1458,9 +1564,14 @@ static int ac97_mod_init(void) {
     (void)ac97_mod_configure_output_rate_local(AC97_SAMPLE_RATE);
     ac97_mod_delay_local(200000u);
 
+    g_ac97_mod.mixer_reset = ac97_mod_mixer_read16_local(AC97_MIXER_RESET);
+    g_ac97_mod.powerdown = ac97_mod_mixer_read16_local(AC97_POWERDOWN);
+    g_ac97_mod.ext_audio_id = ac97_mod_mixer_read16_local(AC97_EXT_AUDIO_ID);
+    g_ac97_mod.ext_audio_ctrl = ac97_mod_mixer_read16_local(AC97_EXT_AUDIO_CTRL);
     g_ac97_mod.codec_id =
         ((uint32_t)ac97_mod_mixer_read16_local(AC97_CODEC_VENDOR_ID1) << 16) |
         (uint32_t)ac97_mod_mixer_read16_local(AC97_CODEC_VENDOR_ID2);
+    g_ac97_mod.global_control = ac97_mod_bus_read32_local(AC97_GLOB_CNT);
     g_ac97_mod.global_status = ac97_mod_bus_read32_local(AC97_GLOB_STA);
     ac97_mod_apply_policy_local(&ac97_common_pcm_policy);
     g_ac97_mod.initialized = 1u;
@@ -1469,6 +1580,7 @@ static int ac97_mod_init(void) {
         !ac97_mod_register_audio_local()) {
         return 0;
     }
+    (void)ac97_mod_publish_status_local();
     ac97_mod_log("driver: AC97MOD init bdf=%u:%u.%u cmd=%x io=%x:%x codec=%x sta=%x dma=%lx:%lx\n",
                  (uint32_t)ac97.bus,
                  (uint32_t)ac97.slot,

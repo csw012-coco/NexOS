@@ -49,6 +49,7 @@ static uint64_t g_ac97_bdl_phys;
 static uint64_t g_ac97_buffer_phys[AC97_BDL_ENTRIES];
 static struct ac97_bdl_entry *g_ac97_bdl;
 static uint8_t *g_ac97_buffers[AC97_BDL_ENTRIES];
+static uint8_t g_ac97_stream_scratch[AC97_BUFFER_PAGE_BYTES];
 static uint32_t g_ac97_buffer_count;
 static uint8_t g_ac97_audio_registered;
 
@@ -510,10 +511,65 @@ static int ac97_play_pcm_local(void *ctx,
     return ac97_start_and_wait(nabmbar, descriptors, duration_ms);
 }
 
+static int ac97_play_stream_local(void *ctx, struct audio_pcm_stream *stream) {
+    uint32_t remaining;
+    uint32_t frame_bytes;
+
+    if (stream == 0 || stream->read == 0 || stream->data_bytes == 0u) {
+        return 0;
+    }
+    if (stream->channels == 0u || stream->channels > 2u ||
+        (stream->bits_per_sample != 8u && stream->bits_per_sample != 16u)) {
+        return 0;
+    }
+    frame_bytes = stream->channels * (stream->bits_per_sample / 8u);
+    if (frame_bytes == 0u) {
+        return 0;
+    }
+
+    remaining = stream->data_bytes;
+    while (remaining != 0u) {
+        uint32_t want = remaining > sizeof(g_ac97_stream_scratch)
+            ? sizeof(g_ac97_stream_scratch)
+            : remaining;
+        uint32_t got;
+
+        want -= want % frame_bytes;
+        if (want == 0u) {
+            break;
+        }
+        if (stream->cancelled != 0 && stream->cancelled(stream->ctx)) {
+            return 0;
+        }
+        got = stream->read(stream->ctx, g_ac97_stream_scratch, want);
+        if (got == 0u) {
+            return 0;
+        }
+        got -= got % frame_bytes;
+        if (got == 0u ||
+            !ac97_play_pcm_local(ctx,
+                                 g_ac97_stream_scratch,
+                                 got,
+                                 stream->sample_rate,
+                                 stream->channels,
+                                 stream->bits_per_sample,
+                                 stream->flags)) {
+            return 0;
+        }
+        if (got >= remaining) {
+            remaining = 0u;
+        } else {
+            remaining -= got;
+        }
+    }
+    return remaining == 0u;
+}
+
 int ac97_init(void) {
     static const struct audio_device_ops audio_ops = {
         .play_tone = ac97_play_tone_local,
         .play_pcm = ac97_play_pcm_local,
+        .play_stream = ac97_play_stream_local,
     };
     struct pci_ac97_controller controller;
     struct audio_device_info info;
@@ -577,7 +633,7 @@ int ac97_init(void) {
     if (!g_ac97_audio_registered) {
         info.present = 1;
         info.initialized = 1;
-        info.caps = AUDIO_CAP_PLAYBACK | AUDIO_CAP_TONE;
+        info.caps = AUDIO_CAP_PLAYBACK | AUDIO_CAP_TONE | AUDIO_CAP_STREAM;
         info.driver_kind = AUDIO_DRIVER_AC97;
         info.sample_rate = AC97_SAMPLE_RATE;
         info.channels = 2u;
@@ -597,4 +653,12 @@ int ac97_query_status(struct ac97_status *out) {
     }
     *out = g_ac97_status;
     return g_ac97_status.present != 0;
+}
+
+int ac97_publish_status(const struct ac97_status *status) {
+    if (status == 0) {
+        return 0;
+    }
+    g_ac97_status = *status;
+    return 1;
 }

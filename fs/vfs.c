@@ -244,7 +244,7 @@ static int vfs_fill_builtin_fat32_info(const struct vfs *vfs, struct vfs_builtin
         return 0;
     }
     out->kind = VFS_MOUNT_FAT32;
-    out->name = "fat";
+    out->name = "boot";
     out->bdev = vfs->fat32.bdev;
     out->partition_lba = vfs->fat32.partition_lba;
     return 1;
@@ -291,8 +291,8 @@ static const struct vfs_builtin_mount_provider g_vfs_builtin_mount_providers[] =
     {
         .kind = VFS_MOUNT_FAT32,
         .requires_partition = 0,
-        .name = "fat",
-        .root_target = "/fat",
+        .name = "boot",
+        .root_target = "/boot",
         .probe_source = vfs_probe_fat32_source,
         .mount_builtin = vfs_mount_builtin_fat32,
         .mount_dynamic = vfs_mount_dynamic_fat32,

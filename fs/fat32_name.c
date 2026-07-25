@@ -190,7 +190,6 @@ int fat32_lfn_append_char(char *dst, uint32_t dst_size, uint32_t index, uint16_t
         return 1;
     }
     dst[index] = ch;
-    dst[index + 1u] = '\0';
     return 1;
 }
 

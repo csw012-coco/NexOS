@@ -4,6 +4,7 @@ static char g_ush_prompt_path[64] = "/";
 static const char *g_ush_prompt_override = NULL;
 static const char ush_ansi_reset[] = "\x1b[0m";
 static const char ush_ansi_error[] = "\x1b[1;31m";
+enum { USH_TAB_WIDTH = 8u };
 static char g_ush_history[USH_HISTORY_MAX][USH_LINE_MAX + 1];
 static uint32_t g_ush_history_len = 0;
 static uint32_t g_ush_history_next = 0;
@@ -81,6 +82,19 @@ static int ush_read_escape_char(char *out) {
     return 0;
 }
 
+static void ush_idle_wait(uint32_t *polls_without_input) {
+    if (polls_without_input == NULL) {
+        yield();
+        return;
+    }
+    if (*polls_without_input < 64u) {
+        (*polls_without_input)++;
+        return;
+    }
+    *polls_without_input = 0u;
+    yield();
+}
+
 static void lowercase_copy_local(char *dst, uint32_t dst_size, const char *src) {
     uint32_t i = 0;
 
@@ -123,6 +137,10 @@ static void ush_ansi_clear_line(void) {
     write_str("\r\x1b[2K");
 }
 
+static void ush_ansi_clear_screen(void) {
+    write_str("\x1b[2J\x1b[H");
+}
+
 static void ush_ansi_set_column(uint32_t column) {
     write_str("\x1b[");
     write_dec_local(column);
@@ -141,8 +159,133 @@ static void ush_editor_set_line(struct ush_editor *editor, const char *text) {
     editor->cursor = editor->len;
 }
 
+static int ush_utf8_is_continuation(unsigned char ch) {
+    return (ch & 0xc0u) == 0x80u;
+}
+
+static uint32_t ush_utf8_prev_offset(const char *text, uint32_t cursor) {
+    uint32_t pos;
+
+    if (cursor == 0u) {
+        return 0u;
+    }
+    pos = cursor - 1u;
+    while (pos > 0u && ush_utf8_is_continuation((unsigned char)text[pos])) {
+        pos--;
+    }
+    return pos;
+}
+
+static uint32_t ush_utf8_next_offset(const char *text, uint32_t len, uint32_t cursor) {
+    uint32_t pos;
+
+    if (cursor >= len) {
+        return len;
+    }
+    pos = cursor + 1u;
+    while (pos < len && ush_utf8_is_continuation((unsigned char)text[pos])) {
+        pos++;
+    }
+    return pos;
+}
+
+static uint8_t ush_utf8_decode_next(const char *text, uint32_t len, uint32_t offset, uint32_t *codepoint) {
+    unsigned char first;
+    uint32_t needed;
+    uint32_t value;
+    uint32_t minimum;
+
+    if (text == NULL || codepoint == NULL || offset >= len) {
+        return 0u;
+    }
+    first = (unsigned char)text[offset];
+    if (first < 0x80u) {
+        *codepoint = first;
+        return 1u;
+    }
+    if ((first & 0xe0u) == 0xc0u) {
+        needed = 2u;
+        value = first & 0x1fu;
+        minimum = 0x80u;
+    } else if ((first & 0xf0u) == 0xe0u) {
+        needed = 3u;
+        value = first & 0x0fu;
+        minimum = 0x800u;
+    } else if ((first & 0xf8u) == 0xf0u) {
+        needed = 4u;
+        value = first & 0x07u;
+        minimum = 0x10000u;
+    } else {
+        *codepoint = 0xfffdu;
+        return 1u;
+    }
+    if (offset + needed > len) {
+        *codepoint = 0xfffdu;
+        return 1u;
+    }
+    for (uint32_t i = 1u; i < needed; i++) {
+        unsigned char next = (unsigned char)text[offset + i];
+
+        if (!ush_utf8_is_continuation(next)) {
+            *codepoint = 0xfffdu;
+            return 1u;
+        }
+        value = (value << 6) | (uint32_t)(next & 0x3fu);
+    }
+    if (value < minimum || value > 0x10ffffu || (value >= 0xd800u && value <= 0xdfffu)) {
+        *codepoint = 0xfffdu;
+        return 1u;
+    }
+    *codepoint = value;
+    return (uint8_t)needed;
+}
+
+static uint8_t ush_codepoint_width(uint32_t codepoint) {
+    if ((codepoint >= 0x0300u && codepoint <= 0x036fu) ||
+        (codepoint >= 0x1ab0u && codepoint <= 0x1affu) ||
+        (codepoint >= 0x1dc0u && codepoint <= 0x1dffu) ||
+        (codepoint >= 0x20d0u && codepoint <= 0x20ffu) ||
+        (codepoint >= 0xfe20u && codepoint <= 0xfe2fu)) {
+        return 0u;
+    }
+    if ((codepoint >= 0x1100u && codepoint <= 0x115fu) ||
+        (codepoint >= 0x2329u && codepoint <= 0x232au) ||
+        (codepoint >= 0x2e80u && codepoint <= 0xa4cfu) ||
+        (codepoint >= 0xac00u && codepoint <= 0xd7a3u) ||
+        (codepoint >= 0xf900u && codepoint <= 0xfaffu) ||
+        (codepoint >= 0xfe10u && codepoint <= 0xfe19u) ||
+        (codepoint >= 0xfe30u && codepoint <= 0xfe6fu) ||
+        (codepoint >= 0xff00u && codepoint <= 0xff60u) ||
+        (codepoint >= 0xffe0u && codepoint <= 0xffe6u) ||
+        (codepoint >= 0x20000u && codepoint <= 0x3fffdu)) {
+        return 2u;
+    }
+    return 1u;
+}
+
+static uint32_t ush_utf8_columns_until(const char *text, uint32_t limit) {
+    uint32_t cols = 0;
+
+    for (uint32_t i = 0; i < limit && text[i] != '\0';) {
+        uint32_t codepoint;
+        uint8_t consumed = ush_utf8_decode_next(text, limit, i, &codepoint);
+
+        if (consumed == 0u || i + consumed > limit) {
+            consumed = 1u;
+            codepoint = (unsigned char)text[i];
+        }
+        if (codepoint == '\t') {
+            cols += USH_TAB_WIDTH - (cols % USH_TAB_WIDTH);
+        } else {
+            cols += ush_codepoint_width(codepoint);
+        }
+        i += consumed;
+    }
+    return cols;
+}
+
 static void ush_editor_render(const struct ush_editor *editor) {
-    uint32_t cursor_column = ush_prompt_display_width() + editor->cursor + 1u;
+    uint32_t cursor_column = ush_prompt_display_width() + ush_utf8_columns_until(editor->line, editor->cursor) + 1u;
 
     ush_ansi_clear_line();
     if (g_ush_prompt_override != NULL) {
@@ -175,29 +318,63 @@ static void ush_editor_insert_char(struct ush_editor *editor, char ch) {
     editor->line[editor->len] = '\0';
 }
 
+static void ush_editor_insert_quoted_char(struct ush_editor *editor, char ch) {
+    unsigned char uch = (unsigned char)ch;
+
+    if (ch == '\t') {
+        ush_editor_insert_char(editor, '\t');
+        return;
+    }
+    if (ch == '\r' || ch == '\n') {
+        if (editor->len + 2u > USH_LINE_MAX) {
+            return;
+        }
+        ush_editor_insert_char(editor, '^');
+        ush_editor_insert_char(editor, 'M');
+        return;
+    }
+    if (uch >= ' ') {
+        ush_editor_insert_char(editor, ch);
+        return;
+    }
+    if (editor->len + 2u > USH_LINE_MAX) {
+        return;
+    }
+    ush_editor_insert_char(editor, '^');
+    ush_editor_insert_char(editor, (char)(uch + '@'));
+}
+
 static void ush_editor_backspace(struct ush_editor *editor) {
     uint32_t i;
+    uint32_t start;
+    uint32_t removed;
 
     if (editor->cursor == 0 || editor->len == 0) {
         return;
     }
-    for (i = editor->cursor - 1u; i < editor->len; i++) {
-        editor->line[i] = editor->line[i + 1u];
+    start = ush_utf8_prev_offset(editor->line, editor->cursor);
+    removed = editor->cursor - start;
+    for (i = start; i + removed <= editor->len; i++) {
+        editor->line[i] = editor->line[i + removed];
     }
-    editor->cursor--;
-    editor->len--;
+    editor->cursor = start;
+    editor->len -= removed;
 }
 
 static void ush_editor_delete(struct ush_editor *editor) {
     uint32_t i;
+    uint32_t end;
+    uint32_t removed;
 
     if (editor->cursor >= editor->len) {
         return;
     }
-    for (i = editor->cursor; i < editor->len; i++) {
-        editor->line[i] = editor->line[i + 1u];
+    end = ush_utf8_next_offset(editor->line, editor->len, editor->cursor);
+    removed = end - editor->cursor;
+    for (i = editor->cursor; i + removed <= editor->len; i++) {
+        editor->line[i] = editor->line[i + removed];
     }
-    editor->len--;
+    editor->len -= removed;
 }
 
 static void ush_editor_move_home(struct ush_editor *editor) {
@@ -273,6 +450,12 @@ static uint32_t common_prefix_len_local(const char *a, const char *b) {
     return i;
 }
 
+static int prefix_extended_local(const char *prefix, const char *best) {
+    uint32_t prefix_len = str_len_local(prefix);
+
+    return str_len_local(best) > prefix_len && common_prefix_len_local(prefix, best) == prefix_len;
+}
+
 static int ush_editor_replace_fragment(struct ush_editor *editor,
                                        uint32_t start,
                                        uint32_t end,
@@ -306,6 +489,57 @@ static int ush_editor_replace_fragment(struct ush_editor *editor,
     return 1;
 }
 
+static void ush_complete_print_candidate(const char *name, int is_dir) {
+    write_str("  ");
+    write_str(name);
+    if (is_dir) {
+        write_str("/");
+    }
+    write_str("\n");
+}
+
+static void ush_complete_print_command_matches(const char *prefix) {
+    static const char *const shell_builtins[] = {"cd", "exit", "exec", "set", "export", "alias", "functions", "history", "source"};
+    char name_buf[USH_LINE_MAX + 1];
+    struct syscall_dirent entry;
+    uint32_t i;
+    int fd;
+
+    write_str("\n");
+    for (i = 0; i < sizeof(shell_builtins) / sizeof(shell_builtins[0]); i++) {
+        if (starts_with_ignore_case_local(shell_builtins[i], prefix)) {
+            ush_complete_print_candidate(shell_builtins[i], 0);
+        }
+    }
+    fd = opendir("/CMD");
+    if (fd >= 0) {
+        while (readdir((uint32_t)fd, &entry) > 0) {
+            lowercase_copy_local(name_buf, sizeof(name_buf), entry.name);
+            if (starts_with_ignore_case_local(name_buf, prefix)) {
+                ush_complete_print_candidate(name_buf, 0);
+            }
+        }
+        close((uint32_t)fd);
+    }
+}
+
+static void ush_complete_print_path_matches(const char *dir_path, const char *name_prefix) {
+    struct syscall_dirent entry;
+    int fd;
+
+    fd = opendir(dir_path);
+    if (fd < 0) {
+        return;
+    }
+    write_str("\n");
+    while (readdir((uint32_t)fd, &entry) > 0) {
+        if (starts_with_ignore_case_local(entry.name, name_prefix)) {
+            ush_complete_print_candidate(entry.name, (entry.attributes & 0x10u) != 0);
+        }
+    }
+    close((uint32_t)fd);
+}
+
 static int ush_complete_command_local(struct ush_editor *editor, uint32_t start, uint32_t end) {
     static const char *const shell_builtins[] = {"cd", "exit", "exec", "set", "export", "alias", "functions", "history", "source"};
     char prefix[USH_LINE_MAX + 1];
@@ -316,7 +550,7 @@ static int ush_complete_command_local(struct ush_editor *editor, uint32_t start,
     uint32_t i;
     int fd;
 
-    if (end <= start || end - start > USH_LINE_MAX) {
+    if (end < start || end - start > USH_LINE_MAX) {
         return 0;
     }
     for (i = 0; i < end - start; i++) {
@@ -356,7 +590,11 @@ static int ush_complete_command_local(struct ush_editor *editor, uint32_t start,
     if (match_count == 0 || best[0] == '\0') {
         return 0;
     }
-    return ush_editor_replace_fragment(editor, start, end, best, match_count == 1);
+    if (match_count == 1 || prefix_extended_local(prefix, best)) {
+        return ush_editor_replace_fragment(editor, start, end, best, match_count == 1);
+    }
+    ush_complete_print_command_matches(prefix);
+    return 1;
 }
 
 static int ush_complete_path_local(struct ush_editor *editor, uint32_t start, uint32_t end) {
@@ -441,7 +679,11 @@ static int ush_complete_path_local(struct ush_editor *editor, uint32_t start, ui
         }
         return ush_editor_replace_fragment(editor, start, end, candidate, 0);
     }
-    return ush_editor_replace_fragment(editor, start, end, candidate, match_count == 1);
+    if (match_count == 1 || prefix_extended_local(fragment, candidate)) {
+        return ush_editor_replace_fragment(editor, start, end, candidate, match_count == 1);
+    }
+    ush_complete_print_path_matches(dir_path, name_prefix);
+    return 1;
 }
 
 static void ush_editor_complete(struct ush_editor *editor) {
@@ -499,11 +741,20 @@ int read_line_chars(struct ush_editor *editor, char *line, uint32_t max_len) {
     }
     ush_editor_set_line(editor, "");
     ush_editor_sync_rendered_len(editor);
+    uint32_t idle_polls = 0u;
+    int quoted_insert = 0;
     for (;;) {
         char ch;
 
         if (!ush_read_char_nonblock(&ch)) {
-            yield();
+            ush_idle_wait(&idle_polls);
+            continue;
+        }
+        idle_polls = 0u;
+        if (quoted_insert) {
+            quoted_insert = 0;
+            ush_editor_insert_quoted_char(editor, ch);
+            ush_editor_render(editor);
             continue;
         }
         if (ch == '\r') {
@@ -537,6 +788,25 @@ int read_line_chars(struct ush_editor *editor, char *line, uint32_t max_len) {
             ush_editor_render(editor);
             continue;
         }
+        if (ch == 0x16) {
+            quoted_insert = 1;
+            continue;
+        }
+        if (ch == 0x0c) {
+            ush_ansi_clear_screen();
+            ush_editor_render(editor);
+            continue;
+        }
+        if (ch == 0x01) {
+            ush_editor_move_home(editor);
+            ush_editor_render(editor);
+            continue;
+        }
+        if (ch == 0x05) {
+            ush_editor_move_end(editor);
+            ush_editor_render(editor);
+            continue;
+        }
         if (ch == '\x1b') {
             char seq1;
             char seq2;
@@ -552,13 +822,9 @@ int read_line_chars(struct ush_editor *editor, char *line, uint32_t max_len) {
             } else if (seq2 == 'B') {
                 ush_editor_history_down(editor);
             } else if (seq2 == 'C') {
-                if (editor->cursor < editor->len) {
-                    editor->cursor++;
-                }
+                editor->cursor = ush_utf8_next_offset(editor->line, editor->len, editor->cursor);
             } else if (seq2 == 'D') {
-                if (editor->cursor > 0u) {
-                    editor->cursor--;
-                }
+                editor->cursor = ush_utf8_prev_offset(editor->line, editor->cursor);
             } else if (seq2 == 'H') {
                 ush_editor_move_home(editor);
             } else if (seq2 == 'F') {
@@ -573,7 +839,7 @@ int read_line_chars(struct ush_editor *editor, char *line, uint32_t max_len) {
             ush_editor_render(editor);
             continue;
         }
-        if (ch >= ' ' && ch <= '~') {
+        if ((unsigned char)ch >= ' ') {
             ush_editor_insert_char(editor, ch);
             ush_editor_render(editor);
         }

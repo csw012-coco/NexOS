@@ -1,78 +1,79 @@
-process model 완전 통합 / Complete process model integration
-- i386 spawn/exec path still uses the i386-specific loader/scheduler path:
-  kernel_i386_spawn_command -> i386_load_command -> i386_scheduler_spawn.
-  i386 spawn/exec 경로는 아직 i386 전용 loader/scheduler를 직접 탐.
-- First cleanup landed: i386 spawn/exec now share inheritable fd cloning rules,
-  preserve cwd, refresh tty handle from stdio, and close CLOSE_ON_SPAWN fds across exec/spawn.
-  1차 정리 완료: i386 spawn/exec가 상속 가능한 fd clone 규칙을 공유하고,
-  cwd 보존, stdio 기반 tty handle 갱신, CLOSE_ON_SPAWN fd 닫기를 수행.
-- Second cleanup landed: i386 command planning is split from ELF32 loading.
-  The plan layer now validates spawn mode, normalizes relative exec paths through the current cwd,
-  parses quoted/backslash arguments, and feeds argv/envp into the ELF32 loader.
-  2차 정리 완료: i386 command planning을 ELF32 로딩에서 분리.
-  plan 계층이 spawn mode 검증, 현재 cwd 기준 상대 exec path 정규화,
-  quote/backslash argv 파싱, argv/envp 전달을 담당.
-- Move i386 foreground/background spawn toward the common process_exec/process_spawn_from_user model,
-  or split a shared process32 backend that exposes the same process/job/session semantics.
-  i386 foreground/background spawn을 공통 process_exec/process_spawn_from_user 모델에 더 가깝게 이동하거나,
-  같은 process/job/session 의미론을 제공하는 process32 backend로 분리.
-- Replace SYS_FORK=-1 compatibility placeholder with either a documented unsupported status
-  or a real i386 fork/clone implementation.
-  SYS_FORK=-1 임시 구현을 명확한 unsupported 상태 또는 실제 i386 fork/clone 구현으로 교체.
-- Align i386 exec_replace action with x86_64 process_exec_replace behavior:
-  argv/envp, cwd, stdio inheritance, fd cleanup, process name, exit/wait semantics.
-  i386 exec_replace action을 x86_64의 process_exec_replace 동작과 맞춤:
-  argv/envp, cwd, stdio 상속, fd 정리, process name, exit/wait 의미론.
-- Keep request/result syscall actions as the ABI boundary for wait/exit/yield/sleep/exec.
-  wait/exit/yield/sleep/exec는 request/result syscall action을 ABI 경계로 유지.
+i386 port maintenance after feature-complete
+32비트 포팅 완료 후 유지보수 정리
 
-NEXBOX32 full port 마무리 / Finish NEXBOX32 full port
-- NEXBOX32_FULL.ELF now links and is copied as /BOOT/NEXBOX32.ELF.
-  NEXBOX32_FULL.ELF는 링크되고 /BOOT/NEXBOX32.ELF로 복사됨.
-- Regression target added:
-  make check-i386-nexbox32-full
-  회귀 검증 타깃 추가됨.
-- Current full smoke covers:
-  echo, help, uname, sysinfo, meminfo, minfo, parts, mounts, df, blk,
-  ps, jobs, dmesg, lspci, ac97, hda, rtl8139, audio.
-  현재 full smoke는 위 명령들을 실행 검증함.
-- Next: run the remaining full cmdsuite applets interactively and add each stable command
-  to the full smoke list once its syscall/backend path is real.
-  다음: 남은 full cmdsuite applet을 실제 실행하고, syscall/backend가 안정화된 명령을 smoke 목록에 추가.
-- Keep NEXBOX32S.ELF subset as fallback until the full command suite passes broader storage/net/gfx/editor smoke.
-  storage/net/gfx/editor까지 넓은 smoke가 통과할 때까지 NEXBOX32S.ELF subset은 fallback으로 유지.
+1. Thin syscall_i386_request_adapter.c
+   - Status: second split done; mmap/shm/mq/sem moved to syscall_i386_mem_ipc_adapter.c,
+     and audio/gfx/block/gui/clipboard/RTL8139 device-UI dispatch moved to syscall_i386_device_ui_adapter.c.
+   - 상태: 2차 분리 완료; mmap/shm/mq/sem은 syscall_i386_mem_ipc_adapter.c로,
+     audio/gfx/block/gui/clipboard/RTL8139 device-UI dispatch는 syscall_i386_device_ui_adapter.c로 이동.
+   - Status: mechanical split continued; VM snapshot/cleanup helpers moved to syscall_i386_vm_adapter.c,
+     and foreground/background fallback helpers moved to syscall_i386_job_adapter.c.
+   - 상태: 기계적 분리 추가 완료; VM snapshot/cleanup helper는 syscall_i386_vm_adapter.c로,
+     foreground/background fallback helper는 syscall_i386_job_adapter.c로 이동.
+   - Keep int 0x40 register decode, 32-bit pointer validation, and ABI copy helpers here.
+   - Move mmap/shm/mq/sem/audio/gfx/block/gui/clipboard dispatch into common syscall helpers.
+   - Goal: syscall_i386_request_adapter.c becomes an ABI adapter, not a syscall implementation hub.
+   - syscall_i386_request_adapter.c를 int 0x40 디코드, 32비트 포인터 검사, ABI copy helper 중심으로 줄이기.
+   - mmap/shm/mq/sem/audio/gfx/block/gui/clipboard dispatch는 공통 syscall helper로 옮기기.
 
-driver model
-i386은 현재 builtin/stub 성격이 강함
-x86_64처럼 driver discover/load/init, PCI 기반 드라이버 로딩, /DRIVERS 처리까지 더 맞춰야 함
+2. Split i386_shared_services.c
+   - Status: second split done; full/backend smoke runners moved to i386_smoke_services.c,
+     and TTY input/UTF-8/Hangul selftests moved to i386_tty_selftest.c.
+   - 상태: 2차 분리 완료; full/backend smoke runner는 i386_smoke_services.c로,
+     TTY input/UTF-8/한글 selftest는 i386_tty_selftest.c로 이동.
+   - Move boot smoke runners, backend smoke runners, TTY selftests, and ad-hoc command runners out of the shared service file.
+   - Keep only i386 boot/service glue and arch-specific service registration.
+   - i386_shared_services.c에서 boot smoke, backend smoke, TTY selftest, 임시 command runner를 분리.
+   - 최종적으로 i386 boot/service glue와 arch-specific service 등록만 남기기.
 
-VFS/pseudo fs 완성도
-/dev, /proc, /event, /ram은 생겼지만 아직 x86_64만큼 풍성하진 않음
-devfs node, procfs 세부 정보, event stream, pseudo file write 동작 등
+3. Retire i386 driver legacy surface
+   - Status: first cleanup done; driver_i386_stubs.c renamed to driver_i386_legacy.c to reflect its real role.
+   - 상태: 1차 정리 완료; 실제 역할에 맞춰 driver_i386_stubs.c를 driver_i386_legacy.c로 이름 변경.
+   - Status: second cleanup done; legacy manager/discover/load/file-table aliases were removed.
+     The common driver manager now owns driver_discover_root(), driver_load_all(), driver_get_file(), and driver_file_count(),
+     while i386 keeps only driver_arch_probe_file()/driver_arch_load_file() for ELF32 .DRV modules.
+   - 상태: 2차 정리 완료; legacy manager/discover/load/file-table alias 제거.
+     공통 driver manager가 driver_discover_root(), driver_load_all(), driver_get_file(), driver_file_count()를 소유하고,
+     i386은 ELF32 .DRV용 driver_arch_probe_file()/driver_arch_load_file() hook만 유지.
+   - Status: mechanical split done; ELF32 loader/probe stays in driver_i386_legacy.c,
+     while .DRV service symbol exports moved to driver_i386_services.c with a small internal header.
+   - 상태: 기계적 분리 완료; ELF32 loader/probe는 driver_i386_legacy.c에 남기고,
+     .DRV service symbol export는 작은 internal header와 함께 driver_i386_services.c로 이동.
+   - Replace driver_i386_legacy_* aliases with the common driver manager wherever possible.
+   - Keep only the i386 ELF32 .DRV loader/hook and truly arch-specific MMIO/IO helpers.
+   - i386 driver legacy alias 표면을 줄이고 공통 driver manager로 접기.
+   - i386 ELF32 .DRV loader/hook과 진짜 arch-specific MMIO/IO helper만 남기기.
 
-mmap/shm/mq/sem 고도화
-syscall surface는 들어갔지만 실제 shared mapping, 권한, lifecycle, cleanup은 더 봐야 함
+4. Split tty.c into smaller subsystems
+   - Status: first split done; UTF-8 helpers moved to tty_utf8.c and ANSI parser/output moved to tty_ansi.c.
+   - 상태: 1차 분리 완료; UTF-8 helper는 tty_utf8.c로, ANSI parser/output은 tty_ansi.c로 이동.
+   - Status: second split done; Hangul composition moved to tty_hangul.c and prompt/history/paste line editing moved to tty_line_edit.c.
+   - 상태: 2차 분리 완료; 한글 조합은 tty_hangul.c로, prompt/history/paste line editing은 tty_line_edit.c로 이동.
+   - Status: third split done; char queue and escape-sequence queue helpers moved to tty_queue.c.
+   - 상태: 3차 분리 완료; char queue와 escape-sequence queue helper는 tty_queue.c로 이동.
+   - Status: fourth split done; raw/line keyboard input dispatch moved to tty_input.c.
+   - 상태: 4차 분리 완료; raw/line keyboard input dispatch는 tty_input.c로 이동.
+   - Status: fifth split done; virtual TTY state and switching moved to tty_virtual.c.
+   - 상태: 5차 분리 완료; virtual TTY state와 switching은 tty_virtual.c로 이동.
+   - Suggested split: tty_utf8.c, tty_hangul.c, tty_line_edit.c, tty_ansi.c, tty_core.c.
+   - Keep UTF-8/Hangul/editor parity smoke passing after each split.
+   - tty.c를 UTF-8, 한글 조합, line editor, ANSI, core로 분리.
+   - 각 분리 단계마다 UTF-8/한글/editor parity smoke 유지.
 
-block/storage backend
-FAT32/NXFS/ramdisk는 붙었지만 x86_64급 block query, partition tooling, mount edge case는 더 필요함
-fdisk류, raw block read/write, sync/flush, error reporting
+5. Split user/i386/test32.c by test area
+   - Suggested split: test32_proc.c, test32_mm.c, test32_fs.c, test32_ipc.c, test32_libc.c.
+   - Keep TEST32.ELF command names and smoke output stable.
+   - test32.c를 proc/mm/fs/ipc/libc 영역별로 분리.
+   - 기존 TEST32.ELF 명령 이름과 smoke 출력은 유지.
 
-gfx/audio/net backend
-query/stub/일부 backend는 있음
-실제 x86_64처럼 그래픽 명령, audio playback, rtl8139 network path를 명령어 단위로 확인해야 함
+6. Reduce ush_exec.c complexity
+   - Separate command lookup, redirection, job control, path resolution, and exec/spawn handling.
+   - Keep unknown-command behavior identical between x86_64 and i386.
+   - ush_exec.c에서 command lookup, redirection, job-control, path resolve, exec/spawn 처리를 분리.
+   - 없는 명령어 처리 출력은 x86_64/i386 동일하게 유지.
 
-interrupt/timer/input 품질
-IRQ 카운터는 붙었지만 APIC/SMP 쪽은 없음
-키보드/마우스/serial/USB 입력도 x86_64와 완전 동일한 수준은 아님
-
-memory management
-paging/pmm/user stack/mmap 기본은 있지만
-COW, demand paging, page fault 기반 grow, robust user copy 같은 건 남음
-
-compat/common syscall core 정리 잔여
-
-많은 syscall이 request core로 넘어갔지만, 이름/경계/ABI 정리는 계속 다듬을 여지가 있음
-
-interrupt/timer/input 품질
-memory management 고도화
-compat/common syscall core 잔여 정리
+7. Remove procfs dependency on compat32 internals
+   - Replace direct syscall_compat32_vm_snapshot dependency with a common process/mm query API.
+   - procfs should not know about compat32 syscall internals.
+   - vfs_procfs_format.c가 syscall_compat32_vm_snapshot을 직접 보는 구조 제거.
+   - 공통 process/mm query API로 대체.

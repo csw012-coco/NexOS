@@ -104,6 +104,8 @@ static int table_column_index_local(const char *header, const char *name, uint32
     return 0;
 }
 
+static int table_selftest_local(const char *name);
+
 static void event_table_write_token_local(const char *text) {
     uint32_t i = 0;
     int quote = 0;
@@ -249,6 +251,9 @@ int cmd_as(int argc, char **argv) {
     char line[256];
     uint32_t got;
 
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        return table_selftest_local("as");
+    }
     if (argc != 2 || (!streq_local(argv[1], "table") && !streq_local(argv[1], "event"))) {
         write_err_usage("as", " <table|event>\n");
         return 1;
@@ -282,6 +287,9 @@ int cmd_pick(int argc, char **argv) {
     uint32_t column = 0;
     int have_header = 0;
 
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        return table_selftest_local("pick");
+    }
     if (argc != 2 || !table_split_assignment_local(argv[1], name, sizeof(name), value, sizeof(value))) {
         write_err_usage("pick", " <column=value>\n");
         return 1;
@@ -381,6 +389,37 @@ static int table_compare_text_local(const char *a, const char *b) {
     return a[i] == '\0' ? -1 : 1;
 }
 
+static int table_selftest_local(const char *name) {
+    uint32_t column = 0;
+    char token[64];
+
+    if (!table_column_index_local("name kind", "kind", &column) || column != 1u) {
+        write_err_str(name);
+        write_err_str(": column check failed\n");
+        return 1;
+    }
+    if (table_token_at_local("alpha user", column, token, sizeof(token)) == 0 ||
+        !streq_local(token, "user")) {
+        write_err_str(name);
+        write_err_str(": token check failed\n");
+        return 1;
+    }
+    if (table_compare_text_local("alpha", "beta") >= 0 ||
+        table_compare_text_local("beta", "alpha") <= 0 ||
+        table_compare_text_local("alpha", "alpha") != 0) {
+        write_err_str(name);
+        write_err_str(": compare check failed\n");
+        return 1;
+    }
+    copy_line_local(g_table_pipe_header, "name kind", sizeof(g_table_pipe_header));
+    copy_line_local(g_table_pipe_rows[0], "beta kernel", sizeof(g_table_pipe_rows[0]));
+    copy_line_local(g_table_pipe_rows[1], "alpha user", sizeof(g_table_pipe_rows[1]));
+    g_table_pipe_row_count = 2u;
+    write_str(name);
+    write_str(": check OK\n");
+    return 0;
+}
+
 static void table_append_selected_token_local(char *line_out,
                                               uint32_t line_size,
                                               uint32_t *pos_io,
@@ -424,6 +463,9 @@ int cmd_select(int argc, char **argv) {
     char token[64];
     uint32_t pos = 0;
 
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        return table_selftest_local("select");
+    }
     if (argc < 2 || argc > (int)(TABLE_PIPE_COL_MAX + 1u)) {
         write_err_usage("select", " <column> [column...]\n");
         return 1;
@@ -464,6 +506,9 @@ int cmd_sort_by(int argc, char **argv) {
     char left[64];
     char right[64];
 
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        return table_selftest_local("sort-by");
+    }
     if (argc != 2) {
         write_err_usage("sort-by", " <column>\n");
         return 1;
@@ -504,6 +549,9 @@ int cmd_count_by(int argc, char **argv) {
     char value[64];
     char other[64];
 
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        return table_selftest_local("count-by");
+    }
     if (argc != 2) {
         write_err_usage("count-by", " <column>\n");
         return 1;
@@ -566,6 +614,9 @@ int cmd_to(int argc, char **argv) {
     uint32_t header_count = 0;
     char token[64];
 
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        return table_selftest_local("to");
+    }
     if (argc != 2 || !streq_local(argv[1], "json")) {
         write_err_usage("to", " json\n");
         return 1;
@@ -596,6 +647,9 @@ int cmd_to(int argc, char **argv) {
 }
 
 int cmd_view(int argc, char **argv) {
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        return table_selftest_local("view");
+    }
     if (argc != 2 || !streq_local(argv[1], "table")) {
         write_err_usage("view", " table\n");
         return 1;

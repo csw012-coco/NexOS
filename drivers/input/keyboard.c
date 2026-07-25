@@ -196,6 +196,7 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
             g_ctrl_active = release ? 0u : 1u;
             break;
         case KEYBOARD_KEY_LEFT_ALT:
+        case KEYBOARD_KEY_RIGHT_ALT:
             g_alt_active = release ? 0u : 1u;
             break;
         case KEYBOARD_KEY_CAPS_LOCK:
@@ -262,6 +263,7 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
             g_ctrl_active = release ? 0u : 1u;
             break;
         case KEYBOARD_KEY_LEFT_ALT:
+        case KEYBOARD_KEY_RIGHT_ALT:
             g_alt_active = release ? 0u : 1u;
             break;
         case KEYBOARD_KEY_CAPS_LOCK:

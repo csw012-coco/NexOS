@@ -856,7 +856,7 @@ void kernel_panic_handle_exception(struct tty *shell_tty,
         panic_write_str(shell_tty, "CR2 NOTE         : stale/last page-fault address; not valid for this exception\n");
     }
     panic_write_label_value(shell_tty, "USER ENTRY       : ", current_user_raw_entry);
-    proc = process_current();
+    proc = process_current(); 
     kernel_panic_write_process(shell_tty, proc);
 
     if (detail != KERNEL_PANIC_DETAIL_COMPACT) {

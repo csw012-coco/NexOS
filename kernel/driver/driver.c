@@ -2,11 +2,15 @@
 #include "kernel/public/driver/driver_module.h"
 #include "arch/x86/common/io.h"
 #include "drivers/audio/audio.h"
+#include "drivers/audio/ac97.h"
+#include "drivers/audio/hda.h"
 #include "drivers/bus/pci.h"
+#include "drivers/net/rtl8139.h"
 #include "fs/vfs.h"
 #include "hal/hal.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/core/profile.h"
+#include "kernel/internal/driver/driver_loader_internal.h"
 #include "kernel/public/mem/pmm.h"
 #include "lib/string.h"
 
@@ -87,7 +91,7 @@ struct driver_elf64_rela {
 
 struct driver_kernel_symbol {
     const char *name;
-    uint64_t value;
+    uintptr_t value;
 };
 
 struct driver_module_allocation {
@@ -96,41 +100,55 @@ struct driver_module_allocation {
     uint32_t page_count;
 };
 
+static int g_driver_boot_verbose;
+
+static void driver_module_log(const char *fmt, ...) {
+    va_list ap;
+
+    if (!g_driver_boot_verbose) {
+        return;
+    }
+    va_start(ap, fmt);
+    vkprint(fmt, ap);
+    va_end(ap);
+}
+
 static const struct driver_kernel_symbol g_driver_kernel_symbols[] = {
-    { "driver_log", (uint64_t)(uintptr_t)kprint },
-    { "driver_alloc_pages", (uint64_t)(uintptr_t)driver_alloc_pages },
-    { "driver_alloc_pages_below", (uint64_t)(uintptr_t)driver_alloc_pages_below },
-    { "driver_audio_register_device", (uint64_t)(uintptr_t)driver_audio_register_device },
-    { "driver_free_pages", (uint64_t)(uintptr_t)driver_free_pages },
-    { "driver_hda_publish_device", (uint64_t)(uintptr_t)driver_hda_publish_device },
-    { "driver_mmio_map", (uint64_t)(uintptr_t)driver_mmio_map },
-    { "driver_memcpy", (uint64_t)(uintptr_t)memcpy },
-    { "driver_memmove", (uint64_t)(uintptr_t)memmove },
-    { "driver_memset", (uint64_t)(uintptr_t)memset },
-    { "driver_io_in8", (uint64_t)(uintptr_t)driver_io_in8 },
-    { "driver_io_in16", (uint64_t)(uintptr_t)driver_io_in16 },
-    { "driver_io_in32", (uint64_t)(uintptr_t)driver_io_in32 },
-    { "driver_io_out8", (uint64_t)(uintptr_t)driver_io_out8 },
-    { "driver_io_out16", (uint64_t)(uintptr_t)driver_io_out16 },
-    { "driver_io_out32", (uint64_t)(uintptr_t)driver_io_out32 },
-    { "driver_pci_find_by_class", (uint64_t)(uintptr_t)driver_pci_find_by_class },
-    { "driver_pci_find_by_id", (uint64_t)(uintptr_t)driver_pci_find_by_id },
-    { "driver_pci_read8", (uint64_t)(uintptr_t)driver_pci_read8 },
-    { "driver_pci_read16", (uint64_t)(uintptr_t)driver_pci_read16 },
-    { "driver_pci_read32", (uint64_t)(uintptr_t)driver_pci_read32 },
-    { "driver_pci_write8", (uint64_t)(uintptr_t)driver_pci_write8 },
-    { "driver_pci_write16", (uint64_t)(uintptr_t)driver_pci_write16 },
-    { "driver_pci_write32", (uint64_t)(uintptr_t)driver_pci_write32 },
-    { "driver_starts_with", (uint64_t)(uintptr_t)starts_with },
-    { "driver_streq", (uint64_t)(uintptr_t)streq },
-    { "driver_str_len", (uint64_t)(uintptr_t)str_len },
-    { "driver_timer_current_ticks", (uint64_t)(uintptr_t)driver_timer_current_ticks },
-    { "driver_timer_hz", (uint64_t)(uintptr_t)driver_timer_hz },
-    { "driver_cpu_wait_for_event", (uint64_t)(uintptr_t)hal_cpu_wait_for_event },
-    { "driver_cpu_relax", (uint64_t)(uintptr_t)hal_cpu_relax },
-    { "driver_profile_register", (uint64_t)(uintptr_t)kernel_profile_register },
-    { "driver_profile_clock", (uint64_t)(uintptr_t)kernel_profile_clock },
-    { "driver_profile_record", (uint64_t)(uintptr_t)kernel_profile_record },
+    { "driver_log", (uintptr_t)driver_module_log },
+    { "driver_alloc_pages", (uintptr_t)driver_alloc_pages },
+    { "driver_alloc_pages_below", (uintptr_t)driver_alloc_pages_below },
+    { "driver_ac97_publish_device", (uintptr_t)driver_ac97_publish_device },
+    { "driver_audio_register_device", (uintptr_t)driver_audio_register_device },
+    { "driver_free_pages", (uintptr_t)driver_free_pages },
+    { "driver_hda_publish_device", (uintptr_t)driver_hda_publish_device },
+    { "driver_mmio_map", (uintptr_t)driver_mmio_map },
+    { "driver_memcpy", (uintptr_t)memcpy },
+    { "driver_memmove", (uintptr_t)memmove },
+    { "driver_memset", (uintptr_t)memset },
+    { "driver_io_in8", (uintptr_t)driver_io_in8 },
+    { "driver_io_in16", (uintptr_t)driver_io_in16 },
+    { "driver_io_in32", (uintptr_t)driver_io_in32 },
+    { "driver_io_out8", (uintptr_t)driver_io_out8 },
+    { "driver_io_out16", (uintptr_t)driver_io_out16 },
+    { "driver_io_out32", (uintptr_t)driver_io_out32 },
+    { "driver_pci_find_by_class", (uintptr_t)driver_pci_find_by_class },
+    { "driver_pci_find_by_id", (uintptr_t)driver_pci_find_by_id },
+    { "driver_pci_read8", (uintptr_t)driver_pci_read8 },
+    { "driver_pci_read16", (uintptr_t)driver_pci_read16 },
+    { "driver_pci_read32", (uintptr_t)driver_pci_read32 },
+    { "driver_pci_write8", (uintptr_t)driver_pci_write8 },
+    { "driver_pci_write16", (uintptr_t)driver_pci_write16 },
+    { "driver_pci_write32", (uintptr_t)driver_pci_write32 },
+    { "driver_starts_with", (uintptr_t)starts_with },
+    { "driver_streq", (uintptr_t)streq },
+    { "driver_str_len", (uintptr_t)str_len },
+    { "driver_timer_current_ticks", (uintptr_t)driver_timer_current_ticks },
+    { "driver_timer_hz", (uintptr_t)driver_timer_hz },
+    { "driver_cpu_wait_for_event", (uintptr_t)hal_cpu_wait_for_event },
+    { "driver_cpu_relax", (uintptr_t)hal_cpu_relax },
+    { "driver_profile_register", (uintptr_t)kernel_profile_register },
+    { "driver_profile_clock", (uintptr_t)kernel_profile_clock },
+    { "driver_profile_record", (uintptr_t)kernel_profile_record },
     { NULL, 0 }
 };
 
@@ -139,6 +157,95 @@ static struct kernel_driver_file g_driver_files[DRIVER_FILE_MAX_COUNT];
 static struct driver_module_allocation g_driver_module_allocs[DRIVER_MODULE_ALLOC_MAX_COUNT];
 static uint32_t g_driver_count;
 static uint32_t g_driver_file_count;
+
+static char driver_hex_digit_local(uint32_t value) {
+    value &= 0xfu;
+    return (char)(value < 10u ? '0' + value : 'a' + (value - 10u));
+}
+
+static void driver_device_clear_local(struct kernel_driver_record *record) {
+    if (record != NULL) {
+        record->device[0] = '-';
+        record->device[1] = '\0';
+    }
+}
+
+static void driver_device_set_pci_local(struct kernel_driver_record *record,
+                                        uint32_t bus,
+                                        uint32_t slot,
+                                        uint32_t function,
+                                        uint32_t vendor,
+                                        uint32_t device) {
+    uint32_t pos = 0u;
+
+    if (record == NULL) {
+        return;
+    }
+#define DRIVER_PUT_CH(ch) do { if (pos + 1u < sizeof(record->device)) record->device[pos++] = (char)(ch); } while (0)
+#define DRIVER_PUT_HEX(value, digits) do { \
+        for (uint32_t _shift = (uint32_t)(digits) * 4u; _shift != 0u; _shift -= 4u) { \
+            DRIVER_PUT_CH(driver_hex_digit_local(((uint32_t)(value)) >> (_shift - 4u))); \
+        } \
+    } while (0)
+    DRIVER_PUT_CH('p'); DRIVER_PUT_CH('c'); DRIVER_PUT_CH('i'); DRIVER_PUT_CH(' ');
+    DRIVER_PUT_HEX(bus, 2u);
+    DRIVER_PUT_CH(':');
+    DRIVER_PUT_HEX(slot, 2u);
+    DRIVER_PUT_CH('.');
+    DRIVER_PUT_HEX(function, 1u);
+    DRIVER_PUT_CH(' ');
+    DRIVER_PUT_HEX(vendor, 4u);
+    DRIVER_PUT_CH(':');
+    DRIVER_PUT_HEX(device, 4u);
+    record->device[pos] = '\0';
+#undef DRIVER_PUT_HEX
+#undef DRIVER_PUT_CH
+}
+
+static void driver_update_device_binding_local(struct kernel_driver_record *record) {
+    if (record == NULL || record->driver == NULL || record->driver->name == NULL) {
+        return;
+    }
+    driver_device_clear_local(record);
+    if (streq(record->driver->name, "AC97")) {
+        struct ac97_status status;
+
+        if (ac97_query_status(&status)) {
+            driver_device_set_pci_local(record,
+                                        status.bus,
+                                        status.slot,
+                                        status.function,
+                                        status.vendor_id,
+                                        status.device_id);
+        }
+        return;
+    }
+    if (streq(record->driver->name, "HDA")) {
+        struct hda_status status;
+
+        if (hda_query_status(&status)) {
+            driver_device_set_pci_local(record,
+                                        status.bus,
+                                        status.slot,
+                                        status.function,
+                                        status.vendor_id,
+                                        status.device_id);
+        }
+        return;
+    }
+    if (streq(record->driver->name, "rtl8139")) {
+        struct rtl8139_status status;
+
+        if (rtl8139_query_status(&status)) {
+            driver_device_set_pci_local(record,
+                                        status.bus,
+                                        status.slot,
+                                        status.function,
+                                        status.vendor_id,
+                                        status.device_id);
+        }
+    }
+}
 
 static const char *driver_elf_symbol_name_local(const uint8_t *image,
                                                 uint32_t file_size,
@@ -300,6 +407,35 @@ int driver_audio_register_device(const struct driver_audio_device_info *driver_i
                                  (const struct audio_device_ops *)driver_ops,
                                  ctx,
                                  index_out);
+}
+
+int driver_ac97_publish_device(const struct driver_ac97_device_info *info) {
+    struct ac97_status status;
+
+    if (info == NULL) {
+        return 0;
+    }
+    memset(&status, 0, sizeof(status));
+    status.present = (uint8_t)info->present;
+    status.initialized = (uint8_t)info->initialized;
+    status.irq_line = (uint8_t)info->irq_line;
+    status.irq_pin = (uint8_t)info->irq_pin;
+    status.bus = (uint8_t)info->bus;
+    status.slot = (uint8_t)info->slot;
+    status.function = (uint8_t)info->function;
+    status.prog_if = (uint8_t)info->prog_if;
+    status.vendor_id = (uint16_t)info->vendor_id;
+    status.device_id = (uint16_t)info->device_id;
+    status.nambar = info->nambar;
+    status.nabmbar = info->nabmbar;
+    status.mixer_reset = info->mixer_reset;
+    status.powerdown = info->powerdown;
+    status.ext_audio_id = info->ext_audio_id;
+    status.ext_audio_ctrl = info->ext_audio_ctrl;
+    status.codec_id = info->codec_id;
+    status.global_status = info->global_status;
+    status.global_control = info->global_control;
+    return ac97_publish_status(&status);
 }
 
 uint8_t driver_io_in8(uint16_t port) {
@@ -596,6 +732,52 @@ static struct kernel_driver_record *driver_find_mutable_local(const char *name) 
     return NULL;
 }
 
+static const char *driver_record_state_name_local(enum kernel_driver_state state) {
+    switch (state) {
+        case KERNEL_DRIVER_STATE_REGISTERED:
+            return "registered";
+        case KERNEL_DRIVER_STATE_ACTIVE:
+            return "active";
+        case KERNEL_DRIVER_STATE_INACTIVE:
+            return "inactive";
+        case KERNEL_DRIVER_STATE_FAILED:
+            return "failed";
+        default:
+            return "empty";
+    }
+}
+
+static void driver_sync_loaded_file_records_local(void) {
+    uint32_t i;
+
+    for (i = 0; i < g_driver_file_count; i++) {
+        struct kernel_driver_file *file = &g_driver_files[i];
+        const struct kernel_driver_record *record;
+
+        if (file->state != KERNEL_DRIVER_FILE_LOADED ||
+            file->driver_name[0] == '\0') {
+            continue;
+        }
+        record = driver_find_mutable_local(file->driver_name);
+        if (record == NULL) {
+            continue;
+        }
+        if (record->state == KERNEL_DRIVER_STATE_ACTIVE ||
+            record->state == KERNEL_DRIVER_STATE_INACTIVE ||
+            record->state == KERNEL_DRIVER_STATE_FAILED) {
+            file->reason_code = record->reason_code;
+            file->reason = record->reason;
+            if (g_driver_boot_verbose) {
+                kprint("driver: file %s driver=%s state=%s reason=%s\n",
+                       file->path,
+                       file->driver_name,
+                       driver_record_state_name_local(record->state),
+                       record->reason != NULL ? record->reason : "-");
+            }
+        }
+    }
+}
+
 void driver_manager_init(void) {
     uint32_t i;
 
@@ -605,26 +787,39 @@ void driver_manager_init(void) {
         g_driver_records[i].init_result = 0;
         g_driver_records[i].source = "builtin";
         g_driver_records[i].path = "-";
+        g_driver_records[i].reason_code = KERNEL_DRIVER_REASON_EMPTY;
         g_driver_records[i].reason = "empty";
+        driver_device_clear_local(&g_driver_records[i]);
     }
     for (i = 0; i < DRIVER_FILE_MAX_COUNT; i++) {
         g_driver_files[i].name[0] = '\0';
         g_driver_files[i].path[0] = '\0';
+        g_driver_files[i].driver_name[0] = '\0';
         g_driver_files[i].size = 0;
         g_driver_files[i].elf_class = 0;
         g_driver_files[i].elf_data = 0;
         g_driver_files[i].elf_type = 0;
         g_driver_files[i].elf_machine = 0;
         g_driver_files[i].state = KERNEL_DRIVER_FILE_DISCOVERED;
+        g_driver_files[i].reason_code = KERNEL_DRIVER_REASON_EMPTY;
         g_driver_files[i].reason = "empty";
     }
     g_driver_count = 0;
     g_driver_file_count = 0;
+    g_driver_boot_verbose = 0;
 }
 
-static int driver_register_source_local(const struct kernel_driver *driver,
-                                        const char *source,
-                                        const char *path) {
+void driver_set_boot_verbose(int verbose) {
+    g_driver_boot_verbose = verbose != 0;
+}
+
+int driver_boot_verbose_enabled(void) {
+    return g_driver_boot_verbose;
+}
+
+int driver_register_source(const struct kernel_driver *driver,
+                           const char *source,
+                           const char *path) {
     struct kernel_driver_record *record;
 
     if (driver == NULL || !driver_name_valid_local(driver->name) || driver->init == NULL) {
@@ -643,13 +838,15 @@ static int driver_register_source_local(const struct kernel_driver *driver,
     g_driver_records[g_driver_count].init_result = 0;
     g_driver_records[g_driver_count].source = source != NULL ? source : "builtin";
     g_driver_records[g_driver_count].path = path != NULL ? path : "-";
+    g_driver_records[g_driver_count].reason_code = KERNEL_DRIVER_REASON_REGISTERED;
     g_driver_records[g_driver_count].reason = "registered";
+    driver_device_clear_local(&g_driver_records[g_driver_count]);
     g_driver_count++;
     return 1;
 }
 
 int driver_register(const struct kernel_driver *driver) {
-    return driver_register_source_local(driver, "builtin", "-");
+    return driver_register_source(driver, "builtin", "-");
 }
 
 uint32_t driver_init_all(void) {
@@ -664,20 +861,34 @@ uint32_t driver_init_all(void) {
             continue;
         }
 
+        if (g_driver_boot_verbose) {
+            kprint("driver: init %s\n", g_driver_records[i].driver->name);
+        }
         result = g_driver_records[i].driver->init();
         g_driver_records[i].init_result = result;
         if (result > 0) {
             g_driver_records[i].state = KERNEL_DRIVER_STATE_ACTIVE;
+            g_driver_records[i].reason_code = KERNEL_DRIVER_REASON_INIT_OK;
             g_driver_records[i].reason = "init-ok";
             active_count++;
         } else if (result == 0) {
             g_driver_records[i].state = KERNEL_DRIVER_STATE_INACTIVE;
+            g_driver_records[i].reason_code = KERNEL_DRIVER_REASON_MISSING_HARDWARE;
             g_driver_records[i].reason = "missing-hardware";
         } else {
             g_driver_records[i].state = KERNEL_DRIVER_STATE_FAILED;
+            g_driver_records[i].reason_code = KERNEL_DRIVER_REASON_INIT_FAILED;
             g_driver_records[i].reason = "init-failed";
         }
+        if (g_driver_boot_verbose) {
+            kprint("driver: init %s result=%d reason=%s\n",
+                   g_driver_records[i].driver->name,
+                   result,
+                   g_driver_records[i].reason != NULL ? g_driver_records[i].reason : "-");
+        }
+        driver_update_device_binding_local(&g_driver_records[i]);
     }
+    driver_sync_loaded_file_records_local();
     return active_count;
 }
 
@@ -697,8 +908,8 @@ uint32_t driver_count(void) {
 }
 
 static enum kernel_driver_file_state driver_probe_elf_local(struct vfs *vfs,
-                                                            struct vfs_node *node,
-                                                            struct kernel_driver_file *file) {
+                                                           struct vfs_node *node,
+                                                           struct kernel_driver_file *file) {
     struct driver_elf64_header header;
     uint32_t offset = 0;
     int64_t read_bytes;
@@ -744,6 +955,16 @@ static enum kernel_driver_file_state driver_probe_elf_local(struct vfs *vfs,
         return KERNEL_DRIVER_FILE_ELF_INVALID;
     }
     return KERNEL_DRIVER_FILE_ELF_RELOC;
+}
+
+enum kernel_driver_file_state driver_arch_probe_file(struct vfs *vfs,
+                                                     struct vfs_node *node,
+                                                     struct kernel_driver_file *file)
+    __attribute__((weak));
+enum kernel_driver_file_state driver_arch_probe_file(struct vfs *vfs,
+                                                     struct vfs_node *node,
+                                                     struct kernel_driver_file *file) {
+    return driver_probe_elf_local(vfs, node, file);
 }
 
 static int driver_read_file_image_local(struct vfs *vfs,
@@ -1196,18 +1417,21 @@ static int driver_load_file_local(struct vfs *vfs, struct kernel_driver_file *fi
                                       &image,
                                       &image_alloc_size,
                                       &file_size)) {
+        file->reason_code = KERNEL_DRIVER_REASON_LOAD_FAILED;
         return 0;
     }
     header = (struct driver_elf64_header *)image;
     if (!driver_elf_header_valid_local(header, file_size) ||
         !driver_elf_layout_sections_local(image, file_size, header, section_addrs, &load_size)) {
         kprint("driver: ELF layout failed %s\n", file->path);
+        file->reason_code = KERNEL_DRIVER_REASON_LAYOUT_FAILED;
         driver_free_pages_local(image, image_alloc_size);
         return 0;
     }
     load_base = driver_alloc_pages_local(load_size, &load_alloc_size);
     if (load_base == NULL || load_alloc_size < load_size) {
         kprint("driver: load memory failed %s size=%u\n", file->path, load_size);
+        file->reason_code = KERNEL_DRIVER_REASON_NO_MEMORY;
         driver_free_pages_local(image, image_alloc_size);
         return 0;
     }
@@ -1217,6 +1441,7 @@ static int driver_load_file_local(struct vfs *vfs, struct kernel_driver_file *fi
                                             file_size,
                                             header,
                                             section_addrs)) {
+        file->reason_code = KERNEL_DRIVER_REASON_RELOC_FAILED;
         driver_free_pages_local(image, image_alloc_size);
         driver_free_pages_local(load_base, load_alloc_size);
         return 0;
@@ -1226,15 +1451,31 @@ static int driver_load_file_local(struct vfs *vfs, struct kernel_driver_file *fi
                                                  file_size,
                                                  header,
                                                  section_addrs);
-    if (driver == NULL || !driver_register_source_local(driver, "ramdisk", file->path)) {
+    if (driver != NULL) {
+        driver_copy_text_local(file->driver_name,
+                               driver->name,
+                               sizeof(file->driver_name));
+    }
+    if (driver == NULL || !driver_register_source(driver, "ramdisk", file->path)) {
         kprint("driver: register failed %s\n", file->path);
+        file->reason_code = driver == NULL
+                                ? KERNEL_DRIVER_REASON_SYMBOL_MISSING
+                                : KERNEL_DRIVER_REASON_REGISTER_FAILED;
         driver_free_pages_local(image, image_alloc_size);
         driver_free_pages_local(load_base, load_alloc_size);
         return 0;
     }
     driver_free_pages_local(image, image_alloc_size);
-    kprint("driver: loaded %s as %s\n", file->path, driver->name);
+    if (g_driver_boot_verbose) {
+        kprint("driver: loaded %s as %s\n", file->path, driver->name);
+    }
     return 1;
+}
+
+int driver_arch_load_file(struct vfs *vfs, struct kernel_driver_file *file)
+    __attribute__((weak));
+int driver_arch_load_file(struct vfs *vfs, struct kernel_driver_file *file) {
+    return driver_load_file_local(vfs, file);
 }
 
 uint32_t driver_discover_root(struct vfs *vfs, const char *directory) {
@@ -1249,7 +1490,9 @@ uint32_t driver_discover_root(struct vfs *vfs, const char *directory) {
         return 0;
     }
     if (vfs_opendir(vfs, directory, &dir_node) != 0) {
-        kprint("driver: directory not found %s\n", directory);
+        if (g_driver_boot_verbose) {
+            kprint("driver: directory not found %s\n", directory);
+        }
         return 0;
     }
 
@@ -1278,20 +1521,26 @@ uint32_t driver_discover_root(struct vfs *vfs, const char *directory) {
                                sizeof(g_driver_files[g_driver_file_count].path));
         g_driver_files[g_driver_file_count].size = vfs_node_file_size(&file_node);
         g_driver_files[g_driver_file_count].state =
-            driver_probe_elf_local(vfs, &file_node, &g_driver_files[g_driver_file_count]);
+            driver_arch_probe_file(vfs, &file_node, &g_driver_files[g_driver_file_count]);
         if (g_driver_files[g_driver_file_count].state == KERNEL_DRIVER_FILE_ELF_RELOC) {
+            g_driver_files[g_driver_file_count].reason_code =
+                KERNEL_DRIVER_REASON_PROBE_OK;
             g_driver_files[g_driver_file_count].reason = "probe-ok";
         } else {
+            g_driver_files[g_driver_file_count].reason_code =
+                KERNEL_DRIVER_REASON_UNSUPPORTED_ELF;
             g_driver_files[g_driver_file_count].reason = "unsupported-elf";
         }
-        kprint("driver: discovered %s size=%u state=%u\n",
-               g_driver_files[g_driver_file_count].path,
-               g_driver_files[g_driver_file_count].size,
-               (uint32_t)g_driver_files[g_driver_file_count].state);
+        if (g_driver_boot_verbose) {
+            kprint("driver: discovered %s size=%u state=%u\n",
+                   g_driver_files[g_driver_file_count].path,
+                   g_driver_files[g_driver_file_count].size,
+                   (uint32_t)g_driver_files[g_driver_file_count].state);
+        }
         g_driver_file_count++;
         found++;
     }
-    if (found == 0u) {
+    if (found == 0u && g_driver_boot_verbose) {
         kprint("driver: no .DRV files in %s\n", directory);
     }
     return found;
@@ -1307,12 +1556,17 @@ uint32_t driver_load_all(struct vfs *vfs) {
         if (g_driver_files[i].state != KERNEL_DRIVER_FILE_ELF_RELOC) {
             continue;
         }
-        if (driver_load_file_local(vfs, &g_driver_files[i])) {
+        if (driver_arch_load_file(vfs, &g_driver_files[i])) {
             g_driver_files[i].state = KERNEL_DRIVER_FILE_LOADED;
+            g_driver_files[i].reason_code = KERNEL_DRIVER_REASON_LOADED;
             g_driver_files[i].reason = "loaded";
             loaded++;
         } else {
             g_driver_files[i].state = KERNEL_DRIVER_FILE_LOAD_FAILED;
+            if (g_driver_files[i].reason_code == KERNEL_DRIVER_REASON_NONE ||
+                g_driver_files[i].reason_code == KERNEL_DRIVER_REASON_PROBE_OK) {
+                g_driver_files[i].reason_code = KERNEL_DRIVER_REASON_LOAD_FAILED;
+            }
             g_driver_files[i].reason = "load-failed";
             kprint("driver: load failed %s\n", g_driver_files[i].path);
         }

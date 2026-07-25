@@ -26,6 +26,7 @@ struct syscall_compat32_context {
     uint32_t io_buffer_size;
     uint32_t pid;
     uint32_t ticks;
+    const struct process_context *process_context;
 
     const struct syscall_boot_info *boot_info;
     const struct syscall_framebuffer_info *fb_info;
@@ -50,17 +51,21 @@ struct syscall_compat32_context {
     uint32_t (*page_alloc_at)(uint32_t user_page, int writable);
     int32_t (*page_protect)(uint32_t user_page, int writable);
     int32_t (*page_free)(uint32_t user_page);
+    int32_t (*page_free_pid)(uint32_t pid, uint32_t user_page);
     uint32_t (*shared_page_alloc)(void);
     int32_t (*shared_page_free)(uint32_t frame);
     uint32_t (*shared_page_map)(uint32_t frame);
     int32_t (*shared_page_unmap)(uint32_t user_page);
+    int32_t (*shared_page_unmap_pid)(uint32_t pid, uint32_t user_page);
     int32_t (*spawn_command)(const char *command,
                              uint32_t mode,
                              uint32_t flags);
     uintptr_t (*wait)(const struct process_context *context,
                       uint32_t pid,
                       int32_t *status,
-                      int *blocked);
+                      int *blocked,
+                      uint32_t user_info,
+                      struct process_snapshot *snapshot);
     uintptr_t (*exit)(const struct process_context *context,
                       int exit_code);
     uintptr_t (*yield)(const struct process_context *context);

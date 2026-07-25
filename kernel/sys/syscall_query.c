@@ -2,6 +2,7 @@
 #include "kernel/internal/core/system_query_internal.h"
 #include "kernel/internal/fs/file_internal.h"
 #include "kernel/internal/proc/process_internal_base.h"
+#include "kernel/internal/sys/syscall_common_request_core.h"
 #include "fs/vfs_internal.h"
 #include "kernel/public/core/tty.h"
 #include "kernel/public/core/profile.h"
@@ -39,10 +40,11 @@ uint64_t syscall_handle_boot_info_query(uint64_t user_info_addr) {
     if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    info.boot_drive = g_syscall_boot_info != 0 ? g_syscall_boot_info->boot_drive : 0;
-    info.partition_lba = g_syscall_boot_info != 0 ? g_syscall_boot_info->partition_lba : 0;
-    info.partition_sectors = g_syscall_boot_info != 0 ? g_syscall_boot_info->partition_sectors : 0;
-    info.module_count = g_syscall_boot_info != 0 ? g_syscall_boot_info->module_count : 0;
+    (void)syscall_common_request_core_query_info(SYS_QUERY_BOOT_INFO,
+                                                 0u,
+                                                 0u,
+                                                 &info,
+                                                 0);
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }
 
@@ -52,13 +54,13 @@ uint64_t syscall_handle_memmap_query(uint32_t index, uint64_t user_info_addr) {
     if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    if (g_syscall_memmap == 0 || index >= g_syscall_memmap_count) {
+    if (!syscall_common_request_core_query_info(SYS_QUERY_MEMMAP,
+                                                index,
+                                                0u,
+                                                &info,
+                                                0)) {
         return 0;
     }
-    info.base = g_syscall_memmap[index].base;
-    info.length = g_syscall_memmap[index].length;
-    info.type = g_syscall_memmap[index].type;
-    info.reserved = g_syscall_memmap[index].reserved;
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }
 
@@ -68,10 +70,25 @@ uint64_t syscall_handle_pmm_query(uint64_t user_info_addr) {
     if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    info.total_pages = pmm_total_pages();
-    info.free_pages = pmm_free_pages();
-    info.used_pages = pmm_used_pages();
-    info.dropped_pages = pmm_dropped_pages();
+    (void)syscall_common_request_core_query_info(SYS_QUERY_PMM,
+                                                 0u,
+                                                 0u,
+                                                 &info,
+                                                 0);
+    return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
+}
+
+uint64_t syscall_handle_fb_query(uint64_t user_info_addr) {
+    struct syscall_framebuffer_info info;
+
+    if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
+        return syscall_kill_bad_user_pointer();
+    }
+    (void)syscall_common_request_core_query_info(SYS_QUERY_FB,
+                                                 0u,
+                                                 0u,
+                                                 &info,
+                                                 0);
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }
 
@@ -92,7 +109,7 @@ uint64_t syscall_handle_block_read(uint32_t disk_index, uint64_t lba, uint64_t u
     if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    if (!kernel_block_read(disk_index, lba, &info)) {
+    if (!syscall_common_request_core_block_read_dispatch(disk_index, lba, &info)) {
         return 0;
     }
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
@@ -108,28 +125,29 @@ uint64_t syscall_handle_block_write(uint32_t disk_index, uint64_t lba, uint64_t 
     if (!syscall_copy_from_user(&info, user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    if (!kernel_block_write(disk_index, lba, &info)) {
+    if (!syscall_common_request_core_block_write_dispatch(disk_index, lba, &info)) {
         return 0;
     }
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }
 
 uint64_t syscall_handle_block_flush(uint32_t disk_index) {
-    return kernel_block_flush(disk_index) ? 1u : 0u;
+    return syscall_common_request_core_block_flush_dispatch(disk_index);
 }
 
 uint64_t syscall_handle_program_query(uint32_t index, uint64_t user_info_addr) {
     struct syscall_program_info info;
-    const char *name;
 
     if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    name = process_program_name(index);
-    if (name == 0) {
+    if (!syscall_common_request_core_query_info(SYS_QUERY_PROGRAM,
+                                                index,
+                                                0u,
+                                                &info,
+                                                0)) {
         return 0;
     }
-    syscall_copy_name(info.name, sizeof(info.name), name);
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }
 
@@ -139,7 +157,11 @@ uint64_t syscall_handle_block_query(uint32_t index, uint64_t user_info_addr) {
     if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    if (!kernel_query_block_info(index, &info)) {
+    if (!syscall_common_request_core_query_info(SYS_QUERY_BLOCK,
+                                                index,
+                                                0u,
+                                                &info,
+                                                0)) {
         return 0;
     }
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
@@ -151,7 +173,11 @@ uint64_t syscall_handle_part_query(uint32_t disk_index, uint32_t slot, uint64_t 
     if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    if (!kernel_query_part_info(disk_index, slot, &info)) {
+    if (!syscall_common_request_core_query_info(SYS_QUERY_PART,
+                                                disk_index,
+                                                slot,
+                                                &info,
+                                                0)) {
         return 0;
     }
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
@@ -283,10 +309,11 @@ uint64_t syscall_handle_profile_query(uint32_t index,
     if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    if ((flags & SYS_PROFILE_QUERY_RESET) != 0u) {
-        kernel_profile_reset();
-    }
-    if (!kernel_profile_query(index, &info)) {
+    if (!syscall_common_request_core_query_info(SYS_QUERY_PROFILE,
+                                                index,
+                                                flags,
+                                                &info,
+                                                0)) {
         return 0;
     }
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
@@ -300,6 +327,8 @@ uint64_t syscall_handle_query(uint32_t kind, uint64_t arg0, uint64_t arg1, uint6
             return syscall_handle_memmap_query((uint32_t)arg0, user_info_addr);
         case SYS_QUERY_PMM:
             return syscall_handle_pmm_query(user_info_addr);
+        case SYS_QUERY_FB:
+            return syscall_handle_fb_query(user_info_addr);
         case SYS_QUERY_VM:
             return syscall_handle_vm_query(user_info_addr);
         case SYS_QUERY_BLOCK:

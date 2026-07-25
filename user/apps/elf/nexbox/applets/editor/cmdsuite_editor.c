@@ -1119,8 +1119,12 @@ int cmd_vi(int argc, char **argv) {
     int dirty_status = 1;
     int dirty_cursor = 1;
 
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        write_str("vi: editor ready\n");
+        return 0;
+    }
     if (argc > 2) {
-        write_err_usage("vi", " [path]\n");
+        write_err_usage("vi", " [path] | --check\n");
         return 1;
     }
     buffer = (struct ed_buffer *)calloc(1u, sizeof(*buffer));
@@ -1391,8 +1395,12 @@ int cmd_ed(int argc, char **argv) {
     char line[ED_LINE_MAX];
     int quit_armed = 0;
 
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        write_str("ed: editor ready\n");
+        return 0;
+    }
     if (argc > 2) {
-        write_err_usage("ed", " [path]\n");
+        write_err_usage("ed", " [path] | --check\n");
         return 1;
     }
     buffer = (struct ed_buffer *)calloc(1u, sizeof(*buffer));

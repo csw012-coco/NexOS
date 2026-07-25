@@ -2,6 +2,7 @@
 #include "arch/x86/i386/pmm.h"
 #include "arch/x86/i386/user.h"
 #include "fs/early_vfs.h"
+#include "fs/vfs.h"
 #include "lib/string.h"
 
 enum {
@@ -66,14 +67,13 @@ static int ranges_overlap(uint32_t a_start,
     return a_start < b_end && b_start < a_end;
 }
 
-static int validate_elf32_image(const struct early_vfs_node *node,
-                                const struct elf32_header *header,
-                                const struct elf32_program_header *programs) {
-    uint32_t file_size;
+static int validate_elf32_image_size(uint32_t file_size,
+                                     const struct elf32_header *header,
+                                     const struct elf32_program_header *programs) {
     int has_load = 0;
     int entry_in_load = 0;
 
-    if (node == 0 || header == 0 || programs == 0 ||
+    if (header == 0 || programs == 0 ||
         header->phnum == 0u ||
         header->phnum > ELF_MAX_PROGRAM_HEADERS ||
         header->entry < I386_PAGING_IDENTITY_LIMIT ||
@@ -81,7 +81,6 @@ static int validate_elf32_image(const struct early_vfs_node *node,
         return 0;
     }
 
-    file_size = early_vfs_file_size(node);
     for (uint32_t i = 0; i < header->phnum; i++) {
         const struct elf32_program_header *program = &programs[i];
         uint32_t file_end;
@@ -146,6 +145,26 @@ static int validate_elf32_image(const struct early_vfs_node *node,
         }
     }
     return has_load && entry_in_load;
+}
+
+static int validate_elf32_image(const struct early_vfs_node *node,
+                                const struct elf32_header *header,
+                                const struct elf32_program_header *programs) {
+    return node != 0 &&
+           validate_elf32_image_size(early_vfs_file_size(node), header, programs);
+}
+
+static uint32_t i386_user_vfs_node_file_size(const struct vfs_node *node) {
+    if (node == 0 || node->kind != VFS_NODE_FILE) {
+        return 0u;
+    }
+    if (node->mount_kind == VFS_MOUNT_FAT32) {
+        return node->handle.fat32_file.size;
+    }
+    if (node->mount_kind == VFS_MOUNT_NXFS) {
+        return node->handle.nxfs_inode.size;
+    }
+    return 0u;
 }
 
 static int map_user_range(uint32_t start, uint32_t end, int writable) {
@@ -374,6 +393,147 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
                  bytes_read != copy_end - copy_start)) {
                 i386_paging_temporary_unmap(2u);
                 return 0;
+            }
+            i386_paging_temporary_unmap(2u);
+            page += I386_PAGE_SIZE;
+        }
+        loaded = 1;
+    }
+
+    if (!loaded) {
+        return 0;
+    }
+    for (uint32_t stack_page = stack_top - I386_PAGE_SIZE;
+         stack_page < stack_top;
+         stack_page += I386_PAGE_SIZE) {
+        uint32_t stack_frame;
+        uint8_t *temporary;
+
+        if (!map_image_page(root, stack_page, 1, &stack_frame) ||
+            !i386_paging_temporary_map(stack_frame, 2u, (void **)&temporary)) {
+            return 0;
+        }
+        memset(temporary, 0, I386_PAGE_SIZE);
+        i386_paging_temporary_unmap(2u);
+    }
+
+    image->root = root;
+    image->entry = header.entry;
+    if (!prepare_initial_stack(root,
+                               stack_top,
+                               argc,
+                               argv,
+                               envp,
+                               &image->stack_top)) {
+        return 0;
+    }
+    return 1;
+}
+
+int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
+                                      const char *path,
+                                      uint32_t stack_top,
+                                      int argc,
+                                      const char *const argv[],
+                                      const char *const envp[],
+                                      struct i386_user_image *image) {
+    struct vfs_node node;
+    struct elf32_header header;
+    struct elf32_program_header programs[ELF_MAX_PROGRAM_HEADERS];
+    uint32_t offset;
+    int64_t bytes_read;
+    uint32_t root;
+    int loaded = 0;
+
+    if (vfs == 0 || path == 0 || image == 0 ||
+        (stack_top & (I386_PAGE_SIZE - 1u)) != 0u ||
+        vfs_open(vfs, path, 0u, &node) != 0 ||
+        node.kind != VFS_NODE_FILE) {
+        return 0;
+    }
+    offset = 0u;
+    bytes_read = vfs_read(vfs,
+                          &node,
+                          &offset,
+                          &header,
+                          sizeof(header),
+                          VFS_READ_BLOCKING);
+    if (bytes_read != (int64_t)sizeof(header) ||
+        header.ident[0] != 0x7fu ||
+        header.ident[1] != 'E' ||
+        header.ident[2] != 'L' ||
+        header.ident[3] != 'F' ||
+        header.ident[4] != ELF_CLASS_32 ||
+        header.ident[5] != ELF_DATA_LSB ||
+        header.type != ELF_TYPE_EXEC ||
+        header.machine != ELF_MACHINE_386 ||
+        header.phnum == 0u ||
+        header.phnum > ELF_MAX_PROGRAM_HEADERS ||
+        header.phentsize != sizeof(struct elf32_program_header)) {
+        return 0;
+    }
+    offset = header.phoff;
+    bytes_read = vfs_read(vfs,
+                          &node,
+                          &offset,
+                          programs,
+                          header.phnum * sizeof(programs[0]),
+                          VFS_READ_BLOCKING);
+    if (bytes_read != (int64_t)(header.phnum * sizeof(programs[0])) ||
+        !validate_elf32_image_size(i386_user_vfs_node_file_size(&node),
+                                   &header,
+                                   programs)) {
+        return 0;
+    }
+
+    root = i386_paging_create_address_space();
+    if (root == 0u) {
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < header.phnum; i++) {
+        const struct elf32_program_header *program = &programs[i];
+        uint32_t page;
+        uint32_t limit;
+
+        if (program->type != ELF_PROGRAM_LOAD) {
+            continue;
+        }
+        page = program->vaddr & ~(I386_PAGE_SIZE - 1u);
+        limit = (program->vaddr + program->memsz + I386_PAGE_SIZE - 1u) &
+                ~(I386_PAGE_SIZE - 1u);
+        while (page < limit) {
+            uint32_t physical;
+            uint8_t *temporary;
+            uint32_t copy_start;
+            uint32_t copy_end;
+
+            if (!map_image_page(root,
+                                page,
+                                (program->flags & ELF_PROGRAM_WRITABLE) != 0,
+                                &physical) ||
+                !i386_paging_temporary_map(physical, 2u, (void **)&temporary)) {
+                return 0;
+            }
+            memset(temporary, 0, I386_PAGE_SIZE);
+
+            copy_start = page > program->vaddr ? page : program->vaddr;
+            copy_end = page + I386_PAGE_SIZE;
+            if (copy_end > program->vaddr + program->filesz) {
+                copy_end = program->vaddr + program->filesz;
+            }
+            if (copy_end > copy_start) {
+                offset = program->offset + copy_start - program->vaddr;
+                bytes_read = vfs_read(vfs,
+                                      &node,
+                                      &offset,
+                                      temporary + copy_start - page,
+                                      copy_end - copy_start,
+                                      VFS_READ_BLOCKING);
+                if (bytes_read != (int64_t)(copy_end - copy_start)) {
+                    i386_paging_temporary_unmap(2u);
+                    return 0;
+                }
             }
             i386_paging_temporary_unmap(2u);
             page += I386_PAGE_SIZE;

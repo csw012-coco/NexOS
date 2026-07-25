@@ -158,14 +158,16 @@ static int kernel_probe_init_path(struct vfs *vfs,
     return 1;
 }
 
-struct vfs *kernel_init_core_services(struct tty *shell_tty, volatile uint32_t *timer_ticks) {
+struct vfs *kernel_init_core_services(struct tty *shell_tty,
+                                      volatile uint32_t *timer_ticks,
+                                      const struct bootx_boot_info *boot_info) {
     if (shell_tty == 0 || timer_ticks == 0) {
         return 0;
     }
 
     process_init(shell_tty, timer_ticks);
     sched_policy_init();  /* Initialize scheduler policy layer (SOSP-18) */
-    return kernel_bootstrap_vfs();
+    return kernel_bootstrap_vfs(boot_info);
 }
 
 void kernel_init_interrupts(void) {
@@ -199,6 +201,8 @@ int kernel_try_run_init(struct vfs *vfs,
     uint32_t init_probe_size = 0;
     uint8_t init_probe_buffer[64];
     static const char *fallback_init_paths[] = {
+        "/init",
+        "init",
         "/INIT",
         "INIT",
         "/system/init",

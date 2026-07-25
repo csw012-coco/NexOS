@@ -18,6 +18,7 @@
 
 /* Forward declarations */
 struct job_runtime;
+struct process;
 
 /**
  * Scheduling policy interface
@@ -37,6 +38,20 @@ void sched_policy_init(void);
  */
 uint32_t sched_policy_update_wake_times(uint32_t current_ticks);
 void sched_policy_note_sleep(uint32_t wake_tick);
+uint32_t sched_policy_wake_sleepers_in_slots(struct process **slots,
+                                             uint32_t capacity,
+                                             uint32_t current_ticks);
+uint32_t sched_policy_select_next_in_slots(struct process **slots,
+                                           uint32_t capacity,
+                                           uint32_t current_slot);
+void sched_policy_bind_slot_view(struct process **slots,
+                                 uint32_t capacity,
+                                 const uint32_t *current_slot);
+int sched_policy_apply_runqueue_transition(struct process *process,
+                                           uint32_t reason,
+                                           int *completed);
+int sched_policy_restore_runqueue_current(struct process *process,
+                                          uint32_t reason);
 
 /**
  * Select the next ready process to run.
@@ -71,6 +86,10 @@ struct sched_policy_stats {
     uint32_t current_slot;
 };
 
+int sched_policy_collect_stats_from_slots(struct process **slots,
+                                          uint32_t capacity,
+                                          uint32_t current_slot,
+                                          struct sched_policy_stats *out);
 int sched_policy_get_stats(struct sched_policy_stats *out);
 
 /**

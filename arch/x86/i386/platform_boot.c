@@ -18,7 +18,10 @@ typedef unsigned int uint32_t;
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/proc/context.h"
 #include "kernel/public/proc/process.h"
-#include "kernel/internal/sys/syscall_compat32_internal.h"
+#include "kernel/public/proc/process_scheduler_ops.h"
+#include "kernel/public/proc/process_user_backend.h"
+#include "kernel/internal/sys/syscall_common_request_core.h"
+#include "kernel/internal/sys/syscall_i386_internal.h"
 #include "keyboard.h"
 #include "lib/string.h"
 #include "paging.h"
@@ -61,8 +64,7 @@ extern void kernel_i386_query_init(const struct syscall_boot_info *info,
                                    uint32_t cmdline,
                                    uint32_t memmap,
                                    uint32_t memmap_count);
-extern void kernel_i386_compat32_context(
-    struct syscall_compat32_context *ctx);
+extern void kernel_i386_syscall_context(syscall_i386_context *ctx);
 
 static int early_test_block_read(struct block_device *dev,
                                  uint64_t lba,
@@ -115,6 +117,7 @@ static void serial_init(void) {
 }
 
 static void serial_putc(char ch) {
+    out8(0xe9u, (uint8_t)ch);
     while ((in8(COM1 + 5) & 0x20u) == 0u) {
     }
     out8(COM1, (uint8_t)ch);
@@ -255,14 +258,14 @@ uint32_t i386_exception_handler(uint32_t vector, struct i386_exception_frame *fr
         }
         if ((frame->cs & 3u) == 3u) {
             struct process_context context;
-            struct syscall_compat32_context service_context;
+            syscall_i386_context service_context;
             uintptr_t action;
 
             i386_context_from_exception(&context, frame);
-            kernel_i386_compat32_context(&service_context);
+            kernel_i386_syscall_context(&service_context);
             service_context.pid = i386_scheduler_current_pid();
             service_context.ticks = irq_line_count[0];
-            syscall_compat32_cleanup_pid(&service_context, service_context.pid);
+            syscall_i386_cleanup_pid(&service_context, service_context.pid);
             action = i386_scheduler_fault_exit(&context, -14);
             return i386_context_action_to_frame(action);
         }
@@ -283,15 +286,17 @@ static uint32_t i386_context_action_to_frame(uintptr_t action) {
 
 uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
     struct process_context schedule_context;
-    struct syscall_compat32_context service_context;
+    syscall_i386_context service_context;
     struct kernel_syscall_request request = {0};
     struct kernel_syscall_result result;
 
-    kernel_i386_compat32_context(&service_context);
+    i386_context_from_syscall(&schedule_context, frame);
+    kernel_i386_syscall_context(&service_context);
     service_context.pid = i386_scheduler_current_pid();
     service_context.ticks = irq_line_count[0];
+    service_context.process_context = &schedule_context;
     arch->syscall_decode(frame, &request);
-    if (!syscall_compat32_dispatch_request(&service_context, &request, &result)) {
+    if (!syscall_i386_dispatch_request(&service_context, &request, &result)) {
         result.value = 0u;
         result.action = SYSCALL_RESULT_RETURN;
     }
@@ -308,8 +313,7 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
             arch->syscall_set_return(frame, (uint32_t)-1);
             return 0u;
         }
-        i386_context_from_syscall(&schedule_context, frame);
-        action = process32_exec_replace_from_user(&schedule_context, command);
+        action = process_user_exec_replace_from_user(&schedule_context, command);
         if (action == 0u) {
             arch->syscall_set_return(frame, (uint32_t)-1);
             return 0u;
@@ -321,10 +325,10 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
         int blocked = 0;
         uintptr_t action;
 
-        i386_context_from_syscall(&schedule_context, frame);
-        action = syscall_compat32_wait(&service_context,
+        action = syscall_i386_wait(&service_context,
                                         &schedule_context,
                                         (uint32_t)result.value,
+                                        (uint32_t)result.extra,
                                         &status,
                                         &blocked);
         if (blocked && action != 0u) {
@@ -338,7 +342,7 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
 
         arch->syscall_set_return(frame, 0u);
         i386_context_from_syscall(&schedule_context, frame);
-        action = syscall_compat32_sleep(&service_context,
+        action = syscall_i386_sleep(&service_context,
                                          &schedule_context,
                                          (uint32_t)result.value);
         return i386_context_action_to_frame(action);
@@ -347,7 +351,7 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
         uintptr_t action;
 
         i386_context_from_syscall(&schedule_context, frame);
-        action = syscall_compat32_exit(&service_context,
+        action = syscall_i386_exit(&service_context,
                                         &schedule_context,
                                         (int)result.value);
         return action != 0u
@@ -358,7 +362,7 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
         uintptr_t action;
 
         i386_context_from_syscall(&schedule_context, frame);
-        action = syscall_compat32_yield(&service_context,
+        action = syscall_i386_yield(&service_context,
                                          &schedule_context);
         if (action != 0u) {
             return i386_context_action_to_frame(action);
@@ -880,21 +884,21 @@ int kernel_i386_run_test32(struct process_snapshot *process0,
         TEST_STACK_TOP = 0xbfffe000u
     };
     struct i386_user_image task0;
+    struct process_loaded_image loaded;
 
     if (!i386_user_load_elf_space(&early_filesystem,
                                   "/BOOT/TEST32.ELF",
                                   TEST_STACK_TOP,
-                                  &task0) ||
-        !(kernel_i386_selftest_verbose()
-              ? i386_scheduler_run_one(task0.entry,
-                                      task0.stack_top,
-                                      task0.root,
-                                      "test32")
-              : i386_scheduler_run_one_quiet(task0.entry,
-                                             task0.stack_top,
-                                             task0.root,
-                                             "test32")) ||
-        !i386_scheduler_process_snapshot(0u, process0)) {
+                                  &task0)) {
+        return 0;
+    }
+    loaded.entry = task0.entry;
+    loaded.stack = task0.stack_top;
+    loaded.root = task0.root;
+    loaded.name = "test32";
+    if (!(kernel_i386_selftest_verbose()
+              ? process_scheduler_run_loaded(&loaded, process0)
+              : process_scheduler_run_loaded_quiet(&loaded, process0))) {
         return 0;
     }
     *process1 = *process0;
@@ -913,30 +917,47 @@ int kernel_i386_run_test32(struct process_snapshot *process0,
 int32_t kernel_i386_spawn_command(const char *command,
                                   uint32_t mode,
                                   uint32_t flags) {
-    return process32_spawn_from_user(command, mode, flags);
+    return process_user_spawn_from_user(command, mode, flags);
 }
 
 int kernel_i386_run_command(const char *command,
                             struct process_snapshot *process) {
-    return process32_run_command(command, process);
+    return process_user_run_command(command, process);
 }
 
 static int i386_prepare_shared_kernel(const struct bootx_boot_info *boot_info) {
     struct kernel_early_boot_report report = {0};
 
     string_runtime_init();
-    if (boot_info == 0 ||
-        boot_info->hdr.magic != BOOTX_MAGIC ||
-        !i386_segments_init() ||
-        !i386_interrupts_init() ||
-        !i386_paging_stage(boot_info, &report) ||
-        !i386_pmm_stage(boot_info, &report) ||
-        !i386_devices_init(&report) ||
-        !i386_filesystem_init(&report) ||
-        !i386_scheduler_test(&report)) {
+    if (boot_info == 0 || boot_info->hdr.magic != BOOTX_MAGIC) {
+        return 0;
+    }
+    if (!i386_segments_init()) {
+        return 0;
+    }
+    if (!i386_interrupts_init()) {
+        return 0;
+    }
+    if (!i386_paging_stage(boot_info, &report)) {
+        return 0;
+    }
+    if (!i386_pmm_stage(boot_info, &report)) {
+        return 0;
+    }
+    if (!i386_devices_init(&report)) {
+        return 0;
+    }
+    if (!i386_filesystem_init(&report)) {
+        return 0;
+    }
+    if (kernel_i386_selftest_verbose() && !i386_scheduler_test(&report)) {
         return 0;
     }
     process32_init(&early_filesystem);
+    process32_register_backend();
+    i386_scheduler_register_process_ops();
+    i386_scheduler_register_mm_ops();
+    i386_scheduler_register_file_ops();
     serial_write("i386: architecture bootstrap passed\n");
     return 1;
 }
@@ -1007,23 +1028,7 @@ void kernel_main32(const struct bootx_boot_info *boot_info) {
     query_boot_info.partition_lba = boot_info->partition_lba;
     query_boot_info.partition_sectors = boot_info->partition_sectors;
     query_boot_info.module_count = boot_info->module_count;
-    query_fb_info.present =
-        boot_info->console.type == BOOTX_CONSOLE_FRAMEBUFFER ? 1u : 0u;
-    query_fb_info.type = boot_info->console.type;
-    query_fb_info.addr = boot_info->console.framebuffer_addr;
-    query_fb_info.width = boot_info->console.width;
-    query_fb_info.height = boot_info->console.height;
-    query_fb_info.pitch = boot_info->console.pitch;
-    query_fb_info.bpp = boot_info->console.framebuffer_bpp;
-    query_fb_info.red_mask_size = boot_info->console.red_mask_size;
-    query_fb_info.red_mask_shift = boot_info->console.red_mask_shift;
-    query_fb_info.green_mask_size = boot_info->console.green_mask_size;
-    query_fb_info.green_mask_shift = boot_info->console.green_mask_shift;
-    query_fb_info.blue_mask_size = boot_info->console.blue_mask_size;
-    query_fb_info.blue_mask_shift = boot_info->console.blue_mask_shift;
-    query_fb_info.text_columns = boot_info->console.text_columns;
-    query_fb_info.text_rows = boot_info->console.text_rows;
-    query_fb_info.text_color = boot_info->console.text_color;
+    syscall_common_request_core_fill_fb_info(boot_info, &query_fb_info);
     kernel_i386_query_init(&query_boot_info,
                            &query_fb_info,
                            boot_info,
@@ -1042,6 +1047,7 @@ void kernel_main32(const struct bootx_boot_info *boot_info) {
         i386_halt();
     }
     kprint("kernel: services online\n");
+    kprint("kernel: system/init\n");
     kernel_i386_shared_services_run();
 }
 

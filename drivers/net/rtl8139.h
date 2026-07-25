@@ -44,6 +44,7 @@ int rtl8139_query_status(struct rtl8139_status *out);
 int rtl8139_send_frame(const uint8_t *data, uint32_t bytes);
 int rtl8139_send_test_frame(void);
 int rtl8139_receive_packet(struct rtl8139_rx_packet *out);
+int rtl8139_run_loopback_smoke(void);
 int rtl8139_handle_irq(uint8_t irq_line);
 
 extern const struct kernel_driver rtl8139_kernel_driver;

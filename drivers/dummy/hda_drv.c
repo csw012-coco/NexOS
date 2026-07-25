@@ -458,7 +458,7 @@ static void hda_mod_flush_bdl_local(void) {
 static int hda_mod_wait_crst_local(uint32_t want_set) {
     uint32_t spins;
 
-    for (spins = 0; spins < 1000000u; spins++) {
+    for (spins = 0; spins < 16384u; spins++) {
         uint32_t set = hda_mod_read32_local(HDA_REG_GCTL) & HDA_GCTL_CRST;
 
         if ((want_set != 0u && set != 0u) ||
@@ -472,7 +472,7 @@ static int hda_mod_wait_crst_local(uint32_t want_set) {
 static int hda_mod_wait_state_sts_local(void) {
     uint32_t spins;
 
-    for (spins = 0; spins < 1000000u; spins++) {
+    for (spins = 0; spins < 16384u; spins++) {
         if ((hda_mod_read16_local(HDA_REG_STATESTS) & 0x7fffu) != 0u) {
             return 1;
         }
@@ -488,12 +488,12 @@ static int hda_mod_controller_reset_local(void) {
     if (!hda_mod_wait_crst_local(0u)) {
         return 0;
     }
-    hda_mod_delay_local(200000u);
+    hda_mod_delay_local(2000u);
     hda_mod_write32_local(HDA_REG_GCTL, gctl | HDA_GCTL_CRST);
     if (!hda_mod_wait_crst_local(1u)) {
         return 0;
     }
-    hda_mod_delay_local(200000u);
+    hda_mod_delay_local(2000u);
     (void)hda_mod_wait_state_sts_local();
     return 1;
 }
@@ -3362,7 +3362,9 @@ static int hda_mod_init(void) {
     uint64_t mmio_base;
     uint16_t command;
 
+    driver_log("driver: HDAMOD init enter\n");
     driver_memset(&g_hda_mod, 0, sizeof(g_hda_mod));
+    driver_log("driver: HDAMOD profiles begin\n");
     g_hda_profile_spin = driver_profile_register("hda.spin");
     g_hda_profile_flush = driver_profile_register("hda.cache-flush");
     g_hda_profile_codec_cmd = driver_profile_register("hda.codec-cmd");
@@ -3370,12 +3372,20 @@ static int hda_mod_init(void) {
     g_hda_profile_stream_read = driver_profile_register("hda.stream-read");
     g_hda_profile_pcm_wait = driver_profile_register("hda.pcm-wait");
     g_hda_profile_pcm_drain = driver_profile_register("hda.pcm-drain");
+    driver_log("driver: HDAMOD pci scan\n");
     if (!driver_pci_find_by_class(HDA_PCI_CLASS_MULTIMEDIA,
                                   HDA_PCI_SUBCLASS_AUDIO,
                                   0u,
                                   &hda)) {
+        driver_log("driver: HDAMOD controller not found\n");
         return 0;
     }
+    driver_log("driver: HDAMOD pci found bdf=%u:%u.%u bar0=%x bar1=%x\n",
+               (uint32_t)hda.bus,
+               (uint32_t)hda.slot,
+               (uint32_t)hda.function,
+               hda.bar[0],
+               hda.bar[1]);
 
     g_hda_mod.present = 1u;
     g_hda_mod.bus = hda.bus;
@@ -3416,11 +3426,16 @@ static int hda_mod_init(void) {
         return 0;
     }
 
+    driver_log("driver: HDAMOD reset begin mmio=%lx\n", mmio_base);
     hda_mod_write32_local(HDA_REG_INTCTL, 0u);
     g_hda_mod.initialized = hda_mod_controller_reset_local() ? 1u : 0u;
+    driver_log("driver: HDAMOD reset done init=%u\n", (uint32_t)g_hda_mod.initialized);
     hda_mod_refresh_registers_local();
+    driver_log("driver: HDAMOD codec probe begin statests=%x\n", (uint32_t)g_hda_mod.statests);
     hda_mod_probe_codec_vendor_local();
+    driver_log("driver: HDAMOD codec probe done codec=%x\n", g_hda_mod.codec_vendor);
     hda_mod_apply_codec_quirk_local();
+    driver_log("driver: HDAMOD register audio\n");
     if (!hda_mod_register_audio_local()) {
         return 0;
     }

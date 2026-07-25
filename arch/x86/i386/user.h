@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 struct early_vfs;
+struct vfs;
 
 struct i386_user_image {
     uint32_t root;
@@ -38,3 +39,10 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
                                   const char *const argv[],
                                   const char *const envp[],
                                   struct i386_user_image *image);
+int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
+                                      const char *path,
+                                      uint32_t stack_top,
+                                      int argc,
+                                      const char *const argv[],
+                                      const char *const envp[],
+                                      struct i386_user_image *image);

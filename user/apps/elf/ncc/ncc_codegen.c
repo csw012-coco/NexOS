@@ -221,6 +221,14 @@ static int ncc_codegen_globals(struct ncc_codegen *codegen, struct ncc_global *g
         uint32_t offset;
         int symbol;
 
+        if (global->extern_only) {
+            if (ncc_find_symbol(codegen, global->name) < 0 &&
+                ncc_get_or_add_undefined(codegen, global->name) < 0) {
+                return 0;
+            }
+            global = global->next;
+            continue;
+        }
         if (size == 0u || align == 0u) {
             ncc_copy_text(codegen->error, sizeof(codegen->error), "invalid global variable type");
             return 0;

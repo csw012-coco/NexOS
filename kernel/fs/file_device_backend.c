@@ -5,6 +5,11 @@
 #include "kernel/public/core/tty.h"
 #include "kernel/public/proc/job_control.h"
 
+int job_serial_current_process_foreground_allowed(void) __attribute__((weak));
+int job_serial_current_process_foreground_allowed(void) {
+    return 1;
+}
+
 static void file_device_init_with_ops(struct file *file, uint8_t kind, const struct file_ops *ops) {
     if (file == 0) {
         return;
@@ -76,6 +81,7 @@ static int64_t file_device_tty_write(struct file *file,
         return 0;
     }
 
+    (void)uart_write_buffer((const char *)buffer, size);
     return (int64_t)tty_write(tty, (const char *)buffer, size, 0x0f);
 }
 
@@ -110,9 +116,6 @@ static int64_t file_device_uart_write(struct file *file,
     (void)vfs;
     if (buffer == 0 || size == 0u) {
         return 0;
-    }
-    if (!job_serial_current_process_foreground_allowed()) {
-        return (int64_t)size;
     }
     return (int64_t)uart_write_buffer((const char *)buffer, size);
 }

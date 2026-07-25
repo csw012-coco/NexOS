@@ -4,7 +4,8 @@ enum {
     WAV_PAGE_BYTES = 4096u,
     WAV_DEVICE_SAMPLE_RATE = 48000u,
     WAV_MAX_OUTPUT_FRAMES = 32u * 1024u,
-    WAV_MAX_CHUNK_BYTES = 128u * 1024u
+    WAV_MAX_CHUNK_BYTES = 128u * 1024u,
+    WAV_SMOKE_BYTES = 4096u
 };
 
 struct wav_format_info {
@@ -16,6 +17,8 @@ struct wav_format_info {
 
 static void wav_free_pages(uint8_t *base, uint32_t page_count);
 static int cmd_play_wav_like(int argc, char **argv, const char *verb);
+static int cmd_wav_smoke(const char *path, const char *device_arg, const char *verb);
+static int audio_check_playback_local(const char *verb, uint32_t need_tone);
 
 static uint16_t wav_le16(const uint8_t *src) {
     return (uint16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
@@ -74,6 +77,66 @@ static int wav_find_default_device(uint32_t *index_out) {
             return 1;
         }
         index++;
+    }
+    return 0;
+}
+
+static int wav_find_default_stream_device(uint32_t *index_out) {
+    struct syscall_audio_info info;
+    uint32_t index = 0;
+
+    while (audio_query(index, &info) > 0 && info.present) {
+        if ((info.caps & NEX_AUDIO_CAP_STREAM) != 0u) {
+            *index_out = index;
+            return 1;
+        }
+        index++;
+    }
+    return 0;
+}
+
+static void audio_write_driver_kind_local(uint32_t kind) {
+    if (kind == NEX_AUDIO_DRIVER_AC97) {
+        write_str("ac97");
+    } else if (kind == NEX_AUDIO_DRIVER_HDA) {
+        write_str("hda");
+    } else {
+        write_str("unknown");
+    }
+}
+
+static int audio_check_playback_local(const char *verb, uint32_t need_tone) {
+    struct syscall_audio_info info;
+    uint32_t index = 0;
+    int found = 0;
+
+    while (audio_query(index, &info) > 0 && info.present) {
+        uint32_t playable = (info.caps & NEX_AUDIO_CAP_PLAYBACK) != 0u;
+        uint32_t tone = (info.caps & NEX_AUDIO_CAP_TONE) != 0u;
+
+        write_str(verb);
+        write_str(": card ");
+        write_dec(index);
+        write_str(" driver=");
+        audio_write_driver_kind_local(info.driver_kind);
+        write_str(" init=");
+        write_dec(info.initialized);
+        write_str(" playback=");
+        write_dec(playable);
+        write_str(" tone=");
+        write_dec(tone);
+        write_str(" stream=");
+        write_dec((info.caps & NEX_AUDIO_CAP_STREAM) != 0u);
+        write_str("\n");
+        if (playable && (!need_tone || tone)) {
+            found = 1;
+        }
+        index++;
+    }
+    if (!found) {
+        write_str(verb);
+        write_str(need_tone ? ": no tone-capable playback device\n" :
+                              ": no playback device\n");
     }
     return 0;
 }
@@ -186,8 +249,14 @@ static int cmd_play_wav_like(int argc, char **argv, const char *verb) {
     uint32_t remaining;
     int fd;
 
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        return audio_check_playback_local(verb, 0u);
+    }
+    if (argc >= 3 && argc <= 4 && streq_local(argv[1], "--smoke")) {
+        return cmd_wav_smoke(argv[2], argc >= 4 ? argv[3] : 0, verb);
+    }
     if (argc < 2 || argc > 3) {
-        write_err_usage(verb, " <path> [device]\n");
+        write_err_usage(verb, " <path> [device] | --check | --smoke <path> [device]\n");
         return 1;
     }
     if (argc >= 3) {
@@ -195,9 +264,9 @@ static int cmd_play_wav_like(int argc, char **argv, const char *verb) {
             write_err_usage(verb, " <path> [device]\n");
             return 1;
         }
-    } else if (!wav_find_default_device(&device_index)) {
+    } else if (!wav_find_default_stream_device(&device_index)) {
         write_err_str(verb);
-        write_err_str(": no playback device\n");
+        write_err_str(": no stream playback device\n");
         return 1;
     }
 
@@ -317,6 +386,63 @@ static int cmd_play_wav_like(int argc, char **argv, const char *verb) {
     return 0;
 }
 
+static int cmd_wav_smoke(const char *path, const char *device_arg, const char *verb) {
+    struct wav_format_info fmt;
+    struct syscall_audio_stream_info stream_play;
+    struct syscall_audio_info device_info;
+    uint32_t device_index = 0u;
+    int fd;
+
+    if (device_arg != 0) {
+        if (!parse_u32_local(device_arg, &device_index)) {
+            write_err_usage(verb, " --smoke <path> [device]\n");
+            return 1;
+        }
+    } else if (!wav_find_default_device(&device_index)) {
+        write_err_str(verb);
+        write_err_str(": no playback device\n");
+        return 1;
+    }
+    fd = open(path, 0);
+    if (fd < 0) {
+        write_err_str(verb);
+        write_err_str(": smoke open failed\n");
+        return 1;
+    }
+    if (!wav_parse_header(fd, &fmt)) {
+        close((uint32_t)fd);
+        write_err_str(verb);
+        write_err_str(": smoke invalid wav\n");
+        return 1;
+    }
+    if (audio_query(device_index, &device_info) <= 0 ||
+        (device_info.caps & NEX_AUDIO_CAP_STREAM) == 0u) {
+        close((uint32_t)fd);
+        write_err_str(verb);
+        write_err_str(": stream playback unavailable\n");
+        return 1;
+    }
+    stream_play.fd = (uint32_t)fd;
+    stream_play.sample_rate = fmt.sample_rate;
+    stream_play.channels = fmt.channels;
+    stream_play.bits_per_sample = fmt.bits_per_sample;
+    stream_play.data_bytes = fmt.data_bytes > WAV_SMOKE_BYTES
+        ? WAV_SMOKE_BYTES
+        : fmt.data_bytes;
+    stream_play.flags = SYS_AUDIO_PLAY_F_ASYNC;
+    stream_play.reserved = 0u;
+    if (audio_play_fd(device_index, &stream_play) <= 0) {
+        close((uint32_t)fd);
+        write_err_str(verb);
+        write_err_str(": fd stream smoke failed\n");
+        return 1;
+    }
+    close((uint32_t)fd);
+    write_str(verb);
+    write_str(": fd stream smoke OK\n");
+    return 0;
+}
+
 int cmd_wav(int argc, char **argv) {
     return cmd_play_wav_like(argc, argv, "wav");
 }
@@ -382,8 +508,11 @@ int cmd_tone(int argc, char **argv) {
     uint32_t device_index = 0u;
     struct syscall_audio_info info;
 
+    if (argc == 2 && streq_local(argv[1], "--check")) {
+        return audio_check_playback_local("tone", 1u);
+    }
     if (argc > 4) {
-        write_err_usage("tone", " [hz] [ms] [device]\n");
+        write_err_usage("tone", " [hz] [ms] [device] | --check\n");
         return 1;
     }
     if (argc >= 2 && !parse_u32_local(argv[1], &hz)) {

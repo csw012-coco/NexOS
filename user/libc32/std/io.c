@@ -180,6 +180,46 @@ int getchar(void) {
     return fgetc(stdin);
 }
 
+int rename(const char *old_path, const char *new_path) {
+    char buffer[1024];
+    int source;
+    int destination;
+    int result = -1;
+
+    if (old_path == 0 || new_path == 0) {
+        return -1;
+    }
+    source = open(old_path, O_RDONLY);
+    if (source < 0) {
+        return -1;
+    }
+    destination = open(new_path, O_WRONLY | O_CREAT | O_TRUNC);
+    if (destination < 0) {
+        (void)close(source);
+        return -1;
+    }
+    for (;;) {
+        ssize_t got = read(source, buffer, sizeof(buffer));
+
+        if (got < 0) {
+            break;
+        }
+        if (got == 0) {
+            result = 0;
+            break;
+        }
+        if (write(destination, buffer, (size_t)got) != got) {
+            break;
+        }
+    }
+    (void)close(destination);
+    (void)close(source);
+    if (result == 0) {
+        result = remove(old_path);
+    }
+    return result;
+}
+
 int fseek(FILE *stream, long offset, int whence) {
     if (stream == 0 || lseek(stream->fd, offset, whence) < 0) {
         if (stream != 0) {

@@ -1,6 +1,6 @@
 #include "kernel/internal/sys/syscall_internal.h"
 #include "kernel/internal/core/machine_info_internal.h"
-#include "kernel/internal/core/system_query_internal.h"
+#include "kernel/internal/sys/syscall_common_request_core.h"
 
 static int syscall_prepare_machine_output(uint64_t user_info_addr, uint32_t size) {
     if (!syscall_user_writable(user_info_addr, size)) {
@@ -35,7 +35,11 @@ uint64_t syscall_handle_rtc_query(uint64_t user_info_addr) {
     if (!syscall_prepare_machine_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    if (!kernel_query_rtc_info(&info)) {
+    if (!syscall_common_request_core_query_info(SYS_QUERY_RTC,
+                                                0u,
+                                                0u,
+                                                &info,
+                                                0)) {
         return 0;
     }
     return syscall_finish_machine_output(user_info_addr, &info, sizeof(info));

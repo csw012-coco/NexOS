@@ -1,4 +1,5 @@
 #include "kernel/internal/sys/syscall_internal.h"
+#include "kernel/internal/sys/syscall_common_request_core.h"
 #include "kernel/internal/sys/syscall_native_request_core.h"
 #include "kernel/internal/core/runtime_internal.h"
 #include "kernel/internal/proc/process_types_internal.h"
@@ -34,6 +35,23 @@ static void syscall_decode_frame64(const struct syscall_frame *frame,
     request->stack_pointer = frame->rsp;
 }
 
+static uint64_t syscall_result_value_for_action(const struct kernel_syscall_result *result) {
+    if (result == 0) {
+        return 0;
+    }
+    switch (result->action) {
+        case SYSCALL_RESULT_YIELD:
+        case SYSCALL_RESULT_EXIT:
+        case SYSCALL_RESULT_EXEC:
+        case SYSCALL_RESULT_WAIT:
+        case SYSCALL_RESULT_SLEEP:
+            return SYSCALL_EXIT_TO_KERNEL;
+        case SYSCALL_RESULT_RETURN:
+        default:
+            return result->value;
+    }
+}
+
 void syscall_init(struct tty *tty,
                   volatile uint32_t *timer_ticks,
                   struct vfs *vfs,
@@ -46,11 +64,14 @@ void syscall_init(struct tty *tty,
     g_syscall_boot_info = boot_info;
     g_syscall_memmap = memmap;
     g_syscall_memmap_count = memmap_count;
+    syscall_common_request_core_query_state_init(boot_info,
+                                                 memmap,
+                                                 memmap_count);
 }
 
 uint64_t syscall_dispatch(struct syscall_frame *frame) {
     struct kernel_syscall_request request = {0};
-    struct kernel_syscall_result result;
+    struct kernel_syscall_result result = {0};
     const struct process *trace_proc = process_current();
 
 #define SYSCALL_RETURN(value) do { \
@@ -75,7 +96,7 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
     g_last_syscall_trace.pid = trace_proc != 0 ? trace_proc->pid : 0u;
 
     if (syscall_native_dispatch_request(&request, frame, &result)) {
-        SYSCALL_RETURN(result.value);
+        SYSCALL_RETURN(syscall_result_value_for_action(&result));
     }
 
     SYSCALL_RETURN(0);

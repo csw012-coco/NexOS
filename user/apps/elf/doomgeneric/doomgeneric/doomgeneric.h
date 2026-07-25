@@ -25,6 +25,7 @@ typedef uint32_t pixel_t;
 
 
 extern pixel_t* DG_ScreenBuffer;
+extern int doomgeneric_smoke_frames;
 
 #ifdef __cplusplus
 extern "C" {

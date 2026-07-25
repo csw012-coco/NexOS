@@ -73,6 +73,7 @@
 #include "statdump.h"
 
 #include "d_main.h"
+#include "doomgeneric.h"
 
 //
 // D-DoomLoop()
@@ -444,6 +445,12 @@ void D_DoomLoop (void)
     I_SetGrabMouseCallback(D_GrabMouseCallback);
     I_InitGraphics();
     I_EnableLoadingDisk();
+
+    if (doomgeneric_smoke_frames > 0)
+    {
+        printf("doomgeneric: smoke PASS frames=%d\n", doomgeneric_smoke_frames);
+        exit(0);
+    }
 
     V_RestoreBuffer();
     R_ExecuteSetViewSize();
@@ -1842,4 +1849,3 @@ void D_DoomMain (void)
 
     D_DoomLoop ();
 }
-

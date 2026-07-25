@@ -486,6 +486,41 @@ static const char *vfs_proc_driver_file_state_name(enum kernel_driver_file_state
     }
 }
 
+static const char *vfs_proc_driver_reason_name(enum kernel_driver_reason reason) {
+    switch (reason) {
+        case KERNEL_DRIVER_REASON_EMPTY:
+            return "empty";
+        case KERNEL_DRIVER_REASON_REGISTERED:
+            return "registered";
+        case KERNEL_DRIVER_REASON_PROBE_OK:
+            return "probe-ok";
+        case KERNEL_DRIVER_REASON_UNSUPPORTED_ELF:
+            return "unsupported-elf";
+        case KERNEL_DRIVER_REASON_LOADED:
+            return "loaded";
+        case KERNEL_DRIVER_REASON_LOAD_FAILED:
+            return "load-failed";
+        case KERNEL_DRIVER_REASON_INIT_OK:
+            return "init-ok";
+        case KERNEL_DRIVER_REASON_MISSING_HARDWARE:
+            return "missing-hardware";
+        case KERNEL_DRIVER_REASON_INIT_FAILED:
+            return "init-failed";
+        case KERNEL_DRIVER_REASON_REGISTER_FAILED:
+            return "register-failed";
+        case KERNEL_DRIVER_REASON_LAYOUT_FAILED:
+            return "layout-failed";
+        case KERNEL_DRIVER_REASON_RELOC_FAILED:
+            return "reloc-failed";
+        case KERNEL_DRIVER_REASON_SYMBOL_MISSING:
+            return "symbol-missing";
+        case KERNEL_DRIVER_REASON_NO_MEMORY:
+            return "no-memory";
+        default:
+            return 0;
+    }
+}
+
 static const char *vfs_proc_driver_file_class_name(uint8_t elf_class) {
     if (elf_class == 1u) {
         return "ELF32";
@@ -574,11 +609,13 @@ static uint32_t vfs_format_proc_drivers(char *text, uint32_t size) {
 
     pos = vfs_append_padded_text(text, pos, size, "name", 14u);
     pos = vfs_append_padded_text(text, pos, size, "kind", 10u);
+    pos = vfs_append_padded_text(text, pos, size, "driver", 14u);
     pos = vfs_append_padded_text(text, pos, size, "state", 12u);
     pos = vfs_append_padded_text(text, pos, size, "result", 8u);
     pos = vfs_append_padded_text(text, pos, size, "source", 10u);
     pos = vfs_append_padded_text(text, pos, size, "elf", 18u);
     pos = vfs_append_padded_text(text, pos, size, "reason", 18u);
+    pos = vfs_append_padded_text(text, pos, size, "device", 20u);
     pos = vfs_append_text(text, pos, size, "path\n");
 
     for (uint32_t i = 0; i < driver_count(); i++) {
@@ -593,6 +630,7 @@ static uint32_t vfs_format_proc_drivers(char *text, uint32_t size) {
                                      size,
                                      vfs_proc_driver_kind_name(record->driver->kind),
                                      10u);
+        pos = vfs_append_padded_text(text, pos, size, record->driver->name, 14u);
         pos = vfs_append_padded_text(text,
                                      pos,
                                      size,
@@ -609,8 +647,15 @@ static uint32_t vfs_format_proc_drivers(char *text, uint32_t size) {
         pos = vfs_append_padded_text(text,
                                      pos,
                                      size,
-                                     record->reason != 0 ? record->reason : "-",
+                                     vfs_proc_driver_reason_name(record->reason_code) != 0
+                                         ? vfs_proc_driver_reason_name(record->reason_code)
+                                         : (record->reason != 0 ? record->reason : "-"),
                                      18u);
+        pos = vfs_append_padded_text(text,
+                                     pos,
+                                     size,
+                                     record->device[0] != '\0' ? record->device : "-",
+                                     20u);
         pos = vfs_append_text(text, pos, size, record->path != 0 ? record->path : "-");
         pos = vfs_append_text(text, pos, size, "\n");
     }
@@ -623,6 +668,11 @@ static uint32_t vfs_format_proc_drivers(char *text, uint32_t size) {
         }
         pos = vfs_append_padded_text(text, pos, size, file->name, 14u);
         pos = vfs_append_padded_text(text, pos, size, "file", 10u);
+        pos = vfs_append_padded_text(text,
+                                     pos,
+                                     size,
+                                     file->driver_name[0] != '\0' ? file->driver_name : "-",
+                                     14u);
         pos = vfs_append_padded_text(text,
                                      pos,
                                      size,
@@ -640,8 +690,11 @@ static uint32_t vfs_format_proc_drivers(char *text, uint32_t size) {
         pos = vfs_append_padded_text(text,
                                      pos,
                                      size,
-                                     file->reason != 0 ? file->reason : "-",
+                                     vfs_proc_driver_reason_name(file->reason_code) != 0
+                                         ? vfs_proc_driver_reason_name(file->reason_code)
+                                         : (file->reason != 0 ? file->reason : "-"),
                                      18u);
+        pos = vfs_append_padded_text(text, pos, size, "-", 20u);
         pos = vfs_append_text(text, pos, size, file->path);
         pos = vfs_append_text(text, pos, size, "\n");
     }

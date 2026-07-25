@@ -38,10 +38,11 @@ static int path_join_local(char *out, uint32_t out_size, const char *dir, const 
     if (out == NULL || out_size == 0 || dir == NULL || name == NULL) {
         return 0;
     }
-    if (snprintf(out,
-                 out_size,
-                 streq_local(dir, "/") ? "/%s" : "%s/%s",
-                 name) < 0) {
+    if (streq_local(dir, "/")) {
+        if (snprintf(out, out_size, "/%s", name) < 0) {
+            return 0;
+        }
+    } else if (snprintf(out, out_size, "%s/%s", dir, name) < 0) {
         return 0;
     }
     return 1;
@@ -71,7 +72,7 @@ static int cmd_copy_file_local(const char *src, const char *dst) {
     if (src_fd < 0) {
         return -1;
     }
-    dst_fd = open(resolved_dst, O_CREAT | O_TRUNC);
+    dst_fd = open(resolved_dst, O_CREAT | O_WRONLY | O_TRUNC);
     if (dst_fd < 0) {
         close((uint32_t)src_fd);
         return -1;
@@ -154,10 +155,12 @@ static int cmd_rm_recursive_local(const char *path, int force) {
         if (path_is_dot_entry_local(entry.name)) {
             continue;
         }
-        if (snprintf(child,
-                     sizeof(child),
-                     streq_local(path, "/") ? "/%s" : "%s/%s",
-                     entry.name) < 0) {
+        if (streq_local(path, "/")) {
+            if (snprintf(child, sizeof(child), "/%s", entry.name) < 0) {
+                close((uint32_t)fd);
+                return -1;
+            }
+        } else if (snprintf(child, sizeof(child), "%s/%s", path, entry.name) < 0) {
             close((uint32_t)fd);
             return -1;
         }

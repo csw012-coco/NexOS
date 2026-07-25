@@ -77,10 +77,10 @@ void DG_Init(void) {
                 DOOMGENERIC_RESX,
                 DOOMGENERIC_RESY);
     }
-    if (gui_input_grab() != 0) {
+    if (doomgeneric_smoke_frames <= 0 && gui_input_grab() != 0) {
         I_Error("doomgeneric: could not acquire input focus");
     }
-    g_doom_input_grabbed = 1;
+    g_doom_input_grabbed = doomgeneric_smoke_frames <= 0;
     (void)gui_event_cursor_init(&g_doom_cursor);
     I_AtExit(doom_release_input, true);
 

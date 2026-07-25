@@ -629,7 +629,8 @@ static int vfs_prepare_dynamic_mount_target(struct vfs *vfs,
     if (name == 0 || slot_out == 0 || !vfs_resolve_mount_target_name(vfs, target, name, name_size)) {
         return vfs_mount_fail(VFS_MOUNT_ERR_INVALID_TARGET);
     }
-    if (streq(name, "dev") || streq(name, "proc") || streq(name, "fat") || streq(name, "nxfs")) {
+    if (streq(name, "dev") || streq(name, "proc") || streq(name, "boot") ||
+        streq(name, "fat") || streq(name, "nxfs")) {
         return vfs_mount_fail(VFS_MOUNT_ERR_RESERVED_TARGET);
     }
     if (vfs_find_dynamic_mount(vfs, name, slot_out)) {

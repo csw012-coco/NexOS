@@ -359,6 +359,32 @@ static int ZenityErrorBox(char *message)
 
 static boolean already_quitting = false;
 
+#ifdef __NEXOS__
+static int NexOS_ErrorCode(char *message)
+{
+    if (strstr(message, "Unable to allocate") != NULL ||
+        strstr(message, "zone") != NULL)
+    {
+        return 21;
+    }
+    if (strstr(message, "IWAD") != NULL ||
+        strstr(message, "WAD") != NULL)
+    {
+        return 22;
+    }
+    if (strstr(message, "graphics") != NULL ||
+        strstr(message, "framebuffer") != NULL)
+    {
+        return 23;
+    }
+    if (strstr(message, "input focus") != NULL)
+    {
+        return 24;
+    }
+    return 69;
+}
+#endif
+
 void I_Error (char *error, ...)
 {
     char msgbuf[512];
@@ -453,8 +479,13 @@ void I_Error (char *error, ...)
     }
 #elif defined(__DJGPP__) || defined(__NEXOS__)
     {
+#ifdef __NEXOS__
+        printf("doomgeneric: ERROR %s\n", msgbuf);
+        exit(NexOS_ErrorCode(msgbuf));
+#else
         printf("%s\n", msgbuf);
         exit(-1);
+#endif
     }
 
 #else

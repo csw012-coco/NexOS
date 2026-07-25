@@ -342,6 +342,7 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"meminfo", cmd_wrap_meminfo},
     {"minfo", cmd_wrap_minfo},
     {"uname", cmd_uname},
+    {"fb", cmd_fb},
     {"cpuinfo", cmd_wrap_cpuinfo},
     {"drivers", cmd_wrap_drivers},
     {"config", cmd_config},

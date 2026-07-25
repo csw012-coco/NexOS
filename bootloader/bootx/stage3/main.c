@@ -858,6 +858,7 @@ static void load_elf32_and_jump(const struct bootx_stage3_params *params, const 
         console_puts("booting kernel...\n");
     }
 
+    trace("enter elf32 kernel");
     ((void (*)(const struct bootx_boot_info *))ehdr->e_entry)(proto);
     fail("kernel returned");
 }

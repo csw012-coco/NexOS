@@ -360,7 +360,7 @@ int vfs_parse_path_for_vfs(const struct vfs *vfs, const char *path, struct vfs_p
     if (!vfs_parse_root_child(path, mount_name, sizeof(mount_name), out->child, sizeof(out->child))) {
         return 0;
     }
-    if (streq(mount_name, "fat")) {
+    if (streq(mount_name, "boot") || streq(mount_name, "fat")) {
         out->mount_kind = VFS_MOUNT_FAT32;
     } else if (streq(mount_name, "nxfs")) {
         out->mount_kind = VFS_MOUNT_NXFS;

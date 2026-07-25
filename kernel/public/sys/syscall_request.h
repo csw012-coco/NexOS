@@ -23,6 +23,7 @@ struct kernel_syscall_request {
 
 struct kernel_syscall_result {
     uint64_t value;
+    uint64_t extra;
     enum syscall_result_action action;
 };
 

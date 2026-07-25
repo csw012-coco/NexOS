@@ -1,5 +1,6 @@
 #include "kernel/internal/sys/syscall_internal.h"
 #include "kernel/internal/core/graphics_service_internal.h"
+#include "kernel/internal/sys/syscall_common_request_core.h"
 
 enum {
     SYSCALL_GFX_BATCH_CHUNK = 32,
@@ -27,17 +28,12 @@ static uint64_t syscall_gfx_handle_batch(uint64_t user_info_addr) {
         !syscall_copy_from_user(&batch, user_info_addr, sizeof(batch))) {
         return syscall_kill_bad_user_pointer();
     }
-    if (batch.count > SYS_GFX_BATCH_MAX_COMMANDS ||
-        (batch.flags & ~SYS_GFX_BATCH_PRESENT) != 0u) {
+    if (!syscall_common_request_core_gfx_batch_valid(&batch)) {
         return (uint64_t)-1;
     }
     if (batch.count != 0u) {
         uint32_t bytes;
 
-        if (batch.entries_addr == 0u ||
-            batch.count > 0xffffffffu / sizeof(struct syscall_gfx_batch_entry)) {
-            return (uint64_t)-1;
-        }
         bytes = batch.count * sizeof(struct syscall_gfx_batch_entry);
         if (!syscall_user_readable(batch.entries_addr, bytes)) {
             return syscall_kill_bad_user_pointer();
@@ -60,18 +56,8 @@ static uint64_t syscall_gfx_handle_batch(uint64_t user_info_addr) {
             kernel_gfx_end_batch(0u);
             return syscall_kill_bad_user_pointer();
         }
-        for (uint32_t i = 0; i < count; i++) {
-            const struct syscall_gfx_batch_entry *entry = &g_syscall_gfx_batch_entries[i];
-
-            if (entry->reserved != 0u ||
-                entry->op == SYS_GFX_INFO ||
-                entry->op == SYS_GFX_BATCH ||
-                entry->op == SYS_GFX_PRESENT ||
-                !kernel_gfx_dispatch(entry->op, &entry->command, 0)) {
-                valid = 0;
-                break;
-            }
-        }
+        valid = syscall_common_request_core_gfx_batch_dispatch(
+            g_syscall_gfx_batch_entries, count, 1);
         if (!valid) {
             break;
         }
@@ -83,83 +69,30 @@ static uint64_t syscall_gfx_handle_batch(uint64_t user_info_addr) {
 
 static uint64_t syscall_gfx_handle_blit(uint64_t user_info_addr) {
     struct syscall_gfx_blit blit;
-    uint32_t screen_width;
-    uint32_t screen_height;
-    uint32_t src_x = 0u;
-    uint32_t src_y = 0u;
-    uint32_t visible_width;
-    uint32_t visible_height;
-    uint64_t first_addr;
-    uint64_t span;
+    struct syscall_common_gfx_blit_plan plan;
+    int noop = 0;
 
     if (!syscall_user_readable(user_info_addr, sizeof(blit)) ||
         !syscall_copy_from_user(&blit, user_info_addr, sizeof(blit))) {
         return syscall_kill_bad_user_pointer();
     }
-    if (blit.pixels_addr == 0u ||
-        blit.width == 0u || blit.height == 0u ||
-        blit.width > SYSCALL_GFX_BLIT_MAX_DIMENSION ||
-        blit.height > SYSCALL_GFX_BLIT_MAX_DIMENSION ||
-        blit.width > 0xffffffffu / sizeof(uint32_t) ||
-        blit.pitch < blit.width * sizeof(uint32_t) ||
-        blit.format != SYS_GFX_FORMAT_XRGB8888 ||
-        blit.flags != 0u) {
+    if (!syscall_common_request_core_gfx_blit_plan(
+            &blit,
+            SYSCALL_GFX_BLIT_MAX_DIMENSION,
+            ~(uint64_t)0,
+            &plan,
+            &noop)) {
         return (uint64_t)-1;
     }
-
-    kernel_gfx_dimensions(&screen_width, &screen_height);
-    if (screen_width == 0u || screen_height == 0u) {
-        return (uint64_t)-1;
-    }
-    visible_width = blit.width;
-    visible_height = blit.height;
-    if (blit.dst_x < 0) {
-        uint32_t crop = (uint32_t)(-(int64_t)blit.dst_x);
-
-        if (crop >= visible_width) {
-            return 0u;
-        }
-        src_x = crop;
-        visible_width -= crop;
-        blit.dst_x = 0;
-    }
-    if (blit.dst_y < 0) {
-        uint32_t crop = (uint32_t)(-(int64_t)blit.dst_y);
-
-        if (crop >= visible_height) {
-            return 0u;
-        }
-        src_y = crop;
-        visible_height -= crop;
-        blit.dst_y = 0;
-    }
-    if ((uint32_t)blit.dst_x >= screen_width || (uint32_t)blit.dst_y >= screen_height) {
+    if (noop) {
         return 0u;
     }
-    if (visible_width > screen_width - (uint32_t)blit.dst_x) {
-        visible_width = screen_width - (uint32_t)blit.dst_x;
-    }
-    if (visible_height > screen_height - (uint32_t)blit.dst_y) {
-        visible_height = screen_height - (uint32_t)blit.dst_y;
-    }
-
-    first_addr = blit.pixels_addr +
-                 (uint64_t)src_y * blit.pitch +
-                 (uint64_t)src_x * sizeof(uint32_t);
-    if (first_addr < blit.pixels_addr) {
-        return (uint64_t)-1;
-    }
-    span = (uint64_t)(visible_height - 1u) * blit.pitch +
-           (uint64_t)visible_width * sizeof(uint32_t);
-    if (span == 0u || span > 0xffffffffu || first_addr + span < first_addr) {
-        return (uint64_t)-1;
-    }
-    if (!syscall_user_readable(first_addr, (uint32_t)span)) {
+    if (!syscall_user_readable(plan.first_addr, (uint32_t)plan.span)) {
         return syscall_kill_bad_user_pointer();
     }
 
-    for (uint32_t x = 0u; x < visible_width;) {
-        uint32_t chunk_width = visible_width - x;
+    for (uint32_t x = 0u; x < plan.visible_width;) {
+        uint32_t chunk_width = plan.visible_width - x;
         uint32_t row_bytes;
         uint32_t rows_per_chunk;
 
@@ -168,15 +101,15 @@ static uint64_t syscall_gfx_handle_blit(uint64_t user_info_addr) {
         }
         row_bytes = chunk_width * sizeof(uint32_t);
         rows_per_chunk = SYSCALL_COPY_CHUNK / row_bytes;
-        for (uint32_t y = 0u; y < visible_height;) {
-            uint32_t row_count = visible_height - y;
+        for (uint32_t y = 0u; y < plan.visible_height;) {
+            uint32_t row_count = plan.visible_height - y;
 
             if (row_count > rows_per_chunk) {
                 row_count = rows_per_chunk;
             }
             for (uint32_t row = 0u; row < row_count; row++) {
-                uint64_t row_addr = first_addr +
-                                    (uint64_t)(y + row) * blit.pitch +
+                uint64_t row_addr = plan.first_addr +
+                                    (uint64_t)(y + row) * plan.pitch +
                                     (uint64_t)x * sizeof(uint32_t);
 
                 if (!syscall_copy_from_user(&g_syscall_copy_buffer[row * row_bytes],
@@ -185,12 +118,13 @@ static uint64_t syscall_gfx_handle_blit(uint64_t user_info_addr) {
                     return syscall_kill_bad_user_pointer();
                 }
             }
-            if (!kernel_gfx_blit_xrgb8888((const uint32_t *)g_syscall_copy_buffer,
-                                          row_bytes,
-                                          chunk_width,
-                                          row_count,
-                                          blit.dst_x + (int32_t)x,
-                                          blit.dst_y + (int32_t)y)) {
+            if (!syscall_common_request_core_gfx_blit_dispatch(
+                    (const uint32_t *)g_syscall_copy_buffer,
+                    row_bytes,
+                    chunk_width,
+                    row_count,
+                    plan.dst_x + (int32_t)x,
+                    plan.dst_y + (int32_t)y)) {
                 return (uint64_t)-1;
             }
             y += row_count;
@@ -218,7 +152,7 @@ uint64_t syscall_handle_gfx(uint32_t op, uint64_t user_info_addr) {
             if (!syscall_user_writable(user_info_addr, sizeof(info))) {
                 return syscall_kill_bad_user_pointer();
             }
-            if (!kernel_gfx_dispatch(op, 0, &info)) {
+            if (!syscall_common_request_core_gfx_info(op, &info)) {
                 return (uint64_t)-1;
             }
             if (!syscall_copy_to_user(user_info_addr, &info, sizeof(info))) {
@@ -229,7 +163,9 @@ uint64_t syscall_handle_gfx(uint32_t op, uint64_t user_info_addr) {
             if (syscall_gfx_copy_command(&cmd, user_info_addr) == SYSCALL_EXIT_TO_KERNEL) {
                 return SYSCALL_EXIT_TO_KERNEL;
             }
-            return kernel_gfx_dispatch(op, &cmd, 0) ? 0u : (uint64_t)-1;
+            return syscall_common_request_core_gfx_command(op, &cmd)
+                ? 0u
+                : (uint64_t)-1;
         case KERNEL_GFX_BUFFER_INVALID:
         default:
             return (uint64_t)-1;

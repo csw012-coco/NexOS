@@ -180,3 +180,8 @@ int abs(int value) {
 long labs(long value) {
     return value < 0 ? -value : value;
 }
+
+int system(const char *command) {
+    (void)command;
+    return -1;
+}

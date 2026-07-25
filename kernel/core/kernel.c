@@ -68,7 +68,8 @@ static void kernel_run_console_shell_forever(struct vfs *vfs) {
     }
 
     for (;;) {
-        kernel_boot_trace("kernel: init exited; starting console shell");
+        kernel_boot_trace("kernel: init complete");
+        kernel_boot_trace("kernel: console shell starting /cmd/ush");
         if (!process_exec(vfs, "/cmd/ush --tty /dev/tty", 0, PROCESS_EXEC_AUTO)) {
             kernel_boot_trace("kernel: console shell exec failed");
             break;
@@ -395,10 +396,11 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
 
     kernel_boot_trace("kernel: block devices");
     kernel_init_storage_devices(boot_info);
+    kernel_boot_trace("kernel: pci/ide/ata");
 
     kernel_boot_trace("kernel: tty/process/vfs");
     kprint_set_boot_time(&timer_ticks);  /* Enable timestamp logging (SOSP feature) */
-    vfs = kernel_init_core_services(&shell_tty, &timer_ticks);
+    vfs = kernel_init_core_services(&shell_tty, &timer_ticks, boot_info);
     if (vfs == 0) {
         kernel_boot_trace("kernel: core services failed");
         kernel_halt_forever();
@@ -410,13 +412,15 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     (void)driver_discover_root(vfs, "/DRIVERS");
     (void)driver_load_all(vfs);
     (void)driver_init_all();
+    kernel_boot_trace("pseudo fs: devfs procfs eventfs ready");
     syscall_init(&shell_tty, &timer_ticks, vfs, boot_info, memmap, boot_info->memmap_count);
     timer_ticks = 0;
 
     kernel_boot_trace("kernel: interrupts");
     kernel_init_interrupts();
+    kernel_boot_trace("kernel: services online");
 
-    kernel_boot_trace("kernel: start init");
+    kernel_boot_trace("kernel: system/init");
     init_started = kernel_try_run_init(vfs, &shell_tty, &g_kernel_boot_trace_row, boot_info);
     if (init_started) {
         kernel_run_console_shell_forever(vfs);

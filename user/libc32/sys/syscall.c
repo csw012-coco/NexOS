@@ -637,12 +637,18 @@ int waitpid(pid_t pid) {
 }
 
 int wait(uint32_t pid, struct syscall_process_info *info) {
-    int status = (int)__nlibc32_syscall4(SYS_WAIT, pid, 0u, 0u, 0u);
+    int status = (int)__nlibc32_syscall4(SYS_WAIT,
+                                         pid,
+                                         (uint32_t)(uintptr_t)info,
+                                         0u,
+                                         0u);
 
     if (status != 0 && info != 0) {
-        memset(info, 0, sizeof(*info));
-        info->pid = pid;
-        info->exit_code = status;
+        if (info->pid == 0u) {
+            memset(info, 0, sizeof(*info));
+            info->pid = pid;
+            info->exit_code = status;
+        }
     }
     return status != 0 ? 1 : 0;
 }

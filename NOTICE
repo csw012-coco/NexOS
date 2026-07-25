@@ -29,3 +29,21 @@ License:
 
   The full license text from the GNU Unifont 17.0.04 distribution is
   included in LICENSES/LICENSE.GNU-Unifont.
+
+Doomgeneric / Doom Userland Port
+--------------------------------
+
+Files:
+
+  user/apps/elf/doomgeneric/
+
+License:
+
+  GPL version 2. The license text for this imported component is included in
+  user/apps/elf/doomgeneric/LICENSE.
+
+Notes:
+
+  Doom WAD data files are not included in this repository. Optional WAD assets
+  can be placed under assets/doom for local smoke tests and are copied into the
+  guest filesystem under /home/doom when present.

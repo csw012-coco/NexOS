@@ -4,6 +4,7 @@
 #include "drivers/bus/pci.h"
 #include "drivers/net/net_event.h"
 #include "hal/hal.h"
+#include "kernel/public/core/kprint.h"
 #include "kernel/public/mem/pmm.h"
 
 enum {
@@ -93,6 +94,67 @@ static void rtl8139_fill_test_frame(uint8_t *frame, uint32_t size) {
     for (i = 0; i < sizeof(payload) - 1u && 14u + i < size; i++) {
         frame[14u + i] = (uint8_t)payload[i];
     }
+}
+
+static void rtl8139_write_be16(uint8_t *dst, uint16_t value) {
+    dst[0] = (uint8_t)(value >> 8);
+    dst[1] = (uint8_t)value;
+}
+
+static uint16_t rtl8139_read_be16(const uint8_t *src) {
+    return (uint16_t)(((uint16_t)src[0] << 8) | (uint16_t)src[1]);
+}
+
+static void rtl8139_fill_arp_probe(uint8_t *frame, uint32_t size) {
+    static const uint8_t source_ip[4] = {10u, 0u, 2u, 15u};
+    static const uint8_t target_ip[4] = {10u, 0u, 2u, 2u};
+
+    for (uint32_t i = 0u; i < size; i++) {
+        frame[i] = 0u;
+    }
+    for (uint32_t i = 0u; i < 6u; i++) {
+        frame[i] = 0xffu;
+        frame[6u + i] = g_rtl8139_status.mac[i];
+    }
+    rtl8139_write_be16(frame + 12u, 0x0806u);
+    rtl8139_write_be16(frame + 14u, 1u);
+    rtl8139_write_be16(frame + 16u, 0x0800u);
+    frame[18] = 6u;
+    frame[19] = 4u;
+    rtl8139_write_be16(frame + 20u, 1u);
+    for (uint32_t i = 0u; i < 6u; i++) {
+        frame[22u + i] = g_rtl8139_status.mac[i];
+        frame[32u + i] = 0u;
+    }
+    for (uint32_t i = 0u; i < 4u; i++) {
+        frame[28u + i] = source_ip[i];
+        frame[38u + i] = target_ip[i];
+    }
+}
+
+static int rtl8139_arp_probe_reply_matches(const struct rtl8139_rx_packet *packet) {
+    static const uint8_t source_ip[4] = {10u, 0u, 2u, 15u};
+    static const uint8_t target_ip[4] = {10u, 0u, 2u, 2u};
+
+    if (packet == 0 || packet->bytes_copied < 42u) {
+        return 0;
+    }
+    if (rtl8139_read_be16(packet->data + 12u) != 0x0806u ||
+        rtl8139_read_be16(packet->data + 20u) != 2u) {
+        return 0;
+    }
+    for (uint32_t i = 0u; i < 4u; i++) {
+        if (packet->data[28u + i] != target_ip[i] ||
+            packet->data[38u + i] != source_ip[i]) {
+            return 0;
+        }
+    }
+    for (uint32_t i = 0u; i < 6u; i++) {
+        if (packet->data[i] != g_rtl8139_status.mac[i]) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static void rtl8139_copy_frame(uint8_t *dst, const uint8_t *src, uint32_t bytes) {
@@ -281,6 +343,19 @@ int rtl8139_init(void) {
     rtl8139_refresh_runtime_status();
     g_rtl8139_status.initialized = 1;
     rtl8139_emit_status_event_if_changed();
+    kprint("rtl8139: controller bdf=%u:%u.%u io=%x irq=%u mac=%x:%x:%x:%x:%x:%x link=%u\n",
+           (uint32_t)device.bus,
+           (uint32_t)device.slot,
+           (uint32_t)device.function,
+           (uint32_t)io_base,
+           (uint32_t)device.irq_line,
+           (uint32_t)g_rtl8139_status.mac[0],
+           (uint32_t)g_rtl8139_status.mac[1],
+           (uint32_t)g_rtl8139_status.mac[2],
+           (uint32_t)g_rtl8139_status.mac[3],
+           (uint32_t)g_rtl8139_status.mac[4],
+           (uint32_t)g_rtl8139_status.mac[5],
+           (uint32_t)g_rtl8139_status.link_up);
     return 1;
 }
 
@@ -334,6 +409,41 @@ int rtl8139_send_test_frame(void) {
 
     rtl8139_fill_test_frame(frame, sizeof(frame));
     return rtl8139_send_frame(frame, sizeof(frame));
+}
+
+int rtl8139_run_loopback_smoke(void) {
+    uint16_t io_base = g_rtl8139_status.io_base;
+    uint8_t frame[60];
+    struct rtl8139_rx_packet packet;
+
+    if (!g_rtl8139_status.present || !g_rtl8139_status.initialized || io_base == 0u) {
+        kprint("rtl8139: tx/rx smoke unavailable\n");
+        return 0;
+    }
+    while (rtl8139_receive_packet(&packet)) {
+    }
+    rtl8139_fill_arp_probe(frame, sizeof(frame));
+    if (!rtl8139_send_frame(frame, sizeof(frame))) {
+        kprint("rtl8139: tx/rx smoke TX failed\n");
+        return 0;
+    }
+    for (uint32_t attempt = 0u; attempt < 1000000u; attempt++) {
+        (void)rtl8139_handle_irq(g_rtl8139_status.irq_line);
+        if (rtl8139_receive_packet(&packet)) {
+            if (rtl8139_arp_probe_reply_matches(&packet)) {
+                kprint("rtl8139: tx/rx smoke OK bytes=%u status=%x\n",
+                       packet.bytes_copied,
+                       (uint32_t)packet.packet_status);
+                return 1;
+            }
+            kprint("rtl8139: tx/rx smoke RX skip bytes=%u type=%x\n",
+                   packet.bytes_copied,
+                   packet.bytes_copied > 13u ? rtl8139_read_be16(packet.data + 12u) : 0u);
+        }
+        hal_cpu_relax();
+    }
+    kprint("rtl8139: tx/rx smoke RX timeout\n");
+    return 0;
 }
 
 int rtl8139_receive_packet(struct rtl8139_rx_packet *out) {

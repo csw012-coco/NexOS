@@ -8,6 +8,15 @@ enum {
     PROCESS_FILE_MAX = NOS_PROCESS_FILE_MAX
 };
 
+struct process_parent_record {
+    uint32_t pid;
+};
+
+struct process_wait_record {
+    uint32_t pid;
+    uint64_t info_user;
+};
+
 struct process {
     uint32_t pid;
     uint32_t slot;
@@ -15,6 +24,8 @@ struct process {
     int32_t exit_code;
     uint8_t has_saved_frame;
     uint32_t wake_tick;
+    struct process_parent_record parent;
+    struct process_wait_record wait;
     const char *name;
     char name_storage[NOS_NAME_BUFFER_SIZE];
     char cwd_storage[NOS_PATH_BUFFER_SIZE];

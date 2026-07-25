@@ -6,10 +6,26 @@
 
 enum {
     USER_PAGE_SIZE = NOS_PAGE_SIZE,
+#if defined(__i386__)
+    USER_DYNAMIC_PAGE_LIMIT = 64,
+#else
     USER_DYNAMIC_PAGE_LIMIT = 2048,
+#endif
     USER_PROCESS_LIMIT = NOS_PROCESS_SLOT_MAX,
     USER_ELF_ARG_MAX = 8,
     USER_ELF_ENV_MAX = 16,
+#if defined(__i386__)
+    USER_ELF_BASE = 0x08000000ull,
+    USER_ELF_LIMIT = 0x50000000ull,
+    USER_ELF_STACK_TOP = 0xc0000000ull,
+    USER_ELF_STACK_SIZE = 0x10000ull,
+    USER_ELF_STACK_BOTTOM = USER_ELF_STACK_TOP - USER_ELF_STACK_SIZE,
+    USER_ELF_STACK_INIT = USER_ELF_STACK_TOP - 4ull,
+    USER_MMAP_BASE = 0x50000000ull,
+    USER_MMAP_END = 0x70000000ull,
+    USER_ALLOC_BASE = 0x50000000ull,
+    USER_ALLOC_END = 0x70000000ull,
+#else
     USER_ELF_BASE = 0x0000008000000000ull,
     USER_ELF_LIMIT = 0x0000008000400000ull,
     USER_ELF_STACK_TOP = 0x0000008000800000ull,
@@ -20,6 +36,7 @@ enum {
     USER_MMAP_END = 0x0000008000700000ull,
     USER_ALLOC_BASE = 0x0000008000800000ull,
     USER_ALLOC_END = 0x0000008001000000ull,
+#endif
     ELF_ET_EXEC = 2,
     ELF_EM_X86_64 = 62,
     ELF_CLASS_64 = 2,
@@ -175,3 +192,7 @@ extern uint32_t g_scheduler_next_slot;
 
 void process_bind_session(struct process_session *session,
                           struct user_page_mapping *mappings);
+struct process_session *process32_bind_current_address_space(
+    const struct process *process,
+    const struct address_space *address_space,
+    struct user_page_mapping *mappings);

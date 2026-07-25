@@ -1,5 +1,5 @@
 #include "kernel/internal/sys/syscall_internal.h"
-#include "kernel/internal/core/system_query_internal.h"
+#include "kernel/internal/sys/syscall_common_request_core.h"
 
 uint64_t syscall_handle_rtl8139_query(uint64_t user_info_addr) {
     struct syscall_rtl8139_info info;
@@ -7,7 +7,11 @@ uint64_t syscall_handle_rtl8139_query(uint64_t user_info_addr) {
     if (!syscall_user_writable(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    kernel_query_rtl8139_info(&info);
+    (void)syscall_common_request_core_query_info(SYS_QUERY_RTL8139,
+                                                 0u,
+                                                 0u,
+                                                 &info,
+                                                 0);
 
     if (!syscall_copy_to_user(user_info_addr, &info, sizeof(info))) {
         return syscall_kill_bad_user_pointer();

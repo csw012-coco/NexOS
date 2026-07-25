@@ -2,8 +2,34 @@
 #include "kernel/internal/fs/file_internal.h"
 #include "fs/vfs_internal.h"
 #include "kernel/public/arch/arch_ops.h"
+#include "kernel/public/proc/process.h"
 #include "kernel/internal/sys/syscall_compat32_internal.h"
 #include "lib/string.h"
+
+static void syscall_compat32_fill_process_info_local(
+    struct syscall_process_info *out,
+    const struct process_snapshot *snapshot) {
+    uint32_t i;
+
+    if (out == 0) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (snapshot == 0) {
+        return;
+    }
+    out->pid = snapshot->pid;
+    out->slot = snapshot->slot;
+    out->state = snapshot->state;
+    out->exit_code = snapshot->exit_code;
+    out->wake_tick = snapshot->wake_tick;
+    out->image_kind = snapshot->image_kind;
+    for (i = 0u;
+         i + 1u < sizeof(out->name) && snapshot->name[i] != '\0';
+         i++) {
+        out->name[i] = snapshot->name[i];
+    }
+}
 
 static void syscall_compat32_drain_tty_input(struct syscall_compat32_context *ctx) {
     struct keyboard_event event;
@@ -217,13 +243,25 @@ uint32_t syscall_compat32_exec(struct syscall_compat32_context *ctx,
 uintptr_t syscall_compat32_wait(struct syscall_compat32_context *ctx,
                                  const struct process_context *context,
                                  uint32_t pid,
+                                 uint32_t user_info,
                                  int32_t *status,
                                  int *blocked) {
+    struct process_snapshot snapshot;
+    uintptr_t action;
+
     if (ctx == 0 || ctx->wait == 0 ||
         context == 0 || status == 0 || blocked == 0) {
         return 0u;
     }
-    return ctx->wait(context, pid, status, blocked);
+    memset(&snapshot, 0, sizeof(snapshot));
+    action = ctx->wait(context, pid, status, blocked, user_info, &snapshot);
+    if (!*blocked && user_info != 0u && *status != -1) {
+        struct syscall_process_info info;
+
+        syscall_compat32_fill_process_info_local(&info, &snapshot);
+        (void)arch_copy_to_user(user_info, &info, sizeof(info));
+    }
+    return action;
 }
 
 uintptr_t syscall_compat32_exit(struct syscall_compat32_context *ctx,

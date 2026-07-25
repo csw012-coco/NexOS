@@ -244,7 +244,7 @@ int cmd_env(int argc, char **argv) {
 }
 
 static void font_write_help_local(void) {
-    write_str("usage: font [info|sample|--table]\n");
+    write_str("usage: font [info|sample|--table|--utf8-check]\n");
     write_str("show the active text font cell, console grid, and sample glyphs\n");
 }
 
@@ -313,15 +313,105 @@ static void font_write_sample_local(void) {
     write_str(" !\"#$%&'()*+,-./0123456789:;<=>?\n");
     write_str(" @ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\n");
     write_str(" `abcdefghijklmnopqrstuvwxyz{|}~\n");
+    write_str("UTF-8:\n");
+    write_str(" NexOS \xed\x95\x9c\xea\xb8\x80 \xea\xb0\x80\xeb\x82\x98\xeb\x8b\xa4\n");
     write_str("Box:\n");
     write_str(" +--------+  The quick brown fox jumps over 13 lazy dogs.\n");
     write_str(" | NexOS  |  0123456789 ABC abc\n");
     write_str(" +--------+\n");
 }
 
+static int font_hex_has_glyph_local(const char *glyph) {
+    char buffer[256];
+    char line[96];
+    uint32_t line_len = 0u;
+    int fd;
+
+    if (glyph == NULL || glyph[0] == '\0') {
+        return 0;
+    }
+    fd = open("/system/font/font.hex", 0);
+    if (fd < 0) {
+        fd = open("/SYSTEM/FONT/FONT.HEX", 0);
+    }
+    if (fd < 0) {
+        return 0;
+    }
+    for (;;) {
+        ssize_t got = read(fd, buffer, sizeof(buffer));
+
+        if (got < 0) {
+            close((uint32_t)fd);
+            return 0;
+        }
+        if (got == 0) {
+            break;
+        }
+        for (uint32_t i = 0u; i < (uint32_t)got; i++) {
+            char ch = buffer[i];
+
+            if (ch == '\n' || ch == '\r') {
+                line[line_len] = '\0';
+                if (starts_with_text_local(line, glyph)) {
+                    close((uint32_t)fd);
+                    return 1;
+                }
+                line_len = 0u;
+                continue;
+            }
+            if (line_len + 1u < sizeof(line)) {
+                line[line_len++] = ch;
+            }
+        }
+    }
+    if (line_len != 0u) {
+        line[line_len] = '\0';
+        if (starts_with_text_local(line, glyph)) {
+            close((uint32_t)fd);
+            return 1;
+        }
+    }
+    close((uint32_t)fd);
+    return 0;
+}
+
+static int font_utf8_check_local(void) {
+    struct syscall_machine_info machine;
+    int has_ac00;
+    int has_ae00;
+    int has_d55c;
+
+    if (machine_info_query(&machine) <= 0) {
+        write_err_str("font: machine info query failed\n");
+        return 1;
+    }
+    if (!font_hex_file_available_local()) {
+        write_err_str("font: /system/font/font.hex not found\n");
+        return 1;
+    }
+    has_ac00 = font_hex_has_glyph_local("AC00:");
+    has_ae00 = font_hex_has_glyph_local("AE00:");
+    has_d55c = font_hex_has_glyph_local("D55C:");
+    if (!has_ac00 || !has_ae00 || !has_d55c) {
+        write_err_str("font: missing Hangul glyphs in font.hex\n");
+        return 1;
+    }
+    write_str("font: utf8/unifont check OK grid=");
+    write_dec(machine.text_columns);
+    write_str("x");
+    write_dec(machine.text_rows);
+    write_str(" cell=");
+    write_dec(machine.text_cell_width != 0u ? machine.text_cell_width : 8u);
+    write_str("x");
+    write_dec(machine.text_cell_height != 0u ? machine.text_cell_height : 16u);
+    write_str(" sample=");
+    write_str("\xed\x95\x9c\xea\xb8\x80/\xea\xb0\x80\xeb\x82\x98\n");
+    return 0;
+}
+
 int cmd_font(int argc, char **argv) {
     if (argc > 2) {
-        write_err_usage("font", " [info|sample|--table]\n");
+        write_err_usage("font", " [info|sample|--table|--utf8-check]\n");
         return 1;
     }
     if (argc == 2) {
@@ -339,7 +429,10 @@ int cmd_font(int argc, char **argv) {
         if (streq_local(argv[1], "--table")) {
             return font_write_info_local(1);
         }
-        write_err_usage("font", " [info|sample|--table]\n");
+        if (streq_local(argv[1], "--utf8-check")) {
+            return font_utf8_check_local();
+        }
+        write_err_usage("font", " [info|sample|--table|--utf8-check]\n");
         return 1;
     }
 
@@ -904,8 +997,53 @@ int cmd_watch(int argc, char **argv) {
 }
 
 
+static char g_clipboard_text_buffer[4097];
+
+static int clipboard_utf8_check_local(void) {
+    static const char sample[] =
+        "NexOS utf8 \xed\x95\x9c\xea\xb8\x80 \xea\xb0\x80\xeb\x82\x98\xeb\x8b\xa4";
+    char verify[128];
+    int copied;
+    int size;
+    uint32_t sample_len = str_len_local(sample);
+
+    if (clipboard_clear() < 0) {
+        write_err_str("clipboard: utf8 clear failed\n");
+        return 1;
+    }
+    if (clipboard_set(sample, sample_len) < 0) {
+        write_err_str("clipboard: utf8 set failed\n");
+        return 1;
+    }
+    size = clipboard_size();
+    if (size != (int)sample_len) {
+        write_err_str("clipboard: utf8 size mismatch\n");
+        return 1;
+    }
+    copied = clipboard_get(verify, sizeof(verify));
+    if (copied != (int)sample_len) {
+        write_err_str("clipboard: utf8 read size mismatch\n");
+        return 1;
+    }
+    verify[sample_len] = '\0';
+    if (!streq_local(verify, sample)) {
+        write_err_str("clipboard: utf8 data mismatch\n");
+        return 1;
+    }
+    if (clipboard_clear() < 0) {
+        write_err_str("clipboard: utf8 final clear failed\n");
+        return 1;
+    }
+    write_str("clipboard: utf8 roundtrip OK bytes=");
+    write_dec(sample_len);
+    write_str(" sample=");
+    write_str(sample);
+    write_str("\n");
+    return 0;
+}
+
 int cmd_clipboard(int argc, char **argv) {
-    char text[4097];
+    char *text = g_clipboard_text_buffer;
     uint32_t pos;
 
     if (argc == 1 ||
@@ -940,6 +1078,9 @@ int cmd_clipboard(int argc, char **argv) {
         }
         return 0;
     }
+    if (argc == 2 && streq_local(argv[1], "--utf8-check")) {
+        return clipboard_utf8_check_local();
+    }
     if (argc >= 3 && (streq_local(argv[1], "set") || streq_local(argv[1], "write"))) {
         pos = 0u;
         for (int i = 2; i < argc && pos + 1u < sizeof(text); i++) {
@@ -959,7 +1100,7 @@ int cmd_clipboard(int argc, char **argv) {
         }
         return 0;
     }
-    write_err_usage("clipboard", " [get|set <text>|clear|size]\n");
+    write_err_usage("clipboard", " [get|set <text>|clear|size|--utf8-check]\n");
     return 1;
 }
 
@@ -1187,10 +1328,11 @@ static int cmd_find_walk_local(const char *path, const char *needle) {
         if (streq_local(entry.name, ".") || streq_local(entry.name, "..")) {
             continue;
         }
-        if (snprintf(child,
-                     sizeof(child),
-                     streq_local(path, "/") ? "/%s" : "%s/%s",
-                     entry.name) < 0) {
+        if (streq_local(path, "/")) {
+            if (snprintf(child, sizeof(child), "/%s", entry.name) < 0) {
+                continue;
+            }
+        } else if (snprintf(child, sizeof(child), "%s/%s", path, entry.name) < 0) {
             continue;
         }
         if (needle == NULL || needle[0] == '\0' || streq_local(entry.name, needle) ||

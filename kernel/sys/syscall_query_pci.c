@@ -1,5 +1,5 @@
 #include "kernel/internal/sys/syscall_internal.h"
-#include "kernel/internal/core/system_query_internal.h"
+#include "kernel/internal/sys/syscall_common_request_core.h"
 
 static int syscall_prepare_user_output(uint64_t user_info_addr, uint32_t size) {
     if (!syscall_user_writable(user_info_addr, size)) {
@@ -21,6 +21,10 @@ uint64_t syscall_handle_pci_query(uint32_t index, uint64_t user_info_addr) {
     if (!syscall_prepare_user_output(user_info_addr, sizeof(info))) {
         return syscall_kill_bad_user_pointer();
     }
-    kernel_query_pci_info(index, &info);
+    (void)syscall_common_request_core_query_info(SYS_QUERY_PCI,
+                                                 index,
+                                                 0u,
+                                                 &info,
+                                                 0);
     return syscall_finish_user_output(user_info_addr, &info, sizeof(info));
 }

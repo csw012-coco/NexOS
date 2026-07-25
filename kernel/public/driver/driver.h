@@ -31,6 +31,24 @@ enum kernel_driver_file_state {
     KERNEL_DRIVER_FILE_LOAD_FAILED = 4
 };
 
+enum kernel_driver_reason {
+    KERNEL_DRIVER_REASON_NONE = 0,
+    KERNEL_DRIVER_REASON_EMPTY = 1,
+    KERNEL_DRIVER_REASON_REGISTERED = 2,
+    KERNEL_DRIVER_REASON_PROBE_OK = 3,
+    KERNEL_DRIVER_REASON_UNSUPPORTED_ELF = 4,
+    KERNEL_DRIVER_REASON_LOADED = 5,
+    KERNEL_DRIVER_REASON_LOAD_FAILED = 6,
+    KERNEL_DRIVER_REASON_INIT_OK = 7,
+    KERNEL_DRIVER_REASON_MISSING_HARDWARE = 8,
+    KERNEL_DRIVER_REASON_INIT_FAILED = 9,
+    KERNEL_DRIVER_REASON_REGISTER_FAILED = 10,
+    KERNEL_DRIVER_REASON_LAYOUT_FAILED = 11,
+    KERNEL_DRIVER_REASON_RELOC_FAILED = 12,
+    KERNEL_DRIVER_REASON_SYMBOL_MISSING = 13,
+    KERNEL_DRIVER_REASON_NO_MEMORY = 14
+};
+
 typedef int (*kernel_driver_init_fn)(void);
 typedef void (*kernel_driver_exit_fn)(void);
 
@@ -47,22 +65,27 @@ struct kernel_driver_record {
     int init_result;
     const char *source;
     const char *path;
+    enum kernel_driver_reason reason_code;
     const char *reason;
+    char device[64];
 };
 
 struct kernel_driver_file {
     char name[NOS_NAME_BUFFER_SIZE];
     char path[NOS_PATH_BUFFER_SIZE];
+    char driver_name[KERNEL_DRIVER_NAME_MAX + 1u];
     uint32_t size;
     uint8_t elf_class;
     uint8_t elf_data;
     uint16_t elf_type;
     uint16_t elf_machine;
     enum kernel_driver_file_state state;
+    enum kernel_driver_reason reason_code;
     const char *reason;
 };
 
 void driver_manager_init(void);
+void driver_set_boot_verbose(int verbose);
 int driver_register(const struct kernel_driver *driver);
 uint32_t driver_init_all(void);
 const struct kernel_driver_record *driver_find(const char *name);

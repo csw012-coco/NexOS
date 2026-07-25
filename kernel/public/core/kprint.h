@@ -10,6 +10,7 @@
  */
 
 #include <stdint.h>
+#include <stdarg.h>
 
 /* Forward declaration */
 struct tty;
@@ -26,6 +27,7 @@ struct tty;
  *   kprint("Error: %s\n", error_msg);
  */
 void kprint(const char *fmt, ...);
+void vkprint(const char *fmt, va_list ap);
 
 /**
  * Initialize kernel print system (call once at boot)

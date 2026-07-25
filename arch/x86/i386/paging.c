@@ -5,6 +5,7 @@ enum {
     PAGING_ENTRY_PRESENT = 1u << 0,
     PAGING_ENTRY_WRITABLE = 1u << 1,
     PAGING_ENTRY_USER = 1u << 2,
+    PAGING_ENTRY_COW = 1u << 9,
     PAGING_ENTRY_ADDRESS_MASK = 0xfffff000u,
     PAGING_DIRECTORY_ENTRIES = 1024u,
     PAGING_TABLE_ENTRIES = 1024u,
@@ -13,6 +14,10 @@ enum {
     PAGING_TEMPORARY_SLOTS = 4u,
     PAGING_TEMPORARY_DIRECTORY_INDEX = I386_PAGING_DYNAMIC_BASE >> 22,
     PAGING_CR0_PG = 1u << 31
+};
+
+enum {
+    PAGING_USER_DIRECTORY_LIMIT = 0xc0000000u >> 22
 };
 
 static uint32_t page_directory[PAGING_DIRECTORY_ENTRIES]
@@ -282,6 +287,342 @@ uint32_t i386_paging_create_address_space(void) {
     }
     i386_paging_temporary_unmap(0u);
     return root;
+}
+
+void i386_paging_destroy_user_space(uint32_t root) {
+    uint32_t *directory;
+
+    if (root == 0u ||
+        (root & (I386_PAGE_SIZE - 1u)) != 0u ||
+        i386_paging_root() != kernel_page_directory_root ||
+        !i386_paging_temporary_map(root, 0u, (void **)&directory)) {
+        return;
+    }
+
+    for (uint32_t dir = PAGING_IDENTITY_TABLES;
+         dir < PAGING_USER_DIRECTORY_LIMIT;
+         dir++) {
+        uint32_t directory_entry = directory[dir];
+        uint32_t *table;
+
+        if ((directory_entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) !=
+            (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) {
+            continue;
+        }
+        if (!i386_paging_temporary_map(directory_entry & PAGING_ENTRY_ADDRESS_MASK,
+                                       1u,
+                                       (void **)&table)) {
+            continue;
+        }
+        for (uint32_t page = 0u; page < PAGING_TABLE_ENTRIES; page++) {
+            uint32_t table_entry = table[page];
+
+            if ((table_entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) ==
+                (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) {
+                (void)i386_pmm_free_page(table_entry & PAGING_ENTRY_ADDRESS_MASK);
+                table[page] = 0u;
+            }
+        }
+        i386_paging_temporary_unmap(1u);
+        (void)i386_pmm_free_page(directory_entry & PAGING_ENTRY_ADDRESS_MASK);
+        directory[dir] = 0u;
+    }
+    i386_paging_temporary_unmap(0u);
+    (void)i386_pmm_free_page(root);
+}
+
+uint32_t i386_paging_clone_user_eager(uint32_t source_root) {
+    uint32_t clone_root;
+
+    if (source_root == 0u ||
+        (source_root & (I386_PAGE_SIZE - 1u)) != 0u ||
+        i386_paging_root() != kernel_page_directory_root) {
+        return 0u;
+    }
+
+    clone_root = i386_paging_create_address_space();
+    if (clone_root == 0u) {
+        return 0u;
+    }
+
+    for (uint32_t dir = PAGING_IDENTITY_TABLES;
+         dir < PAGING_USER_DIRECTORY_LIMIT;
+         dir++) {
+        uint32_t source_directory_entry;
+        uint32_t source_table_frame;
+
+        {
+            uint32_t *source_directory;
+
+            if (!i386_paging_temporary_map(source_root,
+                                           0u,
+                                           (void **)&source_directory)) {
+                i386_paging_destroy_user_space(clone_root);
+                return 0u;
+            }
+            source_directory_entry = source_directory[dir];
+            i386_paging_temporary_unmap(0u);
+        }
+        if ((source_directory_entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) !=
+            (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) {
+            continue;
+        }
+        source_table_frame = source_directory_entry & PAGING_ENTRY_ADDRESS_MASK;
+        for (uint32_t page = 0u; page < PAGING_TABLE_ENTRIES; page++) {
+            uint32_t source_entry;
+            uint32_t source_frame;
+            uint32_t clone_frame;
+            void *source_page;
+            void *clone_page;
+            uint32_t virtual_address;
+
+            {
+                uint32_t *source_table;
+
+                if (!i386_paging_temporary_map(source_table_frame,
+                                               1u,
+                                               (void **)&source_table)) {
+                    i386_paging_destroy_user_space(clone_root);
+                    return 0u;
+                }
+                source_entry = source_table[page];
+                i386_paging_temporary_unmap(1u);
+            }
+            if ((source_entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) !=
+                (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) {
+                continue;
+            }
+            source_frame = source_entry & PAGING_ENTRY_ADDRESS_MASK;
+            clone_frame = i386_pmm_alloc_page();
+            virtual_address = (dir << 22) | (page << 12);
+            if (clone_frame == I386_PMM_INVALID_PAGE ||
+                !i386_paging_map_page_in(clone_root,
+                                         virtual_address,
+                                         clone_frame,
+                                         (source_entry & PAGING_ENTRY_WRITABLE) != 0u,
+                                         1) ||
+                !i386_paging_temporary_map(source_frame, 2u, &source_page) ||
+                !i386_paging_temporary_map(clone_frame, 3u, &clone_page)) {
+                if (clone_frame != I386_PMM_INVALID_PAGE) {
+                    (void)i386_pmm_free_page(clone_frame);
+                }
+                i386_paging_temporary_unmap(3u);
+                i386_paging_temporary_unmap(2u);
+                i386_paging_destroy_user_space(clone_root);
+                return 0u;
+            }
+            for (uint32_t i = 0u; i < I386_PAGE_SIZE; i++) {
+                ((unsigned char *)clone_page)[i] =
+                    ((const unsigned char *)source_page)[i];
+            }
+            i386_paging_temporary_unmap(3u);
+            i386_paging_temporary_unmap(2u);
+        }
+    }
+    return clone_root;
+}
+
+uint32_t i386_paging_clone_user_cow_ex(uint32_t source_root,
+                                       i386_paging_shared_page_fn is_shared,
+                                       void *context) {
+    uint32_t clone_root;
+
+    if (source_root == 0u ||
+        (source_root & (I386_PAGE_SIZE - 1u)) != 0u ||
+        i386_paging_root() != kernel_page_directory_root) {
+        return 0u;
+    }
+
+    clone_root = i386_paging_create_address_space();
+    if (clone_root == 0u) {
+        return 0u;
+    }
+
+    for (uint32_t dir = PAGING_IDENTITY_TABLES;
+         dir < PAGING_USER_DIRECTORY_LIMIT;
+         dir++) {
+        uint32_t source_directory_entry;
+        uint32_t source_table_frame;
+
+        {
+            uint32_t *source_directory;
+
+            if (!i386_paging_temporary_map(source_root,
+                                           0u,
+                                           (void **)&source_directory)) {
+                i386_paging_destroy_user_space(clone_root);
+                return 0u;
+            }
+            source_directory_entry = source_directory[dir];
+            i386_paging_temporary_unmap(0u);
+        }
+        if ((source_directory_entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) !=
+            (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) {
+            continue;
+        }
+        source_table_frame = source_directory_entry & PAGING_ENTRY_ADDRESS_MASK;
+        for (uint32_t page = 0u; page < PAGING_TABLE_ENTRIES; page++) {
+            uint32_t source_entry;
+            uint32_t source_frame;
+            uint32_t child_flags;
+            uint32_t virtual_address = (dir << 22) | (page << 12);
+            int shared = is_shared != 0 && is_shared(virtual_address, context);
+
+            {
+                uint32_t *source_table;
+
+                if (!i386_paging_temporary_map(source_table_frame,
+                                               1u,
+                                               (void **)&source_table)) {
+                    i386_paging_destroy_user_space(clone_root);
+                    return 0u;
+                }
+                source_entry = source_table[page];
+                if ((source_entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) ==
+                    (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) {
+                    if (!shared &&
+                        (source_entry & PAGING_ENTRY_WRITABLE) != 0u) {
+                        source_entry &= ~PAGING_ENTRY_WRITABLE;
+                        source_entry |= PAGING_ENTRY_COW;
+                        source_table[page] = source_entry;
+                    }
+                }
+                i386_paging_temporary_unmap(1u);
+            }
+            if ((source_entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) !=
+                (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) {
+                continue;
+            }
+            source_frame = source_entry & PAGING_ENTRY_ADDRESS_MASK;
+            child_flags = source_entry & ~PAGING_ENTRY_ADDRESS_MASK;
+            if (!i386_pmm_retain_page(source_frame)) {
+                i386_paging_destroy_user_space(clone_root);
+                return 0u;
+            }
+            if (!i386_paging_map_page_in(clone_root,
+                                         virtual_address,
+                                         source_frame,
+                                         (child_flags & PAGING_ENTRY_WRITABLE) != 0u,
+                                         1)) {
+                (void)i386_pmm_free_page(source_frame);
+                i386_paging_destroy_user_space(clone_root);
+                return 0u;
+            }
+            if ((child_flags & PAGING_ENTRY_COW) != 0u) {
+                uint32_t *child_directory;
+                uint32_t *child_table;
+                uint32_t child_directory_entry;
+
+                if (!i386_paging_temporary_map(clone_root,
+                                               0u,
+                                               (void **)&child_directory)) {
+                    i386_paging_destroy_user_space(clone_root);
+                    return 0u;
+                }
+                child_directory_entry = child_directory[dir];
+                if ((child_directory_entry & PAGING_ENTRY_PRESENT) == 0u ||
+                    !i386_paging_temporary_map(
+                        child_directory_entry & PAGING_ENTRY_ADDRESS_MASK,
+                        1u,
+                        (void **)&child_table)) {
+                    i386_paging_temporary_unmap(0u);
+                    i386_paging_destroy_user_space(clone_root);
+                    return 0u;
+                }
+                child_table[page] =
+                    (child_table[page] & ~PAGING_ENTRY_WRITABLE) |
+                    PAGING_ENTRY_COW;
+                i386_paging_temporary_unmap(1u);
+                i386_paging_temporary_unmap(0u);
+            }
+        }
+    }
+    return clone_root;
+}
+
+uint32_t i386_paging_clone_user_cow(uint32_t source_root) {
+    return i386_paging_clone_user_cow_ex(source_root, 0, 0);
+}
+
+int i386_paging_resolve_cow_fault(uint32_t root,
+                                  uint32_t fault_address,
+                                  uint32_t error_code) {
+    enum {
+        PAGE_FAULT_PRESENT = 1u,
+        PAGE_FAULT_WRITE = 2u
+    };
+    uint32_t page = fault_address & ~(I386_PAGE_SIZE - 1u);
+    uint32_t *directory;
+    uint32_t *table;
+    uint32_t directory_entry;
+    uint32_t *entry;
+    uint32_t old_frame;
+    uint32_t new_frame;
+    void *old_page;
+    void *new_page;
+
+    if (root == 0u ||
+        (error_code & (PAGE_FAULT_PRESENT | PAGE_FAULT_WRITE)) !=
+            (PAGE_FAULT_PRESENT | PAGE_FAULT_WRITE) ||
+        i386_paging_root() != kernel_page_directory_root ||
+        !i386_paging_temporary_map(root, 0u, (void **)&directory)) {
+        return 0;
+    }
+    directory_entry = directory[page >> 22];
+    if ((directory_entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER)) !=
+            (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER) ||
+        !i386_paging_temporary_map(directory_entry & PAGING_ENTRY_ADDRESS_MASK,
+                                   1u,
+                                   (void **)&table)) {
+        i386_paging_temporary_unmap(0u);
+        return 0;
+    }
+    entry = &table[(page >> 12) & 0x3ffu];
+    if ((*entry & (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER | PAGING_ENTRY_COW)) !=
+        (PAGING_ENTRY_PRESENT | PAGING_ENTRY_USER | PAGING_ENTRY_COW)) {
+        i386_paging_temporary_unmap(1u);
+        i386_paging_temporary_unmap(0u);
+        return 0;
+    }
+    old_frame = *entry & PAGING_ENTRY_ADDRESS_MASK;
+    if (i386_pmm_refcount(old_frame) <= 1u) {
+        *entry = (*entry | PAGING_ENTRY_WRITABLE) & ~PAGING_ENTRY_COW;
+        i386_paging_temporary_unmap(1u);
+        i386_paging_temporary_unmap(0u);
+        invalidate_page(page);
+        return 1;
+    }
+
+    new_frame = i386_pmm_alloc_page();
+    if (new_frame == I386_PMM_INVALID_PAGE ||
+        !i386_paging_temporary_map(old_frame, 2u, &old_page) ||
+        !i386_paging_temporary_map(new_frame, 3u, &new_page)) {
+        if (new_frame != I386_PMM_INVALID_PAGE) {
+            (void)i386_pmm_free_page(new_frame);
+        }
+        i386_paging_temporary_unmap(3u);
+        i386_paging_temporary_unmap(2u);
+        i386_paging_temporary_unmap(1u);
+        i386_paging_temporary_unmap(0u);
+        return 0;
+    }
+    for (uint32_t i = 0u; i < I386_PAGE_SIZE; i++) {
+        ((unsigned char *)new_page)[i] = ((const unsigned char *)old_page)[i];
+    }
+    i386_paging_temporary_unmap(3u);
+    i386_paging_temporary_unmap(2u);
+    {
+        uint32_t new_flags =
+            ((*entry & ~PAGING_ENTRY_ADDRESS_MASK) | PAGING_ENTRY_WRITABLE) &
+            ~PAGING_ENTRY_COW;
+
+        *entry = new_frame | new_flags;
+    }
+    (void)i386_pmm_free_page(old_frame);
+    i386_paging_temporary_unmap(1u);
+    i386_paging_temporary_unmap(0u);
+    invalidate_page(page);
+    return 1;
 }
 
 int i386_paging_map_page_in(uint32_t root,
