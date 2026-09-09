@@ -1,10 +1,19 @@
 #include "arch/x86/i386/gdt.h"
+#include "arch/x86/i386/context.h"
 #include "arch/x86/i386/keyboard.h"
-#include "arch/x86/i386/paging.h"
+#include "arch/x86/i386/mm/paging.h"
+#include "arch/x86/i386/mm/pmm.h"
 #include "arch/x86/common/pic.h"
 #include "arch/x86/common/io.h"
+#include "drivers/bus/acpi.h"
+#include "drivers/bus/ioapic.h"
+#include "drivers/bus/lapic.h"
 #include "drivers/video/framebuffer.h"
 #include "hal/hal.h"
+#include "kernel/internal/core/kernel_panic_internal.h"
+#include "kernel/internal/mem/vmm_diag.h"
+#include "kernel/public/sys/syscall.h"
+#include "kernel/public/sys/syscall_request.h"
 
 enum {
     VGA_COLUMNS = 80,
@@ -333,11 +342,38 @@ uint32_t hal_timer_hz(void) {
 }
 
 void hal_irq_ack(uint8_t irq) {
+    if (ioapic_irq_enabled(irq)) {
+        lapic_send_eoi();
+        return;
+    }
     i386_pic_send_eoi(irq);
 }
 
 void hal_irq_set_mask(uint8_t irq, int masked) {
+    if (ioapic_irq_enabled(irq)) {
+        (void)ioapic_set_irq_mask(irq, masked);
+        i386_pic_set_mask(irq, 1);
+        return;
+    }
     i386_pic_set_mask(irq, masked);
+}
+
+int hal_irq_route(uint8_t irq, struct hal_irq_route *out) {
+    struct acpi_irq_override_route route;
+    int overridden;
+
+    if (out == 0) {
+        return 0;
+    }
+    if (irq >= 16u) {
+        return 0;
+    }
+    overridden = acpi_irq_route_for_isa(irq, &route);
+    out->irq = irq;
+    out->acpi_override = overridden ? 1u : 0u;
+    out->flags = overridden ? route.flags : 0u;
+    out->gsi = overridden ? route.gsi : irq;
+    return 1;
 }
 
 uint8_t hal_keyboard_read_scancode(void) {
@@ -346,12 +382,95 @@ uint8_t hal_keyboard_read_scancode(void) {
     return i386_keyboard_pop(&event) ? event.scancode : 0u;
 }
 
+int hal_keyboard_inject_scancode(uint8_t scancode) {
+    return i386_keyboard_inject_scancode(scancode);
+}
+
+int hal_paging_enabled(void) {
+    return i386_paging_enabled();
+}
+
+int hal_pmm_init_from_boot(const struct bootx_boot_info *boot_info,
+                           uint64_t kernel_phys_addr) {
+    (void)kernel_phys_addr;
+    return i386_pmm_init(boot_info);
+}
+
 uint64_t hal_paging_current_root(void) {
     return i386_paging_root();
 }
 
 void hal_paging_switch_root(uint64_t cr3) {
     i386_paging_switch((uint32_t)cr3);
+}
+
+int hal_paging_get_mapping_info_in_root(uint64_t root,
+                                        uint64_t virt_addr,
+                                        uint64_t *phys_addr,
+                                        uint64_t *flags) {
+    return vmm_query_mapping_in_context(root, virt_addr, phys_addr, flags);
+}
+
+void hal_paging_log_init_exec_failure(const struct hal_boot_trace_ops *ops, void *ctx) {
+    (void)ops;
+    (void)ctx;
+}
+
+void hal_paging_log_panic_entry(const struct hal_boot_trace_ops *ops,
+                                void *ctx,
+                                uint64_t entry) {
+    (void)ops;
+    (void)ctx;
+    (void)entry;
+}
+
+void hal_paging_log_panic_target_entry(const struct hal_boot_trace_ops *ops,
+                                       void *ctx,
+                                       uint64_t target_root,
+                                       uint64_t entry) {
+    (void)ops;
+    (void)ctx;
+    (void)target_root;
+    (void)entry;
+}
+
+void hal_paging_log_panic_switch_trace(const struct hal_boot_trace_ops *ops,
+                                       void *ctx,
+                                       uint64_t entry) {
+    (void)ops;
+    (void)ctx;
+    (void)entry;
+}
+
+void hal_paging_log_panic_summary(const struct hal_boot_trace_ops *ops,
+                                  void *ctx,
+                                  uint64_t target_root,
+                                  uint64_t entry) {
+    (void)ops;
+    (void)ctx;
+    (void)target_root;
+    (void)entry;
+}
+
+int hal_process_context_init_user(struct process_context *context,
+                                  uint64_t entry,
+                                  uint64_t stack,
+                                  uint64_t first_argument,
+                                  int user_mode) {
+    if (context == 0 ||
+        entry > 0xffffffffull ||
+        stack > 0xffffffffull ||
+        first_argument > 0xffffffffull) {
+        return 0;
+    }
+    if (!user_mode) {
+        return 0;
+    }
+    i386_context_init_user(context,
+                           (uint32_t)entry,
+                           (uint32_t)stack,
+                           (uint32_t)first_argument);
+    return 1;
 }
 
 void *hal_phys_direct_map(uint64_t phys_addr) {
@@ -391,6 +510,17 @@ void *hal_phys_direct_map(uint64_t phys_addr) {
         }
     }
     return (void *)(uintptr_t)(virt + ((uint32_t)phys_addr & (I386_PAGE_SIZE - 1u)));
+}
+
+int hal_phys_temporary_map(uint64_t phys_addr, uint32_t slot, void **virt_out) {
+    if (virt_out == 0 || phys_addr > 0xffffffffull) {
+        return 0;
+    }
+    return i386_paging_temporary_map((uint32_t)phys_addr, slot, virt_out);
+}
+
+void hal_phys_temporary_unmap(uint32_t slot) {
+    i386_paging_temporary_unmap(slot);
 }
 
 void *hal_mmio_map(uint64_t phys_addr, uint64_t length) {
@@ -433,6 +563,19 @@ void hal_cpu_halt(void) {
     __asm__ volatile("hlt");
 }
 
+void hal_cpu_trigger_triple_fault(void) {
+    struct {
+        uint16_t limit;
+        uint32_t base;
+    } __attribute__((packed)) null_idt = {0u, 0u};
+
+    __asm__ volatile("lidt %0\n\t"
+                     "int3\n\t"
+                     :
+                     : "m"(null_idt)
+                     : "memory");
+}
+
 uint64_t hal_cpu_read_tsc(void) {
     uint32_t lo;
     uint32_t hi;
@@ -469,6 +612,10 @@ void hal_cpu_cpuid(uint32_t leaf,
     }
 }
 
+const char *hal_arch_name(void) {
+    return "i386";
+}
+
 void hal_cpu_wait_for_interrupt(void) {
     __asm__ volatile("sti; hlt" : : : "memory");
 }
@@ -494,4 +641,115 @@ uint64_t hal_kernel_stack_top(void) {
 
 void hal_set_kernel_stack_top(uint64_t rsp0) {
     (void)rsp0;
+}
+
+int hal_exception_frame_is_user(const struct exception_frame *frame) {
+    (void)frame;
+    return 0;
+}
+
+uint64_t hal_exception_frame_ip(const struct exception_frame *frame) {
+    (void)frame;
+    return 0u;
+}
+
+uint64_t hal_exception_frame_error_code(const struct exception_frame *frame) {
+    (void)frame;
+    return 0u;
+}
+
+uint64_t hal_page_fault_address(void) {
+    uint32_t fault_addr;
+
+    __asm__ volatile("mov %%cr2, %0" : "=r"(fault_addr));
+    return fault_addr;
+}
+
+void hal_exception_snapshot(const struct exception_frame *frame,
+                            struct hal_exception_snapshot *snapshot) {
+    const uint64_t *raw = (const uint64_t *)frame;
+    uint32_t control0 = 0;
+    uint32_t fault_addr = 0;
+    uint32_t paging_root = 0;
+    uint32_t control4 = 0;
+    uint32_t stack_segment = 0;
+    uint32_t raw_count = 19u;
+    uint32_t i;
+
+    if (frame == 0 || snapshot == 0) {
+        return;
+    }
+
+    snapshot->general[HAL_EXCEPTION_REGISTER_RAX] = frame->rax;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RBX] = frame->rbx;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RCX] = frame->rcx;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RDX] = frame->rdx;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RSI] = frame->rsi;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RDI] = frame->rdi;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RBP] = frame->rbp;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R8] = frame->r8;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R9] = frame->r9;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R10] = frame->r10;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R11] = frame->r11;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R12] = frame->r12;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R13] = frame->r13;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R14] = frame->r14;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R15] = frame->r15;
+    snapshot->error_code = frame->error_code;
+    snapshot->instruction_pointer = frame->instruction_pointer;
+    snapshot->code_selector = frame->cs;
+    snapshot->flags = frame->rflags;
+    snapshot->user_mode = hal_exception_frame_is_user(frame) ? 1u : 0u;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(control0));
+    __asm__ volatile("mov %%cr2, %0" : "=r"(fault_addr));
+    __asm__ volatile("mov %%cr3, %0" : "=r"(paging_root));
+    __asm__ volatile("mov %%cr4, %0" : "=r"(control4));
+    __asm__ volatile("mov %%ss, %0" : "=r"(stack_segment));
+    snapshot->control0 = control0;
+    snapshot->fault_address = fault_addr;
+    snapshot->paging_root = paging_root;
+    snapshot->control4 = control4;
+    if (snapshot->user_mode) {
+        snapshot->stack_pointer = raw[19];
+        snapshot->stack_selector = raw[20];
+        raw_count = 21u;
+    } else {
+        snapshot->stack_pointer = (uint64_t)(uintptr_t)(frame + 1);
+        snapshot->stack_selector = stack_segment;
+    }
+    snapshot->raw_word_count = raw_count < HAL_EXCEPTION_RAW_WORD_MAX ?
+                               raw_count :
+                               HAL_EXCEPTION_RAW_WORD_MAX;
+    for (i = 0; i < snapshot->raw_word_count; i++) {
+        snapshot->raw_words[i] = raw[i];
+    }
+}
+
+int hal_syscall_frame_is_user(const struct syscall_frame *frame) {
+    return frame != 0 && (frame->cs & 0x3u) == 0x3u;
+}
+
+uint64_t hal_syscall_frame_ip(const struct syscall_frame *frame) {
+    return frame != 0 ? frame->instruction_pointer : 0u;
+}
+
+uint64_t hal_syscall_frame_sp(const struct syscall_frame *frame) {
+    return frame != 0 ? frame->stack_pointer : 0u;
+}
+
+void hal_syscall_decode_request(const struct syscall_frame *frame,
+                                struct kernel_syscall_request *request) {
+    if (frame == 0 || request == 0) {
+        return;
+    }
+    request->number = (uint32_t)frame->rax;
+    request->user_bits = 32u;
+    request->args[0] = frame->rbx;
+    request->args[1] = frame->rcx;
+    request->args[2] = frame->rdx;
+    request->args[3] = frame->rsi;
+    request->args[4] = frame->rdi;
+    request->args[5] = frame->rbp;
+    request->instruction_pointer = frame->instruction_pointer;
+    request->stack_pointer = frame->stack_pointer;
 }

@@ -1,5 +1,5 @@
-#include "arch/x86/i386/paging.h"
-#include "arch/x86/i386/pmm.h"
+#include "arch/x86/i386/mm/paging.h"
+#include "arch/x86/i386/mm/pmm.h"
 #include "arch/x86/i386/user.h"
 #include "fs/early_vfs.h"
 #include "fs/vfs.h"
@@ -19,6 +19,22 @@ enum {
 enum {
     I386_USER_LIMIT = 0xc0000000u
 };
+
+enum {
+    PROCESS_EXEC_OK = 0,
+    PROCESS_EXEC_ERR_BAD_ARGS = 1,
+    PROCESS_EXEC_ERR_FILE_NOT_FOUND = 2,
+    PROCESS_EXEC_ERR_FILE_TOO_LARGE = 3,
+    PROCESS_EXEC_ERR_FILE_READ = 4,
+    PROCESS_EXEC_ERR_ELF_HEADER = 5,
+    PROCESS_EXEC_ERR_ELF_SEGMENT_BOUNDS = 6,
+    PROCESS_EXEC_ERR_ELF_SEGMENT_ADDR = 7,
+    PROCESS_EXEC_ERR_ELF_SEGMENT_MAP = 8,
+    PROCESS_EXEC_ERR_STACK_ALLOC = 9,
+    PROCESS_EXEC_ERR_ENTER = 10
+};
+
+extern uint32_t g_process_exec_last_error;
 
 struct elf32_header {
     uint8_t ident[ELF_IDENT_SIZE];
@@ -318,11 +334,20 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
     int loaded = 0;
 
     if (vfs == 0 || path == 0 || image == 0 ||
-        (stack_top & (I386_PAGE_SIZE - 1u)) != 0u ||
-        early_vfs_open(vfs, path, &node) != 0 ||
-        early_vfs_read(vfs, &node, 0, &header, sizeof(header), &bytes_read) != 0 ||
-        bytes_read != sizeof(header) ||
-        header.ident[0] != 0x7fu ||
+        (stack_top & (I386_PAGE_SIZE - 1u)) != 0u) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
+        return 0;
+    }
+    if (early_vfs_open(vfs, path, &node) != 0) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_NOT_FOUND;
+        return 0;
+    }
+    if (early_vfs_read(vfs, &node, 0, &header, sizeof(header), &bytes_read) != 0 ||
+        bytes_read != sizeof(header)) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
+        return 0;
+    }
+    if (header.ident[0] != 0x7fu ||
         header.ident[1] != 'E' ||
         header.ident[2] != 'L' ||
         header.ident[3] != 'F' ||
@@ -332,23 +357,29 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
         header.machine != ELF_MACHINE_386 ||
         header.phnum == 0u ||
         header.phnum > ELF_MAX_PROGRAM_HEADERS ||
-        header.phentsize != sizeof(struct elf32_program_header) ||
-        early_vfs_read(vfs,
+        header.phentsize != sizeof(struct elf32_program_header)) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_HEADER;
+        return 0;
+    }
+    if (early_vfs_read(vfs,
                        &node,
                        header.phoff,
                        programs,
                        header.phnum * sizeof(programs[0]),
                        &bytes_read) != 0 ||
         bytes_read != header.phnum * sizeof(programs[0])) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
         return 0;
     }
 
     if (!validate_elf32_image(&node, &header, programs)) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_BOUNDS;
         return 0;
     }
 
     root = i386_paging_create_address_space();
     if (root == 0u) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_STACK_ALLOC;
         return 0;
     }
 
@@ -374,6 +405,8 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
                                 (program->flags & ELF_PROGRAM_WRITABLE) != 0,
                                 &physical) ||
                 !i386_paging_temporary_map(physical, 2u, (void **)&temporary)) {
+                g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
+                i386_paging_destroy_user_space(root);
                 return 0;
             }
             memset(temporary, 0, I386_PAGE_SIZE);
@@ -392,6 +425,8 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
                                 &bytes_read) != 0 ||
                  bytes_read != copy_end - copy_start)) {
                 i386_paging_temporary_unmap(2u);
+                g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
+                i386_paging_destroy_user_space(root);
                 return 0;
             }
             i386_paging_temporary_unmap(2u);
@@ -401,6 +436,8 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
     }
 
     if (!loaded) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_HEADER;
+        i386_paging_destroy_user_space(root);
         return 0;
     }
     for (uint32_t stack_page = stack_top - I386_PAGE_SIZE;
@@ -411,6 +448,8 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
 
         if (!map_image_page(root, stack_page, 1, &stack_frame) ||
             !i386_paging_temporary_map(stack_frame, 2u, (void **)&temporary)) {
+            g_process_exec_last_error = PROCESS_EXEC_ERR_STACK_ALLOC;
+            i386_paging_destroy_user_space(root);
             return 0;
         }
         memset(temporary, 0, I386_PAGE_SIZE);
@@ -425,8 +464,11 @@ int i386_user_load_elf_space_args(struct early_vfs *vfs,
                                argv,
                                envp,
                                &image->stack_top)) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_STACK_ALLOC;
+        i386_paging_destroy_user_space(root);
         return 0;
     }
+    g_process_exec_last_error = PROCESS_EXEC_OK;
     return 1;
 }
 
@@ -446,9 +488,13 @@ int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
     int loaded = 0;
 
     if (vfs == 0 || path == 0 || image == 0 ||
-        (stack_top & (I386_PAGE_SIZE - 1u)) != 0u ||
-        vfs_open(vfs, path, 0u, &node) != 0 ||
+        (stack_top & (I386_PAGE_SIZE - 1u)) != 0u) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
+        return 0;
+    }
+    if (vfs_open(vfs, path, 0u, &node) != 0 ||
         node.kind != VFS_NODE_FILE) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_NOT_FOUND;
         return 0;
     }
     offset = 0u;
@@ -458,8 +504,11 @@ int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
                           &header,
                           sizeof(header),
                           VFS_READ_BLOCKING);
-    if (bytes_read != (int64_t)sizeof(header) ||
-        header.ident[0] != 0x7fu ||
+    if (bytes_read != (int64_t)sizeof(header)) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
+        return 0;
+    }
+    if (header.ident[0] != 0x7fu ||
         header.ident[1] != 'E' ||
         header.ident[2] != 'L' ||
         header.ident[3] != 'F' ||
@@ -470,6 +519,7 @@ int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
         header.phnum == 0u ||
         header.phnum > ELF_MAX_PROGRAM_HEADERS ||
         header.phentsize != sizeof(struct elf32_program_header)) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_HEADER;
         return 0;
     }
     offset = header.phoff;
@@ -479,15 +529,20 @@ int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
                           programs,
                           header.phnum * sizeof(programs[0]),
                           VFS_READ_BLOCKING);
-    if (bytes_read != (int64_t)(header.phnum * sizeof(programs[0])) ||
-        !validate_elf32_image_size(i386_user_vfs_node_file_size(&node),
+    if (bytes_read != (int64_t)(header.phnum * sizeof(programs[0]))) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
+        return 0;
+    }
+    if (!validate_elf32_image_size(i386_user_vfs_node_file_size(&node),
                                    &header,
                                    programs)) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_BOUNDS;
         return 0;
     }
 
     root = i386_paging_create_address_space();
     if (root == 0u) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_STACK_ALLOC;
         return 0;
     }
 
@@ -513,6 +568,8 @@ int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
                                 (program->flags & ELF_PROGRAM_WRITABLE) != 0,
                                 &physical) ||
                 !i386_paging_temporary_map(physical, 2u, (void **)&temporary)) {
+                g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
+                i386_paging_destroy_user_space(root);
                 return 0;
             }
             memset(temporary, 0, I386_PAGE_SIZE);
@@ -532,6 +589,8 @@ int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
                                       VFS_READ_BLOCKING);
                 if (bytes_read != (int64_t)(copy_end - copy_start)) {
                     i386_paging_temporary_unmap(2u);
+                    g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_READ;
+                    i386_paging_destroy_user_space(root);
                     return 0;
                 }
             }
@@ -542,6 +601,8 @@ int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
     }
 
     if (!loaded) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_HEADER;
+        i386_paging_destroy_user_space(root);
         return 0;
     }
     for (uint32_t stack_page = stack_top - I386_PAGE_SIZE;
@@ -552,6 +613,8 @@ int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
 
         if (!map_image_page(root, stack_page, 1, &stack_frame) ||
             !i386_paging_temporary_map(stack_frame, 2u, (void **)&temporary)) {
+            g_process_exec_last_error = PROCESS_EXEC_ERR_STACK_ALLOC;
+            i386_paging_destroy_user_space(root);
             return 0;
         }
         memset(temporary, 0, I386_PAGE_SIZE);
@@ -566,8 +629,11 @@ int i386_user_load_elf_space_args_vfs(struct vfs *vfs,
                                argv,
                                envp,
                                &image->stack_top)) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_STACK_ALLOC;
+        i386_paging_destroy_user_space(root);
         return 0;
     }
+    g_process_exec_last_error = PROCESS_EXEC_OK;
     return 1;
 }
 

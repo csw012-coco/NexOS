@@ -9,7 +9,8 @@ The main rule is simple:
 `name should reveal ownership, level, and intent`
 
 Examples:
-- `syscall_handle_open`
+- `syscall_common_request_core_fs_fd_request`
+- `syscall_native_request_core_fs`
 - `fs_service_open`
 - `vfs_open`
 - `fat32_find_path`
@@ -25,7 +26,7 @@ These names tell us:
 Use the file or subsystem prefix first.
 
 Examples:
-- `kernel_*` for kernel boot and panic helpers in `/home/csw012/nos/kernel/core/kernel.c`
+- `kernel_*` for kernel boot and panic helpers in `/home/csw012/nexos/kernel/core/kernel.c`
 - `process_*` for process lifecycle and exec helpers
 - `job_*` for foreground/background job control
 - `sched_*` for scheduler-facing helpers
@@ -96,9 +97,10 @@ Keep the ownership rule intact:
 
 Names should reflect the layer boundary.
 
-Use `handle` for syscall entrypoints:
-- `syscall_handle_exec`
-- `syscall_handle_mount_query`
+Use request-core and adapter names for syscall boundaries:
+- `syscall_common_request_core_proc_lifecycle_request`
+- `syscall_native_request_core_mount`
+- `syscall_i386_request_adapter_query`
 
 Use service verbs in the core layer:
 - `fs_service_open`

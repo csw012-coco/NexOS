@@ -122,14 +122,15 @@ const char *cmdline =
     (const char *)(uintptr_t)boot_info->cmdline;
 ```
 
-The string is NUL-terminated and comes from `CMDLINE=` in `BOOTX.CFG`.
+The string is NUL-terminated and comes from the arguments after `kernel`/`linux`
+or an explicit `cmdline` command in `BOOTX.CFG`.
 
 Example:
 
-```ini
-LABEL=Demo Kernel64
-KERNEL=K64DEMO.ELF
-CMDLINE=console=text root=bootx-demo64 arch=x86_64
+```sh
+menuentry "Demo Kernel64" {
+    kernel BOOT/K64DEMO.ELF console=text root=bootx-demo64 arch=x86_64
+}
 ```
 
 ## Reading The Memory Map
@@ -164,8 +165,8 @@ Map types currently include:
 `boot/x` supports both text mode and BIOS VBE framebuffer hand-off.
 The simplest way to request a framebuffer is:
 
-```ini
-CMDLINE=console=framebuffer root=bootx-demo64
+```sh
+kernel BOOT/K64DEMO.ELF console=framebuffer root=bootx-demo64
 ```
 
 Text mode example:
@@ -219,7 +220,7 @@ Current bootloader behavior:
 
 ## Reading Loaded Modules
 
-Modules come from `MODULE=` lines in `BOOTX.CFG`.
+Modules come from `module`/`initrd` commands in `BOOTX.CFG`.
 
 In this kernel tree, the framebuffer text console also checks for an optional `FONT.HEX` module and uses it to override the built-in 8x16 font when present.
 

@@ -17,9 +17,9 @@ FILE *fopen(const char *path, const char *mode) {
         return 0;
     }
     if (mode[0] == 'w') {
-        flags = O_CREAT | O_TRUNC;
+        flags = O_CREAT | O_TRUNC | O_WRONLY;
     } else if (mode[0] == 'a') {
-        flags = O_CREAT | O_APPEND;
+        flags = O_CREAT | O_APPEND | O_WRONLY;
     } else if (mode[0] != 'r') {
         return 0;
     }
@@ -162,7 +162,7 @@ int rename(const char *old_path, const char *new_path) {
     if (source < 0) {
         return -1;
     }
-    destination = open(new_path, O_CREAT | O_TRUNC);
+    destination = open(new_path, O_CREAT | O_TRUNC | O_WRONLY);
     if (destination < 0) {
         close(source);
         return -1;

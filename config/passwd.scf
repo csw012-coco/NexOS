@@ -1,0 +1,10 @@
+# NexOS password database.
+#
+# Format:
+#   name:uid:gid:password
+#
+# Root elevation is checked against this file by userland. The kernel token in
+# config/NEX.SCF must match root's password until kernel-side passwd loading
+# replaces the bootstrap token.
+root:0:0:what
+user:1000:1000:user

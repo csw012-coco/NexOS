@@ -36,6 +36,7 @@ static void ramdisk_reset(struct ramdisk_device *ramdisk) {
     ramdisk->dev.read = 0;
     ramdisk->dev.write = 0;
     ramdisk->dev.flush = 0;
+    ramdisk->dev.reset = 0;
     ramdisk->dev.driver_data = ramdisk;
 }
 

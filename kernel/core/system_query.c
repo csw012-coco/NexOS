@@ -394,20 +394,18 @@ int kernel_audio_play_stream(uint32_t index, struct audio_pcm_stream *stream) {
 
 int kernel_query_block_info(uint32_t index, struct syscall_block_info *info) {
     struct blockdev_info block_info;
-    struct block_device *dev;
 
     if (info == 0) {
         return 0;
     }
 
-    dev = blockdev_get(index);
-    if (dev == 0 || blockdev_get_info(index, &block_info) != 0) {
+    if (blockdev_get_info(index, &block_info) != 0) {
         return 0;
     }
 
     info->index = index;
     info->block_size = block_info.block_size;
-    info->partition_count = blockdev_partition_count(dev);
+    info->partition_count = block_info.partition_count;
     info->writable = block_info.writable;
     info->block_count = block_info.block_count;
     kernel_query_copy_name(info->name, sizeof(info->name), block_info.name);
@@ -415,15 +413,13 @@ int kernel_query_block_info(uint32_t index, struct syscall_block_info *info) {
 }
 
 int kernel_query_part_info(uint32_t disk_index, uint32_t slot, struct syscall_partition_info *info) {
-    struct block_device *dev;
     struct blockdev_partition part;
 
     if (info == 0) {
         return 0;
     }
 
-    dev = blockdev_get(disk_index);
-    if (dev == 0 || blockdev_partition_get(dev, slot, &part) != 0) {
+    if (blockdev_get_partition_info(disk_index, slot, &part) != 0) {
         return 0;
     }
 
@@ -445,8 +441,9 @@ int kernel_block_read(uint32_t disk_index, uint64_t lba, struct syscall_block_re
         return 0;
     }
 
-    dev = blockdev_get(disk_index);
+    dev = blockdev_acquire(disk_index);
     if (dev == 0 || dev->block_size == 0 || dev->block_size > sizeof(info->data)) {
+        blockdev_release(dev);
         return 0;
     }
 
@@ -459,9 +456,11 @@ int kernel_block_read(uint32_t disk_index, uint64_t lba, struct syscall_block_re
         info->data[i] = 0;
     }
     if (blockdev_read(dev, lba, 1, info->data) != 0) {
+        blockdev_release(dev);
         return 0;
     }
     info->bytes_read = dev->block_size;
+    blockdev_release(dev);
     return 1;
 }
 
@@ -472,17 +471,21 @@ int kernel_block_write(uint32_t disk_index, uint64_t lba, struct syscall_block_w
         return 0;
     }
 
-    dev = blockdev_get(disk_index);
+    dev = blockdev_acquire(disk_index);
     if (dev == 0 || dev->write == 0 || dev->block_size == 0 || dev->block_size > sizeof(info->data)) {
+        blockdev_release(dev);
         return 0;
     }
     if (info->bytes_to_write != dev->block_size) {
+        blockdev_release(dev);
         return 0;
     }
     if (blockdev_write(dev, lba, 1, info->data) != 0) {
+        blockdev_release(dev);
         return 0;
     }
     if (blockdev_flush(dev) != 0) {
+        blockdev_release(dev);
         return 0;
     }
 
@@ -490,14 +493,17 @@ int kernel_block_write(uint32_t disk_index, uint64_t lba, struct syscall_block_w
     info->block_size = dev->block_size;
     info->bytes_written = dev->block_size;
     info->lba = lba;
+    blockdev_release(dev);
     return 1;
 }
 
 int kernel_block_flush(uint32_t disk_index) {
-    struct block_device *dev = blockdev_get(disk_index);
+    struct block_device *dev = blockdev_acquire(disk_index);
 
     if (dev == 0) {
         return 0;
     }
-    return blockdev_flush(dev) == 0;
+    int result = blockdev_flush(dev) == 0;
+    blockdev_release(dev);
+    return result;
 }

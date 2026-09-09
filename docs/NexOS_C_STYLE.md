@@ -16,7 +16,7 @@ This is a conservative kernel-oriented C style:
 - readable diffs
 
 Naming-specific rules that cut across subsystems remain in
-[naming_conventions.md](/home/csw012/nos/docs/naming_conventions.md).
+[naming_conventions.md](/home/csw012/nexos/docs/naming_conventions.md).
 
 ## Core Rules
 

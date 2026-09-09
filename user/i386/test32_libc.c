@@ -177,6 +177,7 @@ int test32_libc_stdio_file_format_case(pid_t pid) {
                  (uint32_t)pid) <= 0) {
         return 43;
     }
+    (void)remove(stdio_path);
     stream = fopen(stdio_path, "w");
     if (stream == 0 ||
         fprintf(stream, "line:%d:%s\n", 32, "stdio") != 14 ||

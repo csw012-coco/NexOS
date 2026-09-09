@@ -20,7 +20,7 @@ enum bootx_memmap_type {
  *   PMM:               arg0=0              arg1=0          buffer=struct syscall_pmm_info*
  *   BLOCK:             arg0=index          arg1=0          buffer=struct syscall_block_info*
  *   PART:              arg0=disk_index     arg1=slot       buffer=struct syscall_partition_info*
- *   MOUNT:             arg0=index          arg1=0          buffer=struct syscall_mount_info*
+ *   MOUNT:             arg0=index          arg1=flags      buffer=struct syscall_mount_info*
  *   PROGRAM:           arg0=index          arg1=0          buffer=struct syscall_program_info*
  *   ROOT:              arg0=index          arg1=0          buffer=struct syscall_root_entry_info*
  *   ROOT_FIND:         arg0=user_name_addr arg1=0          buffer=struct syscall_root_entry_info*

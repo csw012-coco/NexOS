@@ -103,6 +103,21 @@ static void config_apply_pair(struct kernel_config *config, char *key, char *val
         if (config_parse_bool(value, &bool_value)) {
             config->serial_shell = bool_value;
         }
+        return;
+    }
+    if (streq(key, "virtual_tty_shells") ||
+        streq(key, "virtual.tty.shells") ||
+        streq(key, "tty.virtual.shells")) {
+        if (config_parse_bool(value, &bool_value)) {
+            config->virtual_tty_shells = bool_value;
+        }
+        return;
+    }
+    if (streq(key, "security.root_token") ||
+        streq(key, "root_token")) {
+        config_copy(config->security_root_token,
+                    value,
+                    sizeof(config->security_root_token));
     }
 }
 
@@ -165,6 +180,8 @@ void kernel_config_defaults(struct kernel_config *config) {
     config->ring3_smoke = 1u;
     config->mouse_cursor = 1u;
     config->serial_shell = 0u;
+    config->virtual_tty_shells = 0u;
+    config->security_root_token[0] = '\0';
     config->init_path[0] = '\0';
 }
 

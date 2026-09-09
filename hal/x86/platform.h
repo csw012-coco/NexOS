@@ -5,7 +5,7 @@
 #include "arch/x86/x86_64/gdt.h"
 #include "arch/x86/x86_64/idt.h"
 #include "arch/x86/common/io.h"
-#include "arch/x86/x86_64/paging.h"
+#include "arch/x86/x86_64/mm/paging.h"
 #include "arch/x86/x86_64/user.h"
 
 #include "hal/hal.h"

@@ -12,6 +12,30 @@
 #include "test32_pseudo.h"
 #include "test32_query.h"
 #include "test32_sys.h"
+#include "test32_sec.h"
+#include "test32_helpers.h"
+
+static int test32_strict_mm_case(void) {
+    static const struct test32_subtest tests[] = {
+        {TEST32_ELF_PATH " fork-cow-ownership", 0},
+        {TEST32_ELF_PATH " fork-cow-cleanup", 0},
+        {TEST32_ELF_PATH " fork-map-table", 0},
+        {TEST32_ELF_PATH " fork-mmap-exec", 0},
+        {TEST32_ELF_PATH " exec-fail-cleanup", 0},
+        {TEST32_ELF_PATH " shared-fault-cleanup", 0},
+        {TEST32_ELF_PATH " invalid-pointer-cleanup", 0},
+        {TEST32_ELF_PATH " shm-lifecycle", 0},
+    };
+    int rc;
+
+    rc = test32_run_subtests(tests,
+                             sizeof(tests) / sizeof(tests[0]),
+                             240);
+    if (rc != 0) {
+        return rc;
+    }
+    return test32_puts_pass("[test32] strict MM PASS", 241);
+}
 
 int main(int argc, char **argv) {
     char source[16];
@@ -22,7 +46,7 @@ int main(int argc, char **argv) {
         return test32_kill_child();
     }
     if (argc > 1 && strcmp(argv[1], "shm-child") == 0) {
-        return test32_shm_child();
+        return test32_shm_child(argc > 2 ? argv[2] : 0);
     }
     if (argc > 1 && strcmp(argv[1], "mmap-kill-child") == 0) {
         return test32_mmap_kill_child();
@@ -102,6 +126,15 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "shm-lifecycle") == 0) {
         return test32_shm_lifecycle_case();
     }
+    if (argc > 1 && strcmp(argv[1], "live-shm") == 0) {
+        return test32_live_shared_mmap_case();
+    }
+    if (argc > 1 && strcmp(argv[1], "strict-mm") == 0) {
+        return test32_strict_mm_case();
+    }
+    if (argc > 1 && strcmp(argv[1], "sec") == 0) {
+        return test32_sec_suite_case();
+    }
     if (puts("[test32] ELF32 C program entered Ring 3") == EOF) {
         return 10;
     }
@@ -143,11 +176,17 @@ int main(int argc, char **argv) {
     if ((fd = test32_proc_getpid_write_puts_case(pid, source)) != 0) {
         return fd;
     }
+    if ((fd = test32_proc_errno_case()) != 0) {
+        return fd;
+    }
 
     if ((fd = test32_fs_open_read_close_case()) != 0) {
         return fd;
     }
     if ((fd = test32_fs_create_truncate_case()) != 0) {
+        return fd;
+    }
+    if ((fd = test32_fs_fd_capability_case()) != 0) {
         return fd;
     }
 
@@ -165,7 +204,7 @@ int main(int argc, char **argv) {
     if ((fd = test32_proc_spawn_background_case()) != 0) {
         return fd;
     }
-    if ((fd = test32_proc_fork_surface_case()) != 0) {
+    if ((fd = test32_fork_case()) != 0) {
         return fd;
     }
 
@@ -186,21 +225,20 @@ int main(int argc, char **argv) {
     if ((fd = test32_mmap_shm_basic_case()) != 0) {
         return fd;
     }
-    if (test32_mmap_fault_cleanup_case() != 0) {
-        return 172;
-    }
-    if (test32_mmap_kill_cleanup_case() != 0) {
-        return 176;
-    }
-    if ((fd = test32_live_shared_mmap_case()) != 0) {
+    if ((fd = test32_mmap_fault_cleanup_case()) != 0) {
         return fd;
     }
-
+    if ((fd = test32_mmap_kill_cleanup_case()) != 0) {
+        return fd;
+    }
     if ((fd = test32_ipc_mq_sem_case()) != 0) {
         return fd;
     }
 
     if ((fd = test32_ticks_yield_sleep_case()) != 0) {
+        return fd;
+    }
+    if ((fd = test32_sec_suite_case()) != 0) {
         return fd;
     }
 

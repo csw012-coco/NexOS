@@ -23,15 +23,67 @@ static void write_process_state(uint32_t state) {
     write_str(process_state_name_local(state));
 }
 
-static void write_process_table_header(int jobs_view) {
+static void write_process_cap_names_local(uint32_t caps) {
+    int first = 1;
+
+    if (caps == 0u) {
+        write_str("none");
+        return;
+    }
+#define PROC_CAP_NAME(bit, name) \
+    do { \
+        if ((caps & (bit)) != 0u) { \
+            if (!first) { \
+                write_str(","); \
+            } \
+            write_str(name); \
+            first = 0; \
+        } \
+    } while (0)
+    PROC_CAP_NAME(SYS_PROC_CAP_POWER, "power");
+    PROC_CAP_NAME(SYS_PROC_CAP_RAW_BLOCK, "raw-block");
+    PROC_CAP_NAME(SYS_PROC_CAP_MOUNT, "mount");
+    PROC_CAP_NAME(SYS_PROC_CAP_SIGNAL, "signal");
+    PROC_CAP_NAME(SYS_PROC_CAP_GRANT, "grant");
+    PROC_CAP_NAME(SYS_PROC_CAP_AUDIO, "audio");
+    PROC_CAP_NAME(SYS_PROC_CAP_NET_RAW, "net-raw");
+    PROC_CAP_NAME(SYS_PROC_CAP_DISPLAY, "display");
+    PROC_CAP_NAME(SYS_PROC_CAP_INPUT, "input");
+    PROC_CAP_NAME(SYS_PROC_CAP_CLIPBOARD, "clipboard");
+    PROC_CAP_NAME(SYS_PROC_CAP_DEBUG, "debug");
+#undef PROC_CAP_NAME
+}
+
+static const char *process_user_name_local(uint32_t uid) {
+    if (uid == 0u) {
+        return "root";
+    }
+    if (uid == 1000u) {
+        return "user";
+    }
+    return "unknown";
+}
+
+static void write_process_table_header(int jobs_view, int caps_view, int user_view) {
     if (jobs_view) {
         write_str("SLOT PID   STATE      WAKE     NAME\n");
+        return;
+    }
+    if (caps_view) {
+        write_str("SLOT PID   STATE      EXIT IMAGE NAME CAPS       CAPNAMES\n");
+        return;
+    }
+    if (user_view) {
+        write_str("SLOT PID   UID  GID  USER     STATE      NAME\n");
         return;
     }
     write_str("SLOT PID   STATE      EXIT                         NAME\n");
 }
 
-static void write_process_info_line(const struct syscall_process_info *info, int jobs_view) {
+static void write_process_info_line(const struct syscall_process_info *info,
+                                    int jobs_view,
+                                    int caps_view,
+                                    int user_view) {
     if (jobs_view) {
         if (info->state == NEX_PROC_STATE_SLEEPING) {
             dprintf(STDOUT_FILENO,
@@ -49,6 +101,29 @@ static void write_process_info_line(const struct syscall_process_info *info, int
                     process_state_name_local(info->state),
                     info->name[0] != '\0' ? info->name : "(unnamed)");
         }
+    } else if (caps_view) {
+        dprintf(STDOUT_FILENO,
+                "%u %u %s %d %s %s ",
+                info->slot,
+                info->pid,
+                process_state_name_local(info->state),
+                info->exit_code,
+                info->image_kind == NEX_PROC_IMAGE_ELF ? "elf" : "none",
+                info->name[0] != '\0' ? info->name : "(unnamed)");
+        write_hex_u32(info->caps & SYS_PROC_CAP_ALL);
+        write_str(" ");
+        write_process_cap_names_local(info->caps & SYS_PROC_CAP_ALL);
+        write_str("\n");
+    } else if (user_view) {
+        dprintf(STDOUT_FILENO,
+                "%u %u %u %u %s %s %s\n",
+                info->slot,
+                info->pid,
+                info->uid,
+                info->gid,
+                process_user_name_local(info->uid),
+                process_state_name_local(info->state),
+                info->name[0] != '\0' ? info->name : "(unnamed)");
     } else {
         const char *reason = process_exit_reason_local(info->exit_code);
 
@@ -177,18 +252,94 @@ static void write_process_action_result(const char *label, uint32_t pid) {
     write_str("\n");
 }
 
-int cmd_ps(void) {
+static void write_jobctl_failure_local(const char *name, int rc) {
+    if (rc == -NEX_ERR_ACCES || rc == -NEX_ERR_PERM) {
+        (void)cmd_report_access_denied(
+            name,
+            "requires signal/job-control permission");
+        return;
+    }
+    write_err_str(name);
+    write_err_str(" failed rc=");
+    write_sdec((int32_t)rc);
+    write_err_str("\n");
+}
+
+int cmd_ps(int argc, char **argv) {
     struct syscall_process_info info;
+    int caps_view = 0;
+    int user_view = 0;
     uint32_t i;
 
+    if (argc > 2 ||
+        (argc == 2 &&
+         !streq_ignore_case_local(argv[1], "--caps") &&
+         !streq_ignore_case_local(argv[1], "-c") &&
+         !streq_ignore_case_local(argv[1], "--user") &&
+         !streq_ignore_case_local(argv[1], "-u"))) {
+        write_err_usage("ps", " [--caps|--user]\n");
+        return 1;
+    }
+    caps_view = argc == 2 &&
+                (streq_ignore_case_local(argv[1], "--caps") ||
+                 streq_ignore_case_local(argv[1], "-c"));
+    user_view = argc == 2 &&
+                (streq_ignore_case_local(argv[1], "--user") ||
+                 streq_ignore_case_local(argv[1], "-u"));
     write_str("process slots\n");
-    write_process_table_header(0);
+    write_process_table_header(0, caps_view, user_view);
     for (i = 0; i < NEX_PROC_SLOTS_MAX; i++) {
         if (proc_query(NEX_PROC_QUERY_ALL, i, &info) <= 0) {
             continue;
         }
-        write_process_info_line(&info, 0);
+        write_process_info_line(&info, 0, caps_view, user_view);
     }
+    return 0;
+}
+
+static int current_process_info_local(struct syscall_process_info *out) {
+    pid_t pid = getpid();
+
+    if (out == NULL || pid <= 0) {
+        return 0;
+    }
+    return find_process_info_by_pid((uint32_t)pid, out);
+}
+
+int cmd_id(int argc, char **argv) {
+    struct syscall_process_info info;
+
+    (void)argv;
+    if (argc != 1) {
+        write_err_usage("id", "\n");
+        return 1;
+    }
+    if (!current_process_info_local(&info)) {
+        write_err_str("id: current process not found\n");
+        return 1;
+    }
+    dprintf(STDOUT_FILENO,
+            "uid=%u(%s) gid=%u\n",
+            info.uid,
+            process_user_name_local(info.uid),
+            info.gid);
+    return 0;
+}
+
+int cmd_whoami(int argc, char **argv) {
+    struct syscall_process_info info;
+
+    (void)argv;
+    if (argc != 1) {
+        write_err_usage("whoami", "\n");
+        return 1;
+    }
+    if (!current_process_info_local(&info)) {
+        write_err_str("whoami: current process not found\n");
+        return 1;
+    }
+    write_str(process_user_name_local(info.uid));
+    write_str("\n");
     return 0;
 }
 
@@ -201,7 +352,7 @@ int cmd_jobs(void) {
     uint32_t i;
 
     write_str("background jobs\n");
-    write_process_table_header(1);
+    write_process_table_header(1, 0, 0);
     for (i = 0; i < NEX_PROC_SLOTS_MAX; i++) {
         if (proc_query(NEX_PROC_QUERY_JOBS, i, &info) <= 0) {
             continue;
@@ -214,7 +365,7 @@ int cmd_jobs(void) {
         } else if (info.state == NEX_PROC_STATE_STOPPED) {
             stopped++;
         }
-        write_process_info_line(&info, 1);
+        write_process_info_line(&info, 1, 0, 0);
     }
     write_str("jobs=");
     write_dec(count);
@@ -243,7 +394,7 @@ int cmd_wait(int argc, char **argv) {
         rc = wait(pid, &info);
     }
     if (rc <= 0) {
-        write_err_str("no exited process\n");
+        write_jobctl_failure_local("wait", rc);
         return 1;
     }
     write_str("wait: pid=");
@@ -325,10 +476,13 @@ int cmd_timeout(int argc, char **argv) {
         yield();
     }
 
-    if (kill(pid) > 0) {
+    rc = kill(pid);
+    if (rc > 0) {
         write_err_str("timeout: expired\n");
     } else {
-        write_err_str("timeout: expired (kill failed)\n");
+        write_err_str("timeout: expired (kill failed rc=");
+        write_sdec((int32_t)rc);
+        write_err_str(")\n");
     }
     return 1;
 }
@@ -344,7 +498,7 @@ int cmd_kill_like(int argc, char **argv, const char *name) {
     if (streq_local(name, "kill")) {
         rc = kill(pid);
         if (rc <= 0) {
-            write_err_str("kill failed\n");
+            write_jobctl_failure_local("kill", rc);
             return 1;
         }
         write_str("killed pid=");
@@ -355,7 +509,7 @@ int cmd_kill_like(int argc, char **argv, const char *name) {
     if (streq_local(name, "fg")) {
         rc = fg(pid);
         if (rc <= 0) {
-            write_err_str("fg failed\n");
+            write_jobctl_failure_local("fg", rc);
             return 1;
         }
         write_process_action_result("foreground pid=", pid);
@@ -363,7 +517,7 @@ int cmd_kill_like(int argc, char **argv, const char *name) {
     }
     rc = bg(pid);
     if (rc <= 0) {
-        write_err_str("bg failed\n");
+        write_jobctl_failure_local("bg", rc);
         return 1;
     }
     write_process_action_result("background pid=", pid);

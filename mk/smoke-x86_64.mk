@@ -22,6 +22,22 @@ $(X86_64_NEXBOX_FULL_SCRIPT): Makefile mk/smoke-x86_64.mk | $(BUILD)
 		printf '%s\n' '/cmd/nexbox echo nexbox64 || exit 1'; \
 		printf '%s\n' '/cmd/nexbox help || exit 1'; \
 		printf '%s\n' '/cmd/nexbox pwd || exit 1'; \
+		printf '%s\n' 'echo jt:begin || exit 1'; \
+		printf '%s\n' 'ls / || exit 1'; \
+		printf '%s\n' 'ls /cmd || exit 1'; \
+		printf '%s\n' 'jobctl_no_such || echo jt:ua || exit 1'; \
+		printf '%s\n' '없는명령 || echo jt:uu || exit 1'; \
+		printf '%s\n' 'kill 999999'; \
+		printf '%s\n' 'echo jt:kb || exit 1'; \
+		printf '%s\n' 'fg 999999'; \
+		printf '%s\n' 'echo jt:fb || exit 1'; \
+		printf '%s\n' 'bg 999999'; \
+		printf '%s\n' 'echo jt:bb || exit 1'; \
+		printf '%s\n' 'wait 999999'; \
+		printf '%s\n' 'echo jt:wb || exit 1'; \
+		printf '%s\n' 'sleep 1 &'; \
+		printf '%s\n' 'echo jt:bg || exit 1'; \
+		printf '%s\n' 'echo jt:PASS || exit 1'; \
 		printf '%s\n' '/system/script-smoke.sh direct || exit 1'; \
 		printf '%s\n' '/cmd/nexbox tty || exit 1'; \
 		printf '%s\n' '/cmd/nexbox env || exit 1'; \
@@ -83,7 +99,7 @@ $(X86_64_NEXBOX_FULL_BOOTX_CONFIG): $(X86_64_NEXBOX_FULL_ROOT) $(NXFS_TOOL) Make
 		printf '%s\n' 'KERNEL=BOOT/NEX.ELF'; \
 		printf '%s\n' 'MODULE=BOOT/RAMDISK.IMG'; \
 		printf '%s\n' 'MODULE=BOOT/FONT.HEX'; \
-		printf '%s\n' "CMDLINE=console=framebuffer video=1024x768x32 root=UUID=$$uuid arch=x86_64 init=/system/init"; \
+		printf '%s\n' "CMDLINE=console=framebuffer video=1024x768x32 root=UUID=$$uuid arch=x86_64 init=/system/init ioapic.irq=0 ioapic.irq=1"; \
 	} > $@
 
 $(X86_64_NEXBOX_FULL_IMAGE): $(IMAGE) $(X86_64_NEXBOX_FULL_ROOT) $(X86_64_NEXBOX_FULL_BOOTX_CONFIG) | $(IMAGE_DIR)
@@ -117,6 +133,18 @@ check-x86_64-nexbox-full: check-host-tools-qemu-x86_64 check-deps check-kernel $
 	$(Q)grep -q 'fb: batch smoke OK' $(X86_64_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'font: utf8/unifont check OK' $(X86_64_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'clipboard: utf8 roundtrip OK' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'jt:ua' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'jt:uu' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'kill failed rc=-' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'jt:kb' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'fg failed rc=-' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'jt:fb' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'bg failed rc=-' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'jt:bb' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'wait failed rc=-' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'jt:wb' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'jt:bg' $(X86_64_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'jt:PASS' $(X86_64_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'ed: editor ready' $(X86_64_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'vi: editor ready' $(X86_64_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'doomgeneric: smoke PASS frames=3' $(X86_64_NEXBOX_FULL_BOOT_LOG)

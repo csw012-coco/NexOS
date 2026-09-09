@@ -1,4 +1,5 @@
 #!/cmd/ush
 /cmd/nexbox echo "Switching root..."
-/cmd/nexbox switch_root /dev/root
-exec /system/init
+/cmd/nexbox mount -a && exec /system/init
+/cmd/nexbox echo "Root switch failed; entering recovery shell."
+exec /cmd/ush

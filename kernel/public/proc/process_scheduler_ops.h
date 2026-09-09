@@ -10,6 +10,11 @@ struct process_loaded_image {
     uint64_t stack;
     uint64_t root;
     const char *name;
+    uint32_t caps;
+    uint32_t uid;
+    uint32_t gid;
+    uint8_t caps_set;
+    uint8_t identity_set;
 };
 
 struct process_scheduler_ops {
@@ -39,6 +44,7 @@ struct process_scheduler_ops {
     int32_t (*kill)(uint32_t pid);
     int (*snapshot)(uint32_t task, struct process_snapshot *snapshot);
     int32_t (*reap_exited_pid)(uint32_t pid);
+    void (*set_console_handle)(void *handle);
 };
 
 void process_scheduler_ops_register(const struct process_scheduler_ops *ops);
@@ -79,3 +85,4 @@ int32_t process_scheduler_kill(uint32_t pid);
 int process_scheduler_snapshot(uint32_t task,
                                struct process_snapshot *snapshot);
 int32_t process_scheduler_reap_exited_pid(uint32_t pid);
+void process_scheduler_set_console_handle(void *handle);

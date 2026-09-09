@@ -7,6 +7,7 @@ void nxfs_mem_set(void *dest, uint8_t value, uint32_t size);
 uint8_t *nxfs_cache_get(struct nxfs_volume *vol, uint32_t block);
 void nxfs_cache_put(struct nxfs_volume *vol, uint32_t block, const uint8_t *data);
 void nxfs_cache_update(struct nxfs_volume *vol, uint32_t block, const uint8_t *data);
+void nxfs_cache_invalidate_all(struct nxfs_volume *vol);
 int nxfs_read_block(struct nxfs_volume *vol, uint32_t block, void *buffer);
 int nxfs_read_blocks(struct nxfs_volume *vol, uint32_t start_block, uint32_t count, void *buffer);
 int nxfs_write_block(struct nxfs_volume *vol, uint32_t block, const void *buffer);

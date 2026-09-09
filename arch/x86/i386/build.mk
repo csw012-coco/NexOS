@@ -21,6 +21,7 @@ I386_CMD_SUITE_WRAPPER_DIR := $(BUILD)/cmd-wrappers-i386
 I386_AUDIO_SMOKE_WAV := $(I386_BUILD)/audio-smoke.wav
 I386_BOOT_LOG := $(I386_BUILD)/boot-smoke.log
 I386_NEXBOX_FULL_BOOT_LOG := $(I386_BUILD)/nexbox32-full-smoke.log
+I386_STRICT_MM_BOOT_LOG := $(I386_BUILD)/strict-mm-smoke.log
 I386_GFX_EDITOR_BOOT_LOG := $(I386_BUILD)/gfx-editor-smoke.log
 I386_BACKEND_AUDIO_BOOT_LOG := $(I386_BUILD)/backend-audio-smoke.log
 I386_BACKEND_HDA_BOOT_LOG := $(I386_BUILD)/backend-hda-smoke.log

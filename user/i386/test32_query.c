@@ -62,7 +62,7 @@ int test32_query_syscalls_case(void) {
         part_info.part_index != 0u) {
         return 81;
     }
-    if (mount_query(0u, &mount_info) <= 0 ||
+    if (mount_query_space(0u, &mount_info) <= 0 ||
         mount_info.kind != SYS_MOUNT_INFO_FAT32 ||
         strcmp(mount_info.target, "boot") != 0 ||
         mount_info.space_known != 1u ||

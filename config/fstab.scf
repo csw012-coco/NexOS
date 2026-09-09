@@ -1,0 +1,13 @@
+# NexOS filesystem table
+#
+# mount.<order>=<source> <target> <type> <options>
+#
+# Supported types: auto, fat32, nxfs
+# Supported options: defaults, nofail, noauto
+# Entries are applied in ascending numeric order by "mount -a".
+#
+mount.10=root / nxfs defaults
+mount.20=ram /ram fat32 defaults
+mount.30=boot /boot fat32 nofail
+# mount.40=/dev/disk0p3 /home nxfs defaults
+# mount.50=/dev/disk1p1 /media/data auto nofail

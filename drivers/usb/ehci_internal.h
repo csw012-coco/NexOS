@@ -357,6 +357,7 @@ int ehci_msc_reset_recovery(struct ehci_msc_device *dev);
 struct ehci_msc_device *ehci_find_hub_by_addr(uint8_t address);
 int ehci_reset_device_port(struct ehci_msc_device *dev);
 int ehci_msc_hard_reset_recovery(struct ehci_msc_device *dev);
+int ehci_msc_reset_block_device(struct block_device *bdev);
 int ehci_msc_command_recover(struct ehci_msc_device *dev,
                              const uint8_t *cmd,
                              uint8_t cmd_len,

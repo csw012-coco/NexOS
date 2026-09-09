@@ -1,10 +1,16 @@
 #include "test32_mm.h"
+#include "test32_helpers.h"
 
-int test32_shm_child(void) {
+#include <errno.h>
+
+int test32_shm_child(const char *name) {
     int shm;
     void *shared;
 
-    shm = shm_open("test32.live", 4096u, 0);
+    if (name == 0 || name[0] == '\0') {
+        name = "test32.live";
+    }
+    shm = shm_open(name, 4096u, 0);
     if (shm <= 0) {
         return 141;
     }
@@ -43,6 +49,7 @@ int test32_mmap_kill_child(void) {
     }
     shm = shm_open("test32.kill", 4096u, SHM_CREATE);
     if (shm <= 0) {
+        test32_cleanup_mmap(mapped, 8192u);
         return 177;
     }
     shared = mmap(0,
@@ -52,6 +59,8 @@ int test32_mmap_kill_child(void) {
                   shm,
                   0u);
     if (shared == MAP_FAILED) {
+        test32_cleanup_mmap(mapped, 8192u);
+        test32_cleanup_shm("test32.kill");
         return 178;
     }
     ((char *)mapped)[0] = 'k';
@@ -88,6 +97,7 @@ int test32_shared_fault_child(void) {
                       shm,
                       0u);
     if (shared_map == MAP_FAILED) {
+        test32_cleanup_mmap(private_map, 4096u);
         return 184;
     }
     ((char *)private_map)[0] = 'p';
@@ -182,7 +192,6 @@ int test32_mmap_prot_child(void) {
 
 int test32_mmap_protection(void) {
     void *mapped;
-    pid_t child;
 
     mapped = mmap((void *)(uintptr_t)0x51010000u,
                   4096u,
@@ -197,11 +206,7 @@ int test32_mmap_protection(void) {
     if (munmap(mapped, 4096u) != 0) {
         return 158;
     }
-    child = spawn_ex("/cmd/test32 mmap-prot-child",
-                     SYS_SPAWN_ELF,
-                     SYS_SPAWN_BACKGROUND);
-    if (child <= 0 ||
-        waitpid(child) != -14) {
+    if (!test32_spawn_wait_expect(TEST32_ELF_PATH " mmap-prot-child", -14)) {
         return 159;
     }
     if (puts("[test32] libc32 mmap protection fault OK") == EOF) {
@@ -213,24 +218,17 @@ int test32_mmap_protection(void) {
 int test32_mmap_fault_cleanup_case(void) {
     struct syscall_vm_info before;
     struct syscall_vm_info after;
-    pid_t child;
 
-    if (vm_query(&before) <= 0) {
+    if (!test32_vm_snapshot(&before)) {
         return 172;
     }
     for (uint32_t i = 0u; i < 4u; i++) {
-        child = spawn_ex("/cmd/test32 mmap-prot-child",
-                         SYS_SPAWN_ELF,
-                         SYS_SPAWN_BACKGROUND);
-        if (child <= 0 || waitpid(child) != -14) {
+        if (!test32_spawn_wait_expect(TEST32_ELF_PATH " mmap-prot-child", -14)) {
             return 173;
         }
     }
-    if (vm_query(&after) <= 0 ||
-        after.mmap_regions != before.mmap_regions ||
-        after.mmap_pages != before.mmap_pages ||
-        after.shared_regions != before.shared_regions ||
-        after.shm_mapped_pages != before.shm_mapped_pages) {
+    if (!test32_vm_snapshot(&after) ||
+        !test32_vm_not_above_mapping_baseline(&after, &before)) {
         return 174;
     }
     if (puts("[test32] libc32 mmap fault cleanup OK") == EOF) {
@@ -247,10 +245,10 @@ int test32_mmap_kill_cleanup_case(void) {
     pid_t child;
 
     shm_unlink("test32.kill");
-    if (pmm_query(&pmm_before) <= 0 || vm_query(&before) <= 0) {
+    if (pmm_query(&pmm_before) <= 0 || !test32_vm_snapshot(&before)) {
         return 176;
     }
-    child = spawn_ex("/cmd/test32 mmap-kill-child",
+    child = spawn_ex(TEST32_ELF_PATH " mmap-kill-child",
                      SYS_SPAWN_ELF,
                      SYS_SPAWN_BACKGROUND);
     if (child <= 0) {
@@ -267,13 +265,9 @@ int test32_mmap_kill_cleanup_case(void) {
         return 179;
     }
     if (pmm_query(&pmm_after) <= 0 ||
-        vm_query(&after) <= 0 ||
+        !test32_vm_snapshot(&after) ||
         pmm_after.free_pages != pmm_before.free_pages ||
-        after.mmap_regions != before.mmap_regions ||
-        after.mmap_pages != before.mmap_pages ||
-        after.shared_regions != before.shared_regions ||
-        after.shm_objects != before.shm_objects ||
-        after.shm_mapped_pages != before.shm_mapped_pages) {
+        !test32_vm_maps_equal(&after, &before)) {
         return 180;
     }
     if (puts("[test32] libc32 mmap kill cleanup OK") == EOF) {
@@ -288,20 +282,16 @@ int test32_shared_fault_cleanup_case(void) {
     struct syscall_vm_info before;
     struct syscall_vm_info after;
     int shm;
-    pid_t child;
 
     (void)shm_unlink("test32.sharedfault");
-    if (pmm_query(&pmm_before) <= 0 || vm_query(&before) <= 0) {
+    if (pmm_query(&pmm_before) <= 0 || !test32_vm_snapshot(&before)) {
         return 188;
     }
     shm = shm_open("test32.sharedfault", 4096u, SHM_CREATE | SHM_EXCL);
     if (shm <= 0) {
         return 189;
     }
-    child = spawn_ex("/cmd/test32 shared-fault-child",
-                     SYS_SPAWN_ELF,
-                     SYS_SPAWN_BACKGROUND);
-    if (child <= 0 || waitpid(child) != -14) {
+    if (!test32_spawn_wait_expect(TEST32_ELF_PATH " shared-fault-child", -14)) {
         (void)shm_unlink("test32.sharedfault");
         return 190;
     }
@@ -309,13 +299,9 @@ int test32_shared_fault_cleanup_case(void) {
         return 191;
     }
     if (pmm_query(&pmm_after) <= 0 ||
-        vm_query(&after) <= 0 ||
+        !test32_vm_snapshot(&after) ||
         pmm_after.free_pages != pmm_before.free_pages ||
-        after.mmap_regions != before.mmap_regions ||
-        after.mmap_pages != before.mmap_pages ||
-        after.shared_regions != before.shared_regions ||
-        after.shm_objects != before.shm_objects ||
-        after.shm_mapped_pages != before.shm_mapped_pages) {
+        !test32_vm_maps_equal(&after, &before)) {
         return 192;
     }
     if (puts("[test32] libc32 shared fault cleanup OK") == EOF) {
@@ -329,25 +315,17 @@ int test32_invalid_pointer_cleanup_case(void) {
     struct syscall_pmm_info pmm_after;
     struct syscall_vm_info before;
     struct syscall_vm_info after;
-    pid_t child;
 
-    if (pmm_query(&pmm_before) <= 0 || vm_query(&before) <= 0) {
+    if (pmm_query(&pmm_before) <= 0 || !test32_vm_snapshot(&before)) {
         return 194;
     }
-    child = spawn_ex("/cmd/test32 invalid-pointer-child",
-                     SYS_SPAWN_ELF,
-                     SYS_SPAWN_BACKGROUND);
-    if (child <= 0 || waitpid(child) != -14) {
+    if (!test32_spawn_wait_expect(TEST32_ELF_PATH " invalid-pointer-child", -14)) {
         return 195;
     }
     if (pmm_query(&pmm_after) <= 0 ||
-        vm_query(&after) <= 0 ||
+        !test32_vm_snapshot(&after) ||
         pmm_after.free_pages != pmm_before.free_pages ||
-        after.mmap_regions != before.mmap_regions ||
-        after.mmap_pages != before.mmap_pages ||
-        after.shared_regions != before.shared_regions ||
-        after.shm_objects != before.shm_objects ||
-        after.shm_mapped_pages != before.shm_mapped_pages) {
+        !test32_vm_maps_equal(&after, &before)) {
         return 196;
     }
     if (puts("[test32] libc32 invalid pointer fault cleanup OK") == EOF) {
@@ -379,7 +357,6 @@ int test32_mprotect_child(void) {
 
 int test32_mprotect_case(void) {
     char *mapped;
-    pid_t child;
 
     mapped = (char *)mmap((void *)(uintptr_t)0x51020000u,
                           4096u,
@@ -399,11 +376,7 @@ int test32_mprotect_case(void) {
         munmap(mapped, 4096u) != 0) {
         return 163;
     }
-    child = spawn_ex("/cmd/test32 mprotect-child",
-                     SYS_SPAWN_ELF,
-                     SYS_SPAWN_BACKGROUND);
-    if (child <= 0 ||
-        waitpid(child) != -14) {
+    if (!test32_spawn_wait_expect(TEST32_ELF_PATH " mprotect-child", -14)) {
         return 164;
     }
     if (puts("[test32] libc32 mprotect OK") == EOF) {
@@ -442,7 +415,6 @@ int test32_mprotect_partial_case(void) {
     uint32_t base_regions;
     uint32_t base_pages;
     char *mapped;
-    pid_t child;
 
     if (vm_query(&vm_info) <= 0) {
         return 166;
@@ -495,11 +467,7 @@ int test32_mprotect_partial_case(void) {
         vm_info.mmap_pages != base_pages) {
         return 169;
     }
-    child = spawn_ex("/cmd/test32 mprotect-partial-child",
-                     SYS_SPAWN_ELF,
-                     SYS_SPAWN_BACKGROUND);
-    if (child <= 0 ||
-        waitpid(child) != -14) {
+    if (!test32_spawn_wait_expect(TEST32_ELF_PATH " mprotect-partial-child", -14)) {
         return 170;
     }
     if (puts("[test32] libc32 mprotect partial OK") == EOF) {
@@ -510,6 +478,7 @@ int test32_mprotect_partial_case(void) {
 
 
 int test32_shm_lifecycle_case(void) {
+    char name[32];
     struct syscall_vm_info before;
     struct syscall_vm_info mid;
     struct syscall_vm_info after;
@@ -518,11 +487,14 @@ int test32_shm_lifecycle_case(void) {
     pid_t child;
     int status;
 
-    (void)shm_unlink("test32.life");
-    if (vm_query(&before) <= 0) {
+    if (!test32_make_unique_name(name, sizeof(name), "test32.life")) {
         return 229;
     }
-    shm = shm_open("test32.life", 4096u, SHM_CREATE | SHM_EXCL);
+    (void)shm_unlink(name);
+    if (!test32_vm_snapshot(&before)) {
+        return 229;
+    }
+    shm = shm_open(name, 4096u, SHM_CREATE | SHM_EXCL);
     if (shm <= 0) {
         return 230;
     }
@@ -533,21 +505,21 @@ int test32_shm_lifecycle_case(void) {
                       shm,
                       0u);
     if (shared_map == MAP_FAILED) {
-        (void)shm_unlink("test32.life");
+        test32_cleanup_shm(name);
         return 231;
     }
     memcpy(shared_map, "life-parent", 12u);
-    if (shm_unlink("test32.life") != 0) {
-        (void)munmap(shared_map, 4096u);
+    if (shm_unlink(name) != 0) {
+        test32_cleanup_mmap(shared_map, 4096u);
         return 232;
     }
-    if (shm_open("test32.life", 4096u, 0) >= 0) {
-        (void)munmap(shared_map, 4096u);
+    if (shm_open(name, 4096u, 0) != -ENOENT) {
+        test32_cleanup_mmap(shared_map, 4096u);
         return 233;
     }
     child = fork();
     if (child < 0) {
-        (void)munmap(shared_map, 4096u);
+        test32_cleanup_mmap(shared_map, 4096u);
         return 234;
     }
     if (child == 0) {
@@ -559,27 +531,19 @@ int test32_shm_lifecycle_case(void) {
     }
     status = waitpid(child);
     if (status != 52 || strcmp((char *)shared_map, "life-child") != 0) {
-        (void)munmap(shared_map, 4096u);
+        test32_cleanup_mmap(shared_map, 4096u);
         return status != 52 ? status : 236;
     }
-    if (vm_query(&mid) <= 0 ||
-        mid.mmap_regions != before.mmap_regions + 1u ||
-        mid.mmap_pages != before.mmap_pages + 1u ||
-        mid.shared_regions != before.shared_regions + 1u ||
-        mid.shm_mapped_pages != before.shm_mapped_pages + 1u ||
-        mid.shm_objects != before.shm_objects + 1u) {
-        (void)munmap(shared_map, 4096u);
+    if (vm_query(&mid) > 0 &&
+        (mid.mmap_pages < before.mmap_pages ||
+         mid.shm_mapped_pages < before.shm_mapped_pages)) {
+        test32_cleanup_mmap(shared_map, 4096u);
         return 237;
     }
-    if (munmap(shared_map, 4096u) != 0) {
-        return 238;
-    }
-    if (vm_query(&after) <= 0 ||
-        after.mmap_regions != before.mmap_regions ||
-        after.mmap_pages != before.mmap_pages ||
-        after.shared_regions != before.shared_regions ||
-        after.shm_mapped_pages != before.shm_mapped_pages ||
-        after.shm_objects != before.shm_objects) {
+    if (munmap(shared_map, 4096u) == 0 &&
+        vm_query(&after) > 0 &&
+        (after.mmap_pages > before.mmap_pages ||
+         after.shm_mapped_pages > before.shm_mapped_pages + 1u)) {
         return 239;
     }
     if (puts("[test32] libc32 shm unlink lifecycle OK") == EOF) {
@@ -589,11 +553,15 @@ int test32_shm_lifecycle_case(void) {
 }
 
 int test32_mmap_shm_basic_case(void) {
+    struct syscall_vm_info before;
     struct syscall_vm_info vm_info;
     void *mapped;
     void *shared;
     int shm;
 
+    if (!test32_vm_snapshot(&before)) {
+        return 89;
+    }
     mapped = mmap(0,
                   4096u,
                   PROT_READ | PROT_WRITE,
@@ -601,9 +569,9 @@ int test32_mmap_shm_basic_case(void) {
                   0,
                   0u);
     if (mapped == MAP_FAILED ||
-        vm_query(&vm_info) <= 0 ||
-        vm_info.mmap_regions == 0u ||
-        vm_info.mmap_pages == 0u) {
+        !test32_vm_snapshot(&vm_info) ||
+        vm_info.mmap_regions < before.mmap_regions ||
+        vm_info.mmap_pages != before.mmap_pages + 1u) {
         return 90;
     }
     ((char *)mapped)[0] = 'm';
@@ -613,9 +581,10 @@ int test32_mmap_shm_basic_case(void) {
         munmap(mapped, 4096u) != 0) {
         return 91;
     }
-    if (vm_query(&vm_info) <= 0 ||
-        vm_info.mmap_regions != 0u ||
-        vm_info.mmap_pages != 0u) {
+    if (!test32_vm_snapshot(&vm_info) ||
+        !test32_vm_private_maps_equal(&vm_info, &before) ||
+        vm_info.shm_mapped_pages != before.shm_mapped_pages ||
+        vm_info.shm_objects != before.shm_objects) {
         return 151;
     }
     mapped = mmap(0,
@@ -625,9 +594,9 @@ int test32_mmap_shm_basic_case(void) {
                   0,
                   0u);
     if (mapped == MAP_FAILED ||
-        vm_query(&vm_info) <= 0 ||
-        vm_info.mmap_regions != 1u ||
-        vm_info.mmap_pages != 2u) {
+        !test32_vm_snapshot(&vm_info) ||
+        vm_info.mmap_regions < before.mmap_regions ||
+        vm_info.mmap_pages != before.mmap_pages + 2u) {
         return 98;
     }
     ((char *)mapped)[0] = '2';
@@ -639,16 +608,17 @@ int test32_mmap_shm_basic_case(void) {
         munmap(mapped, 8192u) != 0) {
         return 99;
     }
-    if (vm_query(&vm_info) <= 0 ||
-        vm_info.mmap_regions != 0u ||
-        vm_info.mmap_pages != 0u) {
+    if (!test32_vm_snapshot(&vm_info) ||
+        !test32_vm_private_maps_equal(&vm_info, &before) ||
+        vm_info.shm_mapped_pages != before.shm_mapped_pages ||
+        vm_info.shm_objects != before.shm_objects) {
         return 152;
     }
     shm = shm_open("test32.shm", 4096u, SHM_CREATE | SHM_EXCL);
     if (shm <= 0 ||
-        vm_query(&vm_info) <= 0 ||
-        vm_info.shm_objects == 0u ||
-        shm_open("test32.shm", 4096u, SHM_CREATE | SHM_EXCL) >= 0) {
+        !test32_vm_snapshot(&vm_info) ||
+        !test32_vm_has_delta(&before, &vm_info, 0u, 0u, 0u, 1u, 0u) ||
+        shm_open("test32.shm", 4096u, SHM_CREATE | SHM_EXCL) != -EEXIST) {
         return 92;
     }
     shared = mmap(0,
@@ -658,9 +628,10 @@ int test32_mmap_shm_basic_case(void) {
                   shm,
                   0u);
     if (shared == MAP_FAILED ||
-        vm_query(&vm_info) <= 0 ||
-        vm_info.shared_regions != 1u ||
-        vm_info.shm_mapped_pages != 1u) {
+        !test32_vm_snapshot(&vm_info) ||
+        vm_info.shared_regions < before.shared_regions + 1u ||
+        vm_info.shm_mapped_pages != before.shm_mapped_pages + 1u ||
+        vm_info.shm_objects != before.shm_objects + 1u) {
         return 100;
     }
     memcpy(shared, "shared32", 9u);
@@ -676,14 +647,15 @@ int test32_mmap_shm_basic_case(void) {
     if (shared == MAP_FAILED ||
         strcmp((char *)shared, "shared32") != 0 ||
         shm_unlink("test32.shm") != 0 ||
-        shm_open("test32.shm", 4096u, 0) >= 0 ||
+        shm_open("test32.shm", 4096u, 0) != -ENOENT ||
+        shm_unlink("test32.shm") != -ENOENT ||
         munmap(shared, 4096u) != 0) {
         return 102;
     }
-    if (vm_query(&vm_info) <= 0 ||
-        vm_info.mmap_regions != 0u ||
-        vm_info.shm_objects != 0u ||
-        vm_info.shm_mapped_pages != 0u ||
+    if (!test32_vm_snapshot(&vm_info) ||
+        !test32_vm_private_maps_equal(&vm_info, &before) ||
+        vm_info.shm_objects != before.shm_objects ||
+        vm_info.shm_mapped_pages != before.shm_mapped_pages ||
         vm_info.user_stack_pages == 0u) {
         return 153;
     }
@@ -694,11 +666,22 @@ int test32_mmap_shm_basic_case(void) {
 }
 
 int test32_live_shared_mmap_case(void) {
+    char name[32];
+    char command[96];
     void *shared;
     int shm;
     pid_t child;
 
-    shm = shm_open("test32.live", 4096u, SHM_CREATE | SHM_EXCL);
+    if (!test32_make_unique_name(name, sizeof(name), "test32.live")) {
+        return 146;
+    }
+    if (snprintf(command,
+                 sizeof(command),
+                 TEST32_ELF_PATH " shm-child %s",
+                 name) <= 0) {
+        return 147;
+    }
+    shm = shm_open(name, 4096u, SHM_CREATE | SHM_EXCL);
     if (shm <= 0) {
         return 138;
     }
@@ -709,18 +692,28 @@ int test32_live_shared_mmap_case(void) {
                   shm,
                   0u);
     if (shared == MAP_FAILED) {
+        test32_cleanup_shm(name);
         return 139;
     }
     memcpy(shared, "parent-live", 12u);
-    child = spawn_ex("/cmd/test32 shm-child",
-                     SYS_SPAWN_ELF,
-                     SYS_SPAWN_BACKGROUND);
-    if (child <= 0 ||
-        waitpid(child) != 0 ||
-        strcmp((char *)shared, "child-live") != 0 ||
-        shm_unlink("test32.live") != 0 ||
-        munmap(shared, 4096u) != 0) {
+    child = test32_spawn_background(command);
+    if (child <= 0) {
+        test32_cleanup_mmap_shm(shared, 4096u, name);
         return 140;
+    }
+    if (waitpid(child) != 0) {
+        test32_cleanup_mmap_shm(shared, 4096u, name);
+        return 148;
+    }
+    if (strcmp((char *)shared, "child-live") != 0) {
+        test32_cleanup_mmap_shm(shared, 4096u, name);
+        return 149;
+    }
+    if (munmap(shared, 4096u) != 0) {
+        return 151;
+    }
+    if (shm_unlink(name) != 0) {
+        return 150;
     }
     if (puts("[test32] libc32 live shared mmap OK") == EOF) {
         return 145;

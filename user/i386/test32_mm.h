@@ -2,7 +2,7 @@
 
 #include <nlibc.h>
 
-int test32_shm_child(void);
+int test32_shm_child(const char *name);
 int test32_mmap_kill_child(void);
 int test32_shared_fault_child(void);
 int test32_invalid_pointer_child(void);

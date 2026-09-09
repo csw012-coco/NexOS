@@ -16,11 +16,13 @@
 enum {
     XHCI_PAGE_SIZE = 4096u,
     XHCI_SECTOR_SIZE = 512u,
-    XHCI_MSC_READAHEAD_SECTORS = XHCI_PAGE_SIZE / XHCI_SECTOR_SIZE,
+    XHCI_MSC_DMA_GUARD_SIZE = 64u,
+    XHCI_MSC_DMA_PAYLOAD_MAX = XHCI_PAGE_SIZE - (XHCI_MSC_DMA_GUARD_SIZE * 2u),
+    XHCI_MSC_READAHEAD_SECTORS = XHCI_MSC_DMA_PAYLOAD_MAX / XHCI_SECTOR_SIZE,
     XHCI_TRB_SIZE = 16u,
     XHCI_RING_TRBS = XHCI_PAGE_SIZE / XHCI_TRB_SIZE,
     XHCI_ERST_ENTRIES = 1u,
-    XHCI_MAX_SCRATCHPADS = 32u,
+    XHCI_MAX_SCRATCHPADS = 512u,
     XHCI_MAX_CONTROLLERS = 4u,
     XHCI_MAX_ENUM_DEVICES = 32u,
     XHCI_MAX_ROOT_PORTS = 256u,
@@ -53,6 +55,8 @@ enum {
     XHCI_USBCMD_HCRST = 1u << 1,
     XHCI_USBCMD_INTE = 1u << 2,
     XHCI_USBSTS_HCH = 1u << 0,
+    XHCI_USBSTS_EINT = 1u << 3,
+    XHCI_USBSTS_PCD = 1u << 4,
     XHCI_USBSTS_CNR = 1u << 11,
 
     XHCI_OP_USBCMD = 0x00u,
@@ -117,12 +121,14 @@ enum {
     XHCI_TRB_STATUS_STAGE = 4u,
     XHCI_TRB_NORMAL = 1u,
     XHCI_TRB_ENABLE_SLOT = 9u,
+    XHCI_TRB_DISABLE_SLOT = 10u,
     XHCI_TRB_ADDRESS_DEVICE = 11u,
     XHCI_TRB_CONFIGURE_ENDPOINT = 12u,
     XHCI_TRB_EVALUATE_CONTEXT = 13u,
     XHCI_TRB_RESET_ENDPOINT = 14u,
     XHCI_TRB_STOP_ENDPOINT = 15u,
     XHCI_TRB_SET_TR_DEQUEUE = 16u,
+    XHCI_TRB_RESET_DEVICE = 17u,
     XHCI_TRB_TRANSFER_EVENT = 32u,
     XHCI_TRB_COMMAND_COMPLETION = 33u,
 
@@ -130,6 +136,8 @@ enum {
     XHCI_CC_STALL_ERROR = 6u,
     XHCI_CC_SHORT_PACKET = 13u,
     XHCI_CC_CONTEXT_STATE_ERROR = 19u,
+    XHCI_CC_STOPPED = 26u,
+    XHCI_CC_STOPPED_LENGTH_INVALID = 27u,
 
     XHCI_EP_STATE_DISABLED = 0u,
     XHCI_EP_STATE_RUNNING = 1u,
@@ -152,6 +160,7 @@ enum {
     USB_REQ_GET_STATUS = 0x00u,
     USB_REQ_CLEAR_FEATURE = 0x01u,
     USB_REQ_SET_FEATURE = 0x03u,
+    USB_REQ_SET_HUB_DEPTH = 0x0cu,
     USB_REQ_GET_MAX_LUN = 0xfeu,
     USB_REQ_BULK_ONLY_RESET = 0xffu,
     USB_REQ_GET_DESCRIPTOR = 0x06u,
@@ -181,11 +190,19 @@ enum {
     USB_HUB_PORT_POWER = 1u << 8,
     USB_HUB_PORT_LOW_SPEED = 1u << 9,
     USB_HUB_PORT_HIGH_SPEED = 1u << 10,
+    USB_SS_HUB_PORT_LINK_STATE = 0x01e0u,
+    USB_SS_HUB_PORT_POWER = 1u << 9,
+    USB_SS_HUB_CHANGE_BH_RESET = 1u << 5,
+    USB_SS_HUB_CHANGE_LINK_STATE = 1u << 6,
+    USB_SS_HUB_CHANGE_CONFIG_ERROR = 1u << 7,
     USB_HUB_FEATURE_PORT_RESET = 4u,
     USB_HUB_FEATURE_PORT_POWER = 8u,
     USB_HUB_FEATURE_C_PORT_CONNECTION = 16u,
     USB_HUB_FEATURE_C_PORT_ENABLE = 17u,
     USB_HUB_FEATURE_C_PORT_RESET = 20u,
+    USB_HUB_FEATURE_C_PORT_LINK_STATE = 25u,
+    USB_HUB_FEATURE_C_PORT_CONFIG_ERROR = 26u,
+    USB_HUB_FEATURE_C_BH_PORT_RESET = 29u,
     USB_FEATURE_ENDPOINT_HALT = 0u,
 
     MSC_CBW_SIGNATURE = 0x43425355u,
@@ -197,7 +214,10 @@ enum {
     SCSI_READ_CAPACITY_10 = 0x25u,
     SCSI_READ_10 = 0x28u,
     SCSI_WRITE_10 = 0x2au,
-    SCSI_SYNCHRONIZE_CACHE_10 = 0x35u
+    SCSI_SYNCHRONIZE_CACHE_10 = 0x35u,
+    SCSI_READ_16 = 0x88u,
+    SCSI_WRITE_16 = 0x8au,
+    SCSI_READ_CAPACITY_16 = 0x9eu
 };
 
 struct xhci_trb {
@@ -246,6 +266,7 @@ struct xhci_state {
 
 struct xhci_enum_device {
     char name[12];
+    const char *enum_failure;
     uint8_t used;
     uint8_t controller_index;
     uint8_t slot_id;
@@ -254,14 +275,27 @@ struct xhci_enum_device {
     uint8_t route_depth;
     uint8_t parent_slot_id;
     uint8_t parent_port;
+    uint8_t tt_hub_slot_id;
+    uint8_t tt_port;
+    uint8_t tt_think_time;
     uint8_t hub_port_count;
+    uint8_t hub_tt_think_time;
     uint8_t configuration;
     uint8_t msc_interface_number;
     uint8_t msc_lun;
     uint8_t max_lun;
+    uint8_t msc_offline;
+    uint8_t msc_transport_failure_logged;
+    uint8_t msc_transport_error_count;
+    uint8_t msc_recovery_failure_count;
+    uint8_t msc_csw_stall_count;
+    uint8_t msc_csw_stall_reset_due;
+    uint8_t msc_sync_cache_stall_count;
     uint8_t last_msc_phase;
     uint8_t last_msc_status;
+    uint8_t last_msc_csw_stalled;
     uint8_t last_bulk_completion;
+    uint8_t last_bulk_epid;
     uint8_t last_sense_key;
     uint8_t last_sense_asc;
     uint8_t last_sense_ascq;
@@ -278,7 +312,26 @@ struct xhci_enum_device {
     uint32_t bulk_out_enqueue;
     uint8_t bulk_in_cycle;
     uint8_t bulk_out_cycle;
+    uint32_t msc_next_generation;
+    uint32_t last_bulk_index;
+    uint32_t last_bulk_generation;
+    uint32_t last_bulk_requested;
+    uint32_t last_bulk_actual;
+    uint32_t last_bulk_residual;
+    uint64_t last_bulk_trb_phys;
+    uint64_t last_bulk_buffer_phys;
+    uint64_t last_bulk_trb_parameter;
+    uint32_t last_bulk_trb_status;
+    uint32_t last_bulk_trb_control;
+    uint32_t bulk_in_ring_epoch;
+    uint32_t bulk_out_ring_epoch;
+    uint32_t bulk_in_meta_generation[XHCI_RING_TRBS];
+    uint32_t bulk_out_meta_generation[XHCI_RING_TRBS];
+    uint8_t bulk_in_meta_active[XHCI_RING_TRBS];
+    uint8_t bulk_out_meta_active[XHCI_RING_TRBS];
     uint32_t tag;
+    uint32_t msc_single_read_until;
+    uint32_t msc_sync_cache_soft_until;
     uint32_t last_msc_residue;
     uint64_t sector_count;
     uint64_t input_context_phys;
@@ -301,6 +354,10 @@ struct xhci_enum_device {
     uint64_t read_cache_lba;
     uint8_t read_cache_count;
     uint8_t read_cache_valid;
+    uint32_t hub_port_retry_after[XHCI_MAX_HUB_PORTS + 1u];
+    uint32_t hub_port_failure_sig[XHCI_MAX_HUB_PORTS + 1u];
+    uint8_t hub_port_failure_latched[XHCI_MAX_HUB_PORTS + 1u];
+    uint8_t hub_port_disconnect_pending[XHCI_MAX_HUB_PORTS + 1u];
     struct xhci_trb *ep0_ring;
     struct xhci_trb *bulk_in_ring;
     struct xhci_trb *bulk_out_ring;
@@ -335,6 +392,7 @@ struct xhci_hid_keyboard {
     uint16_t interrupt_in_mps;
     uint64_t interrupt_in_ring_phys;
     uint64_t report_phys;
+    uint64_t interrupt_pending_trb_phys;
     struct xhci_trb *interrupt_in_ring;
     uint8_t *report;
     uint32_t interrupt_in_enqueue;
@@ -390,14 +448,40 @@ int xhci_alloc_page(uint64_t *phys_out, void **virt_out);
 int xhci_alloc_core_rings(uint32_t scratchpads);
 int xhci_alloc_enum_device(struct xhci_enum_device *dev);
 int xhci_alloc_msc_resources(struct xhci_enum_device *dev);
+void xhci_release_msc_resources(struct xhci_enum_device *dev);
 int xhci_alloc_hid_keyboard_resources(struct xhci_hid_keyboard *kbd);
 struct xhci_enum_device *xhci_alloc_device_record(void);
+void xhci_release_enum_device_resources(struct xhci_enum_device *dev);
+const char *xhci_enum_failure_reason(const struct xhci_enum_device *dev);
+int xhci_command_backoff_active(void);
+void xhci_disable_device_slot(struct xhci_enum_device *dev);
+void xhci_service_deferred_slot_disables(void);
 
 int xhci_wait_transfer_event_spins(uint8_t slot_id,
                                    uint8_t endpoint_id,
                                    uint32_t *completion_out,
                                    uint64_t expected_trb_phys,
                                    uint32_t max_spins);
+int xhci_wait_transfer_event_generation_spins(struct xhci_enum_device *dev,
+                                              uint8_t slot_id,
+                                              uint8_t endpoint_id,
+                                              uint32_t *completion_out,
+                                              uint32_t *residual_out,
+                                              uint64_t expected_trb_phys,
+                                              uint32_t expected_index,
+                                              uint32_t expected_generation,
+                                              uint32_t max_spins);
+int xhci_wait_transfer_event_generation_ms(struct xhci_enum_device *dev,
+                                           uint8_t slot_id,
+                                           uint8_t endpoint_id,
+                                           uint32_t *completion_out,
+                                           uint32_t *residual_out,
+                                           uint64_t expected_trb_phys,
+                                           uint32_t expected_index,
+                                           uint32_t expected_generation,
+                                           uint32_t timeout_ms);
+void xhci_drain_transfer_events(uint8_t slot_id, uint8_t endpoint_id, uint32_t max_events);
+void xhci_forget_deferred_transfer_events(uint8_t slot_id, uint8_t endpoint_id);
 int xhci_command_context(uint8_t command_type, struct xhci_enum_device *dev);
 uint64_t xhci_transfer_ring_trb(struct xhci_trb *ring,
                                 uint64_t ring_phys,
@@ -406,6 +490,13 @@ uint64_t xhci_transfer_ring_trb(struct xhci_trb *ring,
                                 uint64_t parameter,
                                 uint32_t status,
                                 uint32_t control);
+uint8_t xhci_endpoint_state(struct xhci_enum_device *dev, uint8_t endpoint_id);
+int xhci_recover_endpoint_ring(struct xhci_enum_device *dev,
+                               uint8_t endpoint_id,
+                               struct xhci_trb *ring,
+                               uint64_t ring_phys,
+                               uint32_t *enqueue,
+                               uint8_t *cycle);
 int xhci_control_transfer(struct xhci_enum_device *dev,
                           uint8_t request_type,
                           uint8_t request,
@@ -428,6 +519,25 @@ int xhci_msc_command(struct xhci_enum_device *dev,
                      void *buffer,
                      uint32_t data_len,
                      uint8_t data_in);
+int xhci_msc_command_recover(struct xhci_enum_device *dev,
+                             const uint8_t *cmd,
+                             uint8_t cmd_len,
+                             void *buffer,
+                             uint32_t data_len,
+                             uint8_t data_in);
+int xhci_msc_reset_block_device(struct block_device *bdev);
+int xhci_msc_recover_transport_now(struct xhci_enum_device *dev,
+                                    uint8_t op,
+                                    const char *phase);
+int xhci_msc_soft_recover_transport_now(struct xhci_enum_device *dev,
+                                         uint8_t op,
+                                         const char *phase);
+int xhci_msc_sync_cache_soft_allowed(struct xhci_enum_device *dev);
+int xhci_recover_parent_hub_port(struct xhci_enum_device *dev);
+int xhci_reenumerate_and_rebind_blockdev(struct xhci_enum_device *dev);
+int xhci_msc_rebind_blockdev(struct xhci_enum_device *old_dev,
+                             struct xhci_enum_device *fresh_dev);
+int xhci_msc_buffer_has_transport_signature(const uint8_t *data);
 int xhci_msc_request_sense(struct xhci_enum_device *dev);
 int xhci_msc_medium_not_present(const struct xhci_enum_device *dev);
 void xhci_msc_retry_delay(uint8_t failed_phase, uint8_t failed_status);
@@ -436,7 +546,10 @@ int xhci_config_has_hub_interface(const uint8_t *cfg, uint32_t length);
 void xhci_probe_hub(struct xhci_enum_device *dev, const uint8_t *cfg, uint16_t cfg_len);
 void xhci_enumerate_connected_ports(void);
 void xhci_hotplug_poll(void);
-int xhci_hid_defer_transfer_event(uint8_t slot_id, uint8_t endpoint_id, uint32_t completion);
+int xhci_hid_defer_transfer_event(uint8_t slot_id,
+                                  uint8_t endpoint_id,
+                                  uint32_t completion,
+                                  uint64_t trb_phys);
 void xhci_hid_release_all_keys(struct xhci_hid_keyboard *kbd);
 int xhci_hid_pop_event(struct keyboard_event *out);
 int xhci_hid_poll_interrupt_report(struct xhci_hid_keyboard *kbd, uint8_t report[8]);

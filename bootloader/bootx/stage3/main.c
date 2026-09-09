@@ -2,10 +2,6 @@
 
 #define MAX_MENU_ENTRIES 8
 #define BOOTX_PATH_MAX 64
-#define MENU_MARQUEE_PAUSE_FRAMES 8u
-#define MENU_MARQUEE_MIN_OVERFLOW 4u
-#define MENU_MARQUEE_STEP_USEC 250000u
-#define PIT_INPUT_HZ 1193182u
 
 struct menu_entry {
     char label[32];
@@ -78,22 +74,26 @@ static char *trim_left(char *line) {
     return line;
 }
 
+static void strip_comment(char *line) {
+    int in_quote = 0;
+
+    while (*line != '\0') {
+        if (*line == '"') {
+            in_quote = !in_quote;
+        } else if (*line == '#' && !in_quote) {
+            *line = '\0';
+            return;
+        }
+        line++;
+    }
+}
+
 static void init_entry(struct menu_entry *entry) {
     memset(entry, 0, sizeof(*entry));
 }
 
 static void write_line_at(uint16_t row, uint16_t col, uint8_t color, const char *text) {
     console_write_at(row, col, color, text);
-}
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t value;
-    __asm__ __volatile__("inb %1, %0" : "=a"(value) : "Nd"(port));
-    return value;
-}
-
-static inline void outb(uint16_t port, uint8_t value) {
-    __asm__ __volatile__("outb %0, %1" : : "a"(value), "Nd"(port));
 }
 
 static void write_line_clipped_at(uint16_t row, uint16_t col, uint8_t color, const char *text, uint16_t width) {
@@ -112,42 +112,6 @@ static void write_line_clipped_at(uint16_t row, uint16_t col, uint8_t color, con
         buffer[width - 2] = '.';
         buffer[width - 1] = '.';
         i = width;
-    }
-    while (i < width) {
-        buffer[i++] = ' ';
-    }
-    buffer[width] = '\0';
-    write_line_at(row, col, color, buffer);
-}
-
-static void write_line_marquee_at(uint16_t row, uint16_t col, uint8_t color,
-                                  const char *text, uint16_t width, uint32_t phase) {
-    char buffer[81];
-    size_t len = strlen(text);
-    uint32_t offset = 0;
-    uint16_t i = 0;
-
-    if (width >= sizeof(buffer)) {
-        width = sizeof(buffer) - 1;
-    }
-
-    if (len > (size_t)width + MENU_MARQUEE_MIN_OVERFLOW) {
-        uint32_t max_offset = (uint32_t)(len - width);
-        uint32_t cycle = max_offset + MENU_MARQUEE_PAUSE_FRAMES * 2u;
-        uint32_t pos = phase % cycle;
-
-        if (pos < MENU_MARQUEE_PAUSE_FRAMES) {
-            offset = 0;
-        } else if (pos < MENU_MARQUEE_PAUSE_FRAMES + max_offset) {
-            offset = pos - MENU_MARQUEE_PAUSE_FRAMES;
-        } else {
-            offset = max_offset;
-        }
-    }
-
-    while (i < width && text[offset + i] != '\0') {
-        buffer[i] = text[offset + i];
-        i++;
     }
     while (i < width) {
         buffer[i++] = ' ';
@@ -206,111 +170,63 @@ static void draw_hline(uint16_t row, uint16_t col, uint16_t width, uint8_t color
     write_line_at(row, col, color, text);
 }
 
-static void render_entry_info(uint32_t selected, uint32_t marquee_phase) {
-    const uint16_t side_col = 56;
-    const uint16_t side_width = 22;
-    const uint16_t side_value_col = side_col + 7;
+static void write_cp437_at(uint16_t row, uint16_t col, uint8_t color, uint8_t ch) {
+    char text[2];
 
-    write_line_at(8, side_col + 1, 0x07, "label:");
-    write_line_marquee_at(8, side_value_col, 0x0F, menu_entries[selected].label, side_width - 8, marquee_phase);
-    write_line_at(10, side_col + 1, 0x07, "kernel:");
-    write_line_marquee_at(10, side_value_col + 1, 0x0F, menu_entries[selected].kernel, side_width - 9, marquee_phase);
-    write_line_at(12, side_col + 1, 0x07, "cmdline:");
-    write_line_marquee_at(13, side_col + 1, 0x0F,
-                          menu_entries[selected].cmdline[0] ? menu_entries[selected].cmdline : "(empty)",
-                          side_width - 2, marquee_phase);
-    write_line_at(15, side_col + 1, 0x07, "modules:");
-    if (menu_entries[selected].module_count != 0) {
-        for (uint32_t i = 0; i < menu_entries[selected].module_count && i < 3; i++) {
-            write_line_marquee_at((uint16_t)(16 + i), side_col + 3, 0x0F,
-                                  menu_entries[selected].modules[i], side_width - 4, marquee_phase);
-        }
-    } else {
-        write_line_at(16, side_col + 3, 0x08, "none");
+    text[0] = (char)ch;
+    text[1] = '\0';
+    write_line_at(row, col, color, text);
+}
+
+static void draw_menu_border(uint16_t row, uint16_t col, uint16_t width, uint16_t height) {
+    const uint8_t top_left = 0xDA;
+    const uint8_t top_right = 0xBF;
+    const uint8_t bottom_left = 0xC0;
+    const uint8_t bottom_right = 0xD9;
+    const uint8_t horizontal = 0xC4;
+    const uint8_t vertical = 0xB3;
+
+    draw_hline(row, col, width, 0x0F, (char)horizontal);
+    draw_hline((uint16_t)(row + height - 1), col, width, 0x0F, (char)horizontal);
+
+    write_cp437_at(row, col, 0x0F, top_left);
+    write_cp437_at(row, (uint16_t)(col + width - 1), 0x0F, top_right);
+    write_cp437_at((uint16_t)(row + height - 1), col, 0x0F, bottom_left);
+    write_cp437_at((uint16_t)(row + height - 1), (uint16_t)(col + width - 1), 0x0F, bottom_right);
+
+    for (uint16_t i = 1; i + 1 < height; i++) {
+        write_cp437_at((uint16_t)(row + i), col, 0x0F, vertical);
+        write_cp437_at((uint16_t)(row + i), (uint16_t)(col + width - 1), 0x0F, vertical);
     }
 }
 
-static void render_menu(uint32_t selected, uint32_t marquee_phase) {
-    uint16_t row = 0;
-    const uint16_t list_width = 52;
-    const uint16_t side_col = 56;
-    const uint16_t side_width = 22;
+static void render_menu(uint32_t selected) {
+    const uint16_t box_width = 48;
+    const uint16_t box_height = (uint16_t)(menu_count + 2);
+    const uint16_t box_col = (80 - box_width) / 2;
+    const uint16_t box_row = (25 - box_height) / 2;
+    const uint16_t inner_col = box_col + 1;
+    const uint16_t inner_width = box_width - 2;
+    const uint16_t label_col = box_col + 2;
+    const uint16_t label_width = box_width - 4;
 
     console_set_color(0x01);
     console_clear();
-
-    draw_hline(row, 0, 80, 0x70, ' ');
-    write_line_at(row, 2, 0x70, "boot/x loader");
-    write_line_at(row, 62, 0x70, "BIOS x86");
-    row += 2;
-
-    write_line_at(row++, 2, 0x0F, "Select a kernel image");
-    write_line_at(row++, 2, 0x07, "Arrow keys or W/S move, Enter boots.");
-    row++;
+    write_line_at(0, 0, 0x0F, "janus");
+    draw_menu_border(box_row, box_col, box_width, box_height);
 
     for (uint32_t i = 0; i < menu_count; i++) {
+        uint16_t row = (uint16_t)(box_row + 1 + i);
         uint8_t line_color = (i == selected) ? 0x70 : 0x0F;
-        uint8_t meta_color = (i == selected) ? 0x07 : 0x08;
 
-        draw_hline(row, 2, list_width, line_color, ' ');
-        write_line_at(row, 4, line_color, i == selected ? ">" : " ");
-        if (i < 9) {
-            char index_text[3];
-            index_text[0] = (char)('1' + i);
-            index_text[1] = '.';
-            index_text[2] = '\0';
-            write_line_at(row, 6, line_color, index_text);
+        if (i == selected) {
+            draw_hline(row, inner_col, inner_width, line_color, ' ');
+        } else {
+            draw_hline(row, inner_col, inner_width, 0x01, ' ');
         }
-        write_line_clipped_at(row, 9, line_color, menu_entries[i].label, list_width - 9);
-        row++;
 
-        draw_hline(row, 2, list_width, meta_color, ' ');
-        write_line_at(row, 6, meta_color, "kernel:");
-        write_line_clipped_at(row, 14, meta_color, menu_entries[i].kernel, 24);
-        if (menu_entries[i].module_count != 0) {
-            write_line_at(row, 28, meta_color, "modules:");
-            if (menu_entries[i].module_count == 1) {
-                write_line_at(row, 37, meta_color, "1");
-            } else if (menu_entries[i].module_count == 2) {
-                write_line_at(row, 37, meta_color, "2");
-            } else {
-                write_line_at(row, 37, meta_color, "3+");
-            }
-        }
-        row += 2;
+        write_line_clipped_at(row, label_col, line_color, menu_entries[i].label, label_width);
     }
-
-    draw_hline(6, side_col, side_width, 0x70, ' ');
-    write_line_at(6, side_col + 3, 0x70, "entry info");
-    draw_hline(7, side_col, side_width, 0x08, ' ');
-    draw_hline(8, side_col, side_width, 0x01, ' ');
-    draw_hline(9, side_col, side_width, 0x01, ' ');
-    draw_hline(10, side_col, side_width, 0x01, ' ');
-    draw_hline(11, side_col, side_width, 0x01, ' ');
-    draw_hline(12, side_col, side_width, 0x01, ' ');
-    draw_hline(13, side_col, side_width, 0x01, ' ');
-    draw_hline(14, side_col, side_width, 0x01, ' ');
-    draw_hline(15, side_col, side_width, 0x01, ' ');
-    draw_hline(16, side_col, side_width, 0x01, ' ');
-    draw_hline(17, side_col, side_width, 0x01, ' ');
-    draw_hline(18, side_col, side_width, 0x01, ' ');
-    render_entry_info(selected, marquee_phase);
-
-    draw_hline(22, 0, 80, 0x70, ' ');
-    write_line_at(22, 2, 0x70, "Enter boot   Up/Down or W/S move   1-9 quick select");
-    write_line_at(24, 2, 0x08, "boot/x protocol v2  higher-half ELF64 / FAT16 / FAT32");
-}
-
-static uint16_t read_pit_counter(void) {
-    outb(0x43, 0x00);
-    uint8_t low = inb(0x40);
-    uint8_t high = inb(0x40);
-
-    return (uint16_t)low | ((uint16_t)high << 8);
-}
-
-static uint32_t marquee_step_pit_counts(void) {
-    return (uint32_t)(((uint64_t)PIT_INPUT_HZ * MENU_MARQUEE_STEP_USEC) / 1000000ull);
 }
 
 static void set_default_menu(void) {
@@ -321,8 +237,135 @@ static void set_default_menu(void) {
     copy_string(menu_entries[0].cmdline, "console=text demo=1", sizeof(menu_entries[0].cmdline));
 }
 
+static int read_token(char **cursor, char *out, size_t limit) {
+    char *cur = *cursor;
+    size_t i = 0;
+    int quoted = 0;
+
+    while (*cur == ' ' || *cur == '\t') {
+        cur++;
+    }
+    if (*cur == '\0') {
+        *cursor = cur;
+        if (limit != 0) {
+            out[0] = '\0';
+        }
+        return 0;
+    }
+
+    if (*cur == '"') {
+        quoted = 1;
+        cur++;
+    }
+
+    while (*cur != '\0') {
+        if (quoted) {
+            if (*cur == '"') {
+                cur++;
+                break;
+            }
+        } else if (*cur == ' ' || *cur == '\t') {
+            break;
+        }
+
+        if (i + 1 < limit) {
+            out[i++] = *cur;
+        }
+        cur++;
+    }
+
+    while (*cur == ' ' || *cur == '\t') {
+        cur++;
+    }
+
+    if (limit != 0) {
+        out[i] = '\0';
+    }
+    *cursor = cur;
+    return 1;
+}
+
+static void finish_menu_entry(void) {
+    if (menu_count >= MAX_MENU_ENTRIES) {
+        return;
+    }
+    if (menu_entries[menu_count].kernel[0] == '\0') {
+        return;
+    }
+    if (menu_entries[menu_count].label[0] == '\0') {
+        copy_string(menu_entries[menu_count].label, "Unnamed", sizeof(menu_entries[menu_count].label));
+    }
+    menu_count++;
+    if (menu_count < MAX_MENU_ENTRIES) {
+        init_entry(&menu_entries[menu_count]);
+    }
+}
+
+static void set_entry_kernel_and_cmdline(struct menu_entry *entry, char *args) {
+    char kernel[BOOTX_PATH_MAX];
+    char *cmdline;
+
+    if (!read_token(&args, kernel, sizeof(kernel))) {
+        return;
+    }
+
+    copy_string(entry->kernel, kernel, sizeof(entry->kernel));
+
+    cmdline = trim_left(args);
+    trim_right(cmdline);
+    if (*cmdline != '\0') {
+        copy_string(entry->cmdline, cmdline, sizeof(entry->cmdline));
+    }
+}
+
+static void parse_config_command(char *line, int *in_menuentry) {
+    char command[16];
+    char value[BOOTX_CMDLINE_MAX];
+    char *cur = line;
+    struct menu_entry *entry;
+
+    if (menu_count >= MAX_MENU_ENTRIES) {
+        return;
+    }
+
+    entry = &menu_entries[menu_count];
+    if (!read_token(&cur, command, sizeof(command))) {
+        return;
+    }
+
+    if (strncmp(command, "menuentry", 9) == 0 && command[9] == '\0') {
+        finish_menu_entry();
+        if (menu_count >= MAX_MENU_ENTRIES) {
+            return;
+        }
+        *in_menuentry = 1;
+        entry = &menu_entries[menu_count];
+        init_entry(entry);
+        if (read_token(&cur, value, sizeof(value)) && value[0] != '{') {
+            copy_string(entry->label, value, sizeof(entry->label));
+        }
+    } else if ((strncmp(command, "kernel", 7) == 0 && command[6] == '\0') ||
+               (strncmp(command, "linux", 6) == 0 && command[5] == '\0')) {
+        set_entry_kernel_and_cmdline(entry, cur);
+    } else if ((strncmp(command, "module", 7) == 0 && command[6] == '\0') ||
+               (strncmp(command, "initrd", 7) == 0 && command[6] == '\0')) {
+        if (entry->module_count < BOOTX_MAX_MODULES && read_token(&cur, value, sizeof(value))) {
+            copy_string(entry->modules[entry->module_count], value, sizeof(entry->modules[entry->module_count]));
+            entry->module_count++;
+        }
+    } else if (strncmp(command, "cmdline", 8) == 0 && command[7] == '\0') {
+        cur = trim_left(cur);
+        trim_right(cur);
+        copy_string(entry->cmdline, cur, sizeof(entry->cmdline));
+    } else if (command[0] == '}') {
+        finish_menu_entry();
+        *in_menuentry = 0;
+    }
+}
+
 static void parse_config(char *text) {
     char *line = text;
+    int in_menuentry = 0;
     menu_count = 0;
     init_entry(&menu_entries[0]);
 
@@ -333,24 +376,21 @@ static void parse_config(char *text) {
         }
 
         trim_right(line);
+        strip_comment(line);
+        trim_right(line);
         char *cur = trim_left(line);
 
         if (*cur == '\0') {
-            if (menu_entries[menu_count].kernel[0] != '\0') {
-                menu_count++;
-                if (menu_count < MAX_MENU_ENTRIES) {
-                    init_entry(&menu_entries[menu_count]);
-                }
+            if (!in_menuentry && menu_entries[menu_count].kernel[0] != '\0') {
+                finish_menu_entry();
             }
         } else if (strncmp(cur, "LABEL=", 6) == 0) {
             if (menu_entries[menu_count].kernel[0] != '\0') {
-                menu_count++;
-                if (menu_count >= MAX_MENU_ENTRIES) {
-                    break;
-                }
-                init_entry(&menu_entries[menu_count]);
+                finish_menu_entry();
             }
-            copy_string(menu_entries[menu_count].label, cur + 6, sizeof(menu_entries[menu_count].label));
+            if (menu_count < MAX_MENU_ENTRIES) {
+                copy_string(menu_entries[menu_count].label, cur + 6, sizeof(menu_entries[menu_count].label));
+            }
         } else if (strncmp(cur, "KERNEL=", 7) == 0) {
             if (menu_entries[menu_count].label[0] == '\0') {
                 copy_string(menu_entries[menu_count].label, "Unnamed", sizeof(menu_entries[menu_count].label));
@@ -365,6 +405,8 @@ static void parse_config(char *text) {
                             sizeof(menu_entries[menu_count].modules[menu_entries[menu_count].module_count]));
                 menu_entries[menu_count].module_count++;
             }
+        } else {
+            parse_config_command(cur, &in_menuentry);
         }
 
         if (next == 0) {
@@ -374,7 +416,7 @@ static void parse_config(char *text) {
     }
 
     if (menu_count < MAX_MENU_ENTRIES && menu_entries[menu_count].kernel[0] != '\0') {
-        menu_count++;
+        finish_menu_entry();
     }
 
     if (menu_count == 0) {
@@ -403,17 +445,12 @@ static void load_config_or_default(void) {
 
 static uint32_t choose_entry(void) {
     uint32_t selected = 0;
-    uint32_t marquee_phase = 0;
-    uint32_t marquee_elapsed = 0;
-    uint32_t marquee_step = marquee_step_pit_counts();
-    uint16_t last_pit_counter = 0;
 
     if (menu_count == 1) {
         return 0;
     }
 
-    render_menu(selected, marquee_phase);
-    last_pit_counter = read_pit_counter();
+    render_menu(selected);
 
     for (;;) {
         uint16_t key = bios_poll_key();
@@ -421,24 +458,12 @@ static uint32_t choose_entry(void) {
         uint8_t scan = (uint8_t)(key >> 8);
 
         if (key == 0) {
-            uint16_t pit_counter = read_pit_counter();
-            marquee_elapsed += (uint16_t)(last_pit_counter - pit_counter);
-            last_pit_counter = pit_counter;
-
-            if (marquee_elapsed >= marquee_step) {
-                marquee_elapsed -= marquee_step;
-                marquee_phase++;
-                render_entry_info(selected, marquee_phase);
-            }
             continue;
         }
 
         if (ascii >= '1' && ascii < '1' + menu_count) {
             selected = (uint32_t)(ascii - '1');
-            marquee_phase = 0;
-            marquee_elapsed = 0;
-            last_pit_counter = read_pit_counter();
-            render_menu(selected, marquee_phase);
+            render_menu(selected);
             continue;
         }
         if (ascii == '\r') {
@@ -447,43 +472,28 @@ static uint32_t choose_entry(void) {
         if (ascii == 'w' || ascii == 'W' || ascii == 'k' || ascii == 'K') {
             if (selected > 0) {
                 selected--;
-                marquee_phase = 0;
-                marquee_elapsed = 0;
-                last_pit_counter = read_pit_counter();
-                render_menu(selected, marquee_phase);
+                render_menu(selected);
             }
             continue;
         }
         if (ascii == 's' || ascii == 'S' || ascii == 'j' || ascii == 'J') {
             if (selected + 1 < menu_count) {
                 selected++;
-                marquee_phase = 0;
-                marquee_elapsed = 0;
-                last_pit_counter = read_pit_counter();
-                render_menu(selected, marquee_phase);
+                render_menu(selected);
             }
             continue;
         }
         if (ascii == 0x1B) {
             selected = 0;
-            marquee_phase = 0;
-            marquee_elapsed = 0;
-            last_pit_counter = read_pit_counter();
-            render_menu(selected, marquee_phase);
+            render_menu(selected);
             continue;
         }
         if (scan == 0x48 && selected > 0) {
             selected--;
-            marquee_phase = 0;
-            marquee_elapsed = 0;
-            last_pit_counter = read_pit_counter();
-            render_menu(selected, marquee_phase);
+            render_menu(selected);
         } else if (scan == 0x50 && selected + 1 < menu_count) {
             selected++;
-            marquee_phase = 0;
-            marquee_elapsed = 0;
-            last_pit_counter = read_pit_counter();
-            render_menu(selected, marquee_phase);
+            render_menu(selected);
         }
     }
 }
@@ -642,7 +652,7 @@ static int entry_wants_framebuffer(const struct menu_entry *entry) {
 }
 
 static int entry_has_video_option(const struct menu_entry *entry) {
-    if (!entry || !entry->cmdline) {
+    if (!entry) {
         return 0;
     }
 
@@ -1059,7 +1069,7 @@ void stage3_main(const struct bootx_boot_info *raw_params) {
 
     console_set_color(0x07);
     console_clear();
-    console_puts("boot/x stage3\n");
+    console_puts("janus stage3\n");
     trace("entered");
 
     if (fat16_mount(&fat, boot_info->boot_drive, boot_info->partition_lba) != 0) {

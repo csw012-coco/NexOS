@@ -5,8 +5,8 @@
 #include "drivers/video/surface.h"
 
 enum {
-    FRAMEBUFFER_TEXT_MAX_COLUMNS = 240,
-    FRAMEBUFFER_TEXT_MAX_ROWS = 80
+    FRAMEBUFFER_TEXT_MAX_COLUMNS = 320,
+    FRAMEBUFFER_TEXT_MAX_ROWS = 90
 };
 
 void framebuffer_display_init(const struct bootx_console_info *console);

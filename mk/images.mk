@@ -44,37 +44,65 @@ $(I386_ROOT_FS_IMAGE): $(NXFS_TOOL) \
 		$(I386_NEXBOX_USER) $(I386_NEXBOX_SUBSET_USER) $(I386_USH_USER) \
 		$(I386_DOOM_USER) \
 		$(I386_TEST_DRIVER) $(I386_AC97_DRIVER) $(I386_HDA_DRIVER) \
-		$(OS_CONFIG) $(FONT_HEX) $(ROOT_INIT_SCRIPT) $(SCRIPT_SMOKE_SH) \
+		$(OS_CONFIG) $(FSTAB_CONFIG) $(CAP_POLICY) $(PASSWD_CONFIG) $(SERVICE_FILES) $(FONT_HEX) $(ROOT_INIT_SCRIPT) $(SCRIPT_SMOKE_SH) \
 		$(I386_AUDIO_SMOKE_WAV) | $(I386_BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
+	$(Q)truncate -s $(ROOT_FS_SIZE) $@
 	$(Q)$(NXFS_TOOL) mkfs $@
 	$(call nxfs_mkdirs,$@,$(NXFS_ROOT_DIRS))
+	$(Q)$(NXFS_TOOL) chown $@ 1000 1000 /home/user
+	$(Q)$(NXFS_TOOL) chmod $@ 700 /home/user
 	$(Q)$(NXFS_TOOL) mkdir $@ /drivers
 	$(Q)$(NXFS_TOOL) write $@ $(ROOT_INIT_SCRIPT) /system/init
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /system/init
 	$(Q)$(NXFS_TOOL) write $@ $(OS_CONFIG) /system/config/nex.scf
+	$(Q)$(NXFS_TOOL) chown $@ 0 0 /system/config/nex.scf
+	$(Q)$(NXFS_TOOL) chmod $@ 600 /system/config/nex.scf
+	$(Q)$(NXFS_TOOL) write $@ $(FSTAB_CONFIG) /system/config/fstab.scf
+	$(Q)$(NXFS_TOOL) chmod $@ 644 /system/config/fstab.scf
+	$(Q)$(NXFS_TOOL) write $@ $(PASSWD_CONFIG) /system/config/passwd.scf
+	$(Q)$(NXFS_TOOL) chown $@ 0 0 /system/config/passwd.scf
+	$(Q)$(NXFS_TOOL) chmod $@ 600 /system/config/passwd.scf
+	$(Q)$(NXFS_TOOL) write $@ $(CAP_POLICY) /system/cap.policy
+	$(Q)for svc in $(SERVICE_FILES); do \
+		$(NXFS_TOOL) write $@ "$$svc" /system/service/$$(basename "$$svc"); \
+	done
 	$(Q)$(NXFS_TOOL) write $@ $(FONT_HEX) /system/font/font.hex
 	$(Q)$(NXFS_TOOL) write $@ $(SCRIPT_SMOKE_SH) /system/script-smoke.sh
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /system/script-smoke.sh
 	$(Q)$(NXFS_TOOL) write $@ $(I386_AUDIO_SMOKE_WAV) /system/audio-smoke.wav
+	$(Q)$(NXFS_TOOL) write $@ $(MOTD_CFG) /system/config/motd.scf
 	$(call nxfs_write_optional,$@,$(ROOT_WAD_FILES))
 	$(Q)$(NXFS_TOOL) write $@ $(I386_USH_USER) /cmd/ush
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/ush
 	$(Q)$(NXFS_TOOL) write $@ $(I386_NEXBOX_USER) /cmd/nexbox
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/nexbox
 	$(Q)$(NXFS_TOOL) write $@ $(I386_NEXBOX_SUBSET_USER) /cmd/nexbox32s
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/nexbox32s
 	$(Q)$(NXFS_TOOL) write $@ $(I386_TEST_USER) /cmd/test32
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/test32
 	$(Q)$(NXFS_TOOL) write $@ $(I386_APP_USER) /cmd/app32
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/app32
 	$(Q)$(NXFS_TOOL) write $@ $(I386_DOOM_USER) /cmd/doom32
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/doom32
 	$(Q)$(NXFS_TOOL) write $@ $(I386_TEST_DRIVER) /drivers/I386TEST.DRV
 	$(Q)$(NXFS_TOOL) write $@ $(I386_AC97_DRIVER) /drivers/AC9732.DRV
 	$(Q)$(NXFS_TOOL) write $@ $(I386_HDA_DRIVER) /drivers/HDA32.DRV
+	$(Q)$(NXFS_TOOL) write $@ assets/audio/test.wav /home/test.wav
 	$(Q)rm -rf $(I386_CMD_SUITE_WRAPPER_DIR)
 	$(Q)mkdir -p $(I386_CMD_SUITE_WRAPPER_DIR)
 	$(Q)for alias in $(CMD_SUITE_NAMES); do \
 		lower=$$(printf '%s' "$$alias" | tr 'A-Z' 'a-z'); \
 		if [ "$$lower" = nexbox ]; then continue; fi; \
-		script="$(I386_CMD_SUITE_WRAPPER_DIR)/$$lower"; \
-		printf '#!/cmd/ush\nexec /cmd/nexbox %s $$*\n' "$$lower" > "$$script"; \
-		$(NXFS_TOOL) write $@ "$$script" /cmd/$$lower; \
+		$(NXFS_TOOL) write $@ $(I386_NEXBOX_USER) /cmd/$$lower; \
+		$(NXFS_TOOL) chmod $@ 755 /cmd/$$lower; \
 	done
+	$(Q)$(NXFS_TOOL) chown $@ 0 0 /cmd/su
+	$(Q)$(NXFS_TOOL) chmod $@ 4755 /cmd/su
+	$(Q)$(NXFS_TOOL) chown $@ 0 0 /cmd/sudo
+	$(Q)$(NXFS_TOOL) chmod $@ 4755 /cmd/sudo
+	$(Q)$(NXFS_TOOL) apply-caps $@ $(CAP_POLICY)
 
 $(I386_IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(I386_BOOT_FS_IMAGE) $(I386_ROOT_FS_IMAGE) | $(IMAGE_DIR)
 	$(call log_cmd,IMAGE,$@)
@@ -90,7 +118,7 @@ $(I386_IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(I386_BOOT_FS_IMAGE) $(I386_ROOT
 	$(Q)dd if=$(I386_BOOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(BOOT_PART_LBA)
 	$(Q)dd if=$(I386_ROOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(ROOT_PART_LBA)
 
-$(RAMDISK_IMAGE): $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF $(RAMDISK_INIT_SCRIPT) $(OS_CONFIG) $(DUMMY_AC97_DRIVER) $(DUMMY_HDA_DRIVER) | $(BUILD)
+$(RAMDISK_IMAGE): $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF $(RAMDISK_INIT_SCRIPT) $(OS_CONFIG) $(FSTAB_CONFIG) $(DUMMY_AC97_DRIVER) $(DUMMY_HDA_DRIVER) | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s $(RAMDISK_SIZE) $@
@@ -100,6 +128,7 @@ $(RAMDISK_IMAGE): $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF $(RAMDISK_INIT_SCRIPT) $(
 	$(Q)mmd -i $@@@1048576 ::/CMD
 	$(Q)mmd -i $@@@1048576 ::/DRIVERS
 	$(Q)mcopy -i $@@@1048576 $(RAMDISK_INIT_SCRIPT) ::/init
+	$(Q)mcopy -i $@@@1048576 $(FSTAB_CONFIG) ::/fstab.scf
 	$(Q)mcopy -i $@@@1048576 $(OS_CONFIG) ::/NOS.CFG
 	$(Q)mcopy -i $@@@1048576 $(DUMMY_AC97_DRIVER) ::/DRIVERS/AC97.DRV
 	$(Q)mcopy -i $@@@1048576 $(DUMMY_HDA_DRIVER) ::/DRIVERS/HDA.DRV
@@ -150,15 +179,31 @@ $(BOOT_FS_IMAGE): $(BOOTX_STAGE3) $(BOOTX_UEFI) $(BUILD)/kernel64.elf $(RAMDISK_
 	$(Q)mcopy -i $@ $(BOOT_FONT_HEX) ::/BOOT/FONT.HEX
 	$(Q)mcopy -i $@ $(BOOTX_CONFIG_RENDERED) ::/BOOT/BOOTX.CFG
 
-$(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(TEST_C_SOURCE) $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/apps/elf/user.ld $(FONT_HEX) $(ROOT_INIT_SCRIPT) $(OS_CONFIG) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS $(SCRIPT_SMOKE_SH) | $(BUILD)
+$(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(TEST_C_SOURCE) $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/apps/elf/user.ld $(FONT_HEX) $(ROOT_INIT_SCRIPT) $(OS_CONFIG) $(FSTAB_CONFIG) $(CAP_POLICY) $(PASSWD_CONFIG) $(SERVICE_FILES) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS $(SCRIPT_SMOKE_SH) | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
+	$(Q)truncate -s $(ROOT_FS_SIZE) $@
 	$(Q)$(NXFS_TOOL) mkfs $@
 	$(call nxfs_mkdirs,$@,$(NXFS_ROOT_DIRS))
+	$(Q)$(NXFS_TOOL) chown $@ 1000 1000 /home/user
+	$(Q)$(NXFS_TOOL) chmod $@ 700 /home/user
 	$(Q)$(NXFS_TOOL) write $@ $(ROOT_INIT_SCRIPT) /system/init
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /system/init
 	$(Q)$(NXFS_TOOL) write $@ $(OS_CONFIG) /system/config/nex.scf
+	$(Q)$(NXFS_TOOL) chown $@ 0 0 /system/config/nex.scf
+	$(Q)$(NXFS_TOOL) chmod $@ 600 /system/config/nex.scf
+	$(Q)$(NXFS_TOOL) write $@ $(FSTAB_CONFIG) /system/config/fstab.scf
+	$(Q)$(NXFS_TOOL) chmod $@ 644 /system/config/fstab.scf
+	$(Q)$(NXFS_TOOL) write $@ $(PASSWD_CONFIG) /system/config/passwd.scf
+	$(Q)$(NXFS_TOOL) chown $@ 0 0 /system/config/passwd.scf
+	$(Q)$(NXFS_TOOL) chmod $@ 600 /system/config/passwd.scf
+	$(Q)$(NXFS_TOOL) write $@ $(CAP_POLICY) /system/cap.policy
+	$(Q)for svc in $(SERVICE_FILES); do \
+		$(NXFS_TOOL) write $@ "$$svc" /system/service/$$(basename "$$svc"); \
+	done
 	$(Q)$(NXFS_TOOL) write $@ $(FONT_HEX) /system/font/font.hex
 	$(Q)$(NXFS_TOOL) write $@ $(SCRIPT_SMOKE_SH) /system/script-smoke.sh
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /system/script-smoke.sh
 	$(Q)$(NXFS_TOOL) write $@ $(MOTD_CFG) /system/config/motd.scf
 	$(Q)for f in $(ROOT)/user/libc/include/*.h; do \
 		$(NXFS_TOOL) write $@ "$$f" /system/devel/include/$$(basename "$$f"); \
@@ -180,24 +225,38 @@ $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(TEST_C_SOURCE) $(USER_CRT0) $(
 	$(Q)$(NXFS_TOOL) write $@ $(TEST_C_SOURCE) /home/test.c
 	$(call nxfs_write_optional,$@,$(ROOT_WAD_FILES))
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/USH.ELF /cmd/ush
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/ush
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/nexbox
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/nexbox
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NCC.ELF /cmd/ncc
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/ncc
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/DOOM.ELF /cmd/doom
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/doom
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/IMGVIEW.ELF /cmd/imgview
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/imgview
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/IPCDEMO.ELF /cmd/ipcdemo
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/ipcdemo
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/HELLO.ELF /cmd/hello
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/hello
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/SECTEST.ELF /cmd/sectest
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/sectest
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/GUIDEMO.ELF /cmd/guidemo
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/guidemo
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/FORTH.ELF /cmd/forth
-	$(Q)$(NXFS_TOOL) write $@ assets/calc /calc
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/forth
 	$(Q)rm -rf $(CMD_SUITE_WRAPPER_DIR)
 	$(Q)mkdir -p $(CMD_SUITE_WRAPPER_DIR)
 	$(Q)for alias in $(CMD_SUITE_NAMES); do \
 		lower=$$(printf '%s' "$$alias" | tr 'A-Z' 'a-z'); \
 		if [ "$$lower" = nexbox ]; then continue; fi; \
-		script="$(CMD_SUITE_WRAPPER_DIR)/$$lower"; \
-		printf '#!/cmd/ush\nexec /cmd/nexbox %s $$*\n' "$$lower" > "$$script"; \
-		$(NXFS_TOOL) write $@ "$$script" /cmd/$$lower; \
+		$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/$$lower; \
+		$(NXFS_TOOL) chmod $@ 755 /cmd/$$lower; \
 	done
+	$(Q)$(NXFS_TOOL) chown $@ 0 0 /cmd/su
+	$(Q)$(NXFS_TOOL) chmod $@ 4755 /cmd/su
+	$(Q)$(NXFS_TOOL) chown $@ 0 0 /cmd/sudo
+	$(Q)$(NXFS_TOOL) chmod $@ 4755 /cmd/sudo
+	$(Q)$(NXFS_TOOL) apply-caps $@ $(CAP_POLICY)
 
 NXFS_PART_IMAGE := $(IMAGE_DIR)/nxfs.part
 
@@ -234,10 +293,21 @@ $(UEFI_IMAGE): $(BOOT_FS_IMAGE) $(ROOT_FS_IMAGE) | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s $(OS_IMAGE_SIZE) $@
+	$(Q)root_bytes="$$(stat -c %s $(ROOT_FS_IMAGE))"; \
+		root_sectors="$$(((root_bytes + 511) / 512))"; \
+		root_end="$$(( $(ROOT_PART_LBA) + root_sectors - 1 ))"; \
+		image_sectors="$$(( $$(stat -c %s $@) / 512 ))"; \
+		needed_sectors="$$((root_end + 34))"; \
+		if [ "$$image_sectors" -lt "$$needed_sectors" ]; then \
+			truncate -s "$$((needed_sectors * 512))" $@; \
+		fi
 	$(Q)parted -s $@ mklabel gpt
 	$(Q)parted -s $@ mkpart ESP fat32 1MiB 49MiB
 	$(Q)parted -s $@ set 1 esp on
-	$(Q)parted -s $@ mkpart NexOS 49MiB 100%
+	$(Q)root_bytes="$$(stat -c %s $(ROOT_FS_IMAGE))"; \
+		root_sectors="$$(((root_bytes + 511) / 512))"; \
+		root_end="$$(( $(ROOT_PART_LBA) + root_sectors - 1 ))"; \
+		parted -s $@ mkpart NexOS $(ROOT_PART_LBA)s "$${root_end}s"
 	$(Q)dd if=$(BOOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(BOOT_PART_LBA)
 	$(Q)dd if=$(ROOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(ROOT_PART_LBA)
 

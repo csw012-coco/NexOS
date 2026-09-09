@@ -1,8 +1,9 @@
 # Testing Checklist
 
-This project currently uses two levels of verification:
+This project currently uses three levels of verification:
 
-- Fast smoke checks with `make check`
+- Fast build/ELF checks with `make check`
+- QEMU smoke checks
 - Manual boot validation with `make run` or `make dev`
 
 ## Fast Smoke Checks
@@ -10,37 +11,58 @@ This project currently uses two levels of verification:
 Run these first after structural refactors:
 
 ```sh
-make
-make check
+make ARCH=x86_64 check
+make ARCH=i386 check
+make check-kernel
 ```
 
-`make check` currently verifies:
+These checks currently verify that the kernel/userland artifacts build and that
+the produced kernel ELF/image shape is sane. They do not replace a real boot
+test.
 
-- `build/kernel64.elf` exists and still has `LOAD` program headers
-- `build/kernel64.elf` does not contain an `RWE` load segment
-- the boot image contains `BOOT/NEX.ELF`
-- the boot image contains `HOME/USH.ELF`
-- the boot image contains `HOME/HELLO.ELF`
-- the boot image contains `BOOTX.CFG`
-- the ramdisk contains `HOME/USH.ELF`
-- the ramdisk contains `HOME/HELLO.ELF`
+## QEMU Smoke Checks
 
-These checks are intentionally simple. They do not replace a real boot test.
+Use these after i386 process, syscall, VFS, driver, MM, or applet changes:
+
+```sh
+make check-i386-smoke
+make check-i386-nexbox32-full
+```
+
+Useful i386 TEST32 commands after boot:
+
+```text
+/cmd/test32 fork
+/cmd/test32 fork-cow-cleanup
+/cmd/test32 fork-map-table
+/cmd/test32 fork-mmap-exec
+/cmd/test32 fork-wait-exec
+/cmd/test32 exec-fail-cleanup
+/cmd/test32 mmap-fixed
+/cmd/test32 mmap-prot
+/cmd/test32 mprotect
+/cmd/test32 shared-fault-cleanup
+/cmd/test32 invalid-pointer-cleanup
+/cmd/test32 shm-lifecycle
+```
 
 ## Manual Boot Validation
 
 Boot with:
 
 ```sh
-make run
+make ARCH=x86_64 run
+make ARCH=i386 run
 ```
 
-Use `make dev` if you want extra QEMU diagnostics.
+Use the architecture-specific dev/run targets if you want extra QEMU diagnostics
+or a particular virtual device set.
 
 Expected boot condition:
 
-- the system boots to the text console
-- `/HOME/USH.ELF` starts successfully
+- the system boots to the framebuffer/text console
+- `/system/init` runs and returns
+- `/cmd/ush` starts successfully
 - the shell prompt appears
 
 ## Shell Smoke Checklist
@@ -51,10 +73,13 @@ Run these commands in `ush` after boot:
 help
 pwd
 ls /
-ls /HOME
+ls /boot
+ls /cmd
+ls /system
+ls /proc
+ls /event
 ps
-run hello
-runbg yielddemo
+run /cmd/test32
 sleep 1 &
 ps
 wait
@@ -73,43 +98,42 @@ service set demo backoff_ms 250
 service set demo max_retries 3
 service info demo
 echo hello | grep hello | wc
-run sleepdemo
-run badptr
 ```
 
 Expected results:
 
 - `help` prints the shell command summary
 - `pwd` prints the current working directory
-- `ls /` and `ls /HOME` succeed without crashing
+- `ls /`, `/boot`, `/cmd`, `/system`, `/proc`, and `/event` succeed without crashing
 - `ps` prints process information
-- `run hello` launches and returns cleanly
-- `runbg yielddemo` creates a background process
+- `run /cmd/test32` launches and returns cleanly
 - `sleep 1 &` creates a background job with a printed PID
 - `wait` reaps a finished process cleanly
 - `config get/set/source/unset/validate` handles layered settings cleanly
 - `service reconcile` starts enabled services that are not running
 - `echo hello | grep hello | wc` succeeds as a multi-stage pipeline
-- `run sleepdemo` returns after a visible delay
-- `run badptr` should fail in a controlled way without corrupting the shell session
+- failed external commands return to the prompt without corrupting the shell session
 
 ## Filesystem Smoke Checklist
 
 If the shell is up, also verify basic path and file operations:
 
 ```text
-cat /BOOTX.CFG
+ls /boot
+cat /proc/mounts
 mounts
 blk
 parts
+df
 ```
 
 Expected results:
 
-- `cat /BOOTX.CFG` reads the boot configuration file
-- `mounts` shows the mounted filesystems
+- `/boot` lists the mounted boot filesystem
+- `/proc/mounts` and `mounts` show the mounted filesystems
 - `blk` shows block devices
 - `parts` shows partition information
+- `df` reports mounted filesystem space information
 
 ## Optional NXFS Check
 
@@ -142,8 +166,29 @@ audio
 
 Expected results:
 
-- `hda` reports the Intel HD Audio controller BDF, MMIO BAR, version, and codec status
-- `audio` lists the HDA device as an initialized `hda` driver entry
+- `hda` reports controller state when the QEMU device is present
+- `audio` lists available audio devices or reports a clean missing-hardware state
+
+Audio, network, USB, and graphics checks are still experimental. Treat successful
+smoke output as coverage of the current path, not a claim of complete device
+support.
+
+## Optional Graphics Check
+
+When the framebuffer is available, run:
+
+```text
+fb
+fb --smoke
+fb --blit-smoke
+```
+
+Expected results:
+
+- `fb` reports framebuffer geometry and address information
+- `fb --smoke` and `fb --blit-smoke` complete without panicking
+- graphics unavailable is reported cleanly when the boot mode or device set does
+  not expose a framebuffer
 
 ## Fault Regression Checks
 
@@ -169,3 +214,4 @@ Run the full boot checklist after:
 - paging or user-memory changes
 - shell changes
 - filesystem refactors
+- i386 boot/service glue, driver discovery, or syscall adapter refactors

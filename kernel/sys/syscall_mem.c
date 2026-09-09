@@ -1,6 +1,7 @@
 #include "kernel/internal/sys/syscall_internal.h"
 #include "kernel/internal/proc/process_internal_base.h"
 #include "kernel/internal/proc/process_elf_internal.h"
+#include "kernel/internal/proc/process_reap_internal.h"
 #include "kernel/public/mem/vmm.h"
 #include "kernel/public/core/kprint.h"
 
@@ -47,7 +48,15 @@ uint64_t syscall_kill_bad_user_pointer(void) {
     } else {
         kprint("syscall: bad user pointer pid=0\n");
     }
-    process_exit_current(process_current_session(), -1);
+    if (session != 0) {
+        process_discard_files(&session->process);
+        if (session->address_space.user_root != 0) {
+            vmm_destroy_user_root(session->address_space.user_root);
+            session->address_space.user_root = 0;
+        }
+    }
+    process_exit_current(session, -1);
+    process_reap_orphan_zombies();
     return SYSCALL_EXIT_TO_KERNEL;
 }
 
@@ -103,11 +112,4 @@ int syscall_copy_user_cstr(char *dest, uint64_t user_addr, uint32_t max_len) {
 int syscall_copy_to_user(uint64_t user_addr, const void *src, uint32_t size) {
     return syscall_prepare_user_range(user_addr, size, 1) &&
            vmm_copy_to_user(user_addr, src, size);
-}
-
-uint64_t syscall_handle_page_free(uint64_t user_page_addr) {
-    if (!syscall_user_page_arg_valid(user_page_addr)) {
-        return syscall_kill_bad_user_pointer();
-    }
-    return (uint64_t)addrspace_free_page(user_page_addr);
 }

@@ -31,7 +31,7 @@ void stage2_main(uint32_t drive) {
 
     console_set_color(0x07);
     console_clear();
-    console_puts("boot/x stage2\n");
+    console_puts("janus stage2\n");
     debug_puts("stage2: entered\n");
 
     if (find_boot_partition((uint8_t)drive, &part) != 0) {

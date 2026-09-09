@@ -452,6 +452,12 @@ static void efi_clear_screen(void) {
     }
 }
 
+static void efi_set_attribute(UINTN attribute) {
+    if (g_st != 0 && g_st->ConOut != 0 && g_st->ConOut->SetAttribute != 0) {
+        g_st->ConOut->SetAttribute(g_st->ConOut, attribute);
+    }
+}
+
 static void efi_set_cursor(UINTN row, UINTN col) {
     if (g_st != 0 && g_st->ConOut != 0 && g_st->ConOut->SetCursorPosition != 0) {
         g_st->ConOut->SetCursorPosition(g_st->ConOut, col, row);
@@ -461,6 +467,17 @@ static void efi_set_cursor(UINTN row, UINTN col) {
 static void efi_puts_at(UINTN row, UINTN col, const char *str) {
     efi_set_cursor(row, col);
     efi_puts(str);
+}
+
+static void efi_put_char16_at(UINTN row, UINTN col, CHAR16 ch) {
+    CHAR16 text[2];
+
+    text[0] = ch;
+    text[1] = 0;
+    efi_set_cursor(row, col);
+    if (g_st != 0 && g_st->ConOut != 0) {
+        g_st->ConOut->OutputString(g_st->ConOut, text);
+    }
 }
 
 static void efi_puts_clipped_at(UINTN row, UINTN col, const char *str, UINTN width) {
@@ -487,41 +504,6 @@ static void efi_puts_clipped_at(UINTN row, UINTN col, const char *str, UINTN wid
     efi_puts_at(row, col, buffer);
 }
 
-static void efi_puts_marquee_at(UINTN row, UINTN col, const char *str, UINTN width, uint32_t phase) {
-    char buffer[81];
-    size_t len = strlen(str);
-    UINTN i = 0;
-    uint32_t offset = 0;
-
-    if (width >= sizeof(buffer)) {
-        width = sizeof(buffer) - 1u;
-    }
-
-    if (len > (size_t)width + BOOTX_UEFI_MARQUEE_MIN_OVERFLOW) {
-        uint32_t max_offset = (uint32_t)(len - width);
-        uint32_t cycle = max_offset + BOOTX_UEFI_MARQUEE_PAUSE_FRAMES * 2u;
-        uint32_t pos = phase % cycle;
-
-        if (pos < BOOTX_UEFI_MARQUEE_PAUSE_FRAMES) {
-            offset = 0;
-        } else if (pos < BOOTX_UEFI_MARQUEE_PAUSE_FRAMES + max_offset) {
-            offset = pos - BOOTX_UEFI_MARQUEE_PAUSE_FRAMES;
-        } else {
-            offset = max_offset;
-        }
-    }
-
-    while (i < width && str[offset + i] != '\0') {
-        buffer[i] = str[offset + i];
-        i++;
-    }
-    while (i < width) {
-        buffer[i++] = ' ';
-    }
-    buffer[width] = '\0';
-    efi_puts_at(row, col, buffer);
-}
-
 static void efi_hline(UINTN row, UINTN col, UINTN width, char ch) {
     char buffer[81];
 
@@ -533,6 +515,12 @@ static void efi_hline(UINTN row, UINTN col, UINTN width, char ch) {
     }
     buffer[width] = '\0';
     efi_puts_at(row, col, buffer);
+}
+
+static void efi_hline16(UINTN row, UINTN col, UINTN width, CHAR16 ch) {
+    for (UINTN i = 0; i < width; i++) {
+        efi_put_char16_at(row, col + i, ch);
+    }
 }
 
 static __attribute__((noreturn)) void efi_halt(void) {
@@ -626,6 +614,41 @@ static void trim_span(const char **start, const char **end) {
     }
 }
 
+static char *trim_left_mut(char *line) {
+    while (*line == ' ' || *line == '\t') {
+        line++;
+    }
+    return line;
+}
+
+static void trim_right_mut(char *line) {
+    size_t len = strlen(line);
+
+    while (len > 0u) {
+        char ch = line[len - 1u];
+        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+            line[len - 1u] = '\0';
+            len--;
+        } else {
+            break;
+        }
+    }
+}
+
+static void strip_comment(char *line) {
+    int in_quote = 0;
+
+    while (*line != '\0') {
+        if (*line == '"') {
+            in_quote = !in_quote;
+        } else if (*line == '#' && !in_quote) {
+            *line = '\0';
+            return;
+        }
+        line++;
+    }
+}
+
 static void copy_span(char *dest, size_t cap, const char *start, const char *end) {
     size_t len;
 
@@ -661,22 +684,136 @@ static void finish_menu_entry(uint32_t *entry_index) {
     }
 }
 
+static int read_config_token(char **cursor, char *out, size_t cap) {
+    char *cur = *cursor;
+    size_t i = 0;
+    int quoted = 0;
+
+    while (*cur == ' ' || *cur == '\t') {
+        cur++;
+    }
+    if (*cur == '\0') {
+        *cursor = cur;
+        if (cap != 0u) {
+            out[0] = '\0';
+        }
+        return 0;
+    }
+
+    if (*cur == '"') {
+        quoted = 1;
+        cur++;
+    }
+
+    while (*cur != '\0') {
+        if (quoted) {
+            if (*cur == '"') {
+                cur++;
+                break;
+            }
+        } else if (*cur == ' ' || *cur == '\t') {
+            break;
+        }
+
+        if (i + 1u < cap) {
+            out[i++] = *cur;
+        }
+        cur++;
+    }
+
+    while (*cur == ' ' || *cur == '\t') {
+        cur++;
+    }
+
+    if (cap != 0u) {
+        out[i] = '\0';
+    }
+    *cursor = cur;
+    return 1;
+}
+
+static void set_menu_kernel_and_cmdline(struct boot_config *entry, char *args) {
+    char kernel[BOOTX_UEFI_MAX_PATH];
+    char *cmdline;
+
+    if (!read_config_token(&args, kernel, sizeof(kernel))) {
+        return;
+    }
+
+    str_copy_limit(entry->kernel, sizeof(entry->kernel), kernel);
+    cmdline = trim_left_mut(args);
+    trim_right_mut(cmdline);
+    if (*cmdline != '\0') {
+        str_copy_limit(entry->cmdline, sizeof(entry->cmdline), cmdline);
+    }
+}
+
+static void parse_config_command(char *line, uint32_t *entry_index, int *in_menuentry) {
+    char command[16];
+    char value[BOOTX_CMDLINE_MAX];
+    char *cur = line;
+    struct boot_config *entry;
+
+    if (*entry_index >= BOOTX_UEFI_MAX_MENU_ENTRIES) {
+        return;
+    }
+
+    entry = &g_menu_entries[*entry_index];
+    if (!read_config_token(&cur, command, sizeof(command))) {
+        return;
+    }
+
+    if (strcmp(command, "menuentry") == 0) {
+        finish_menu_entry(entry_index);
+        if (g_menu_count >= BOOTX_UEFI_MAX_MENU_ENTRIES) {
+            return;
+        }
+        *in_menuentry = 1;
+        entry = &g_menu_entries[*entry_index];
+        init_menu_entry(entry);
+        if (read_config_token(&cur, value, sizeof(value)) && value[0] != '{') {
+            str_copy_limit(entry->label, sizeof(entry->label), value);
+        }
+    } else if (strcmp(command, "kernel") == 0 || strcmp(command, "linux") == 0) {
+        set_menu_kernel_and_cmdline(entry, cur);
+    } else if (strcmp(command, "module") == 0 || strcmp(command, "initrd") == 0) {
+        if (entry->module_count < BOOTX_MAX_MODULES && read_config_token(&cur, value, sizeof(value))) {
+            str_copy_limit(entry->modules[entry->module_count],
+                           sizeof(entry->modules[entry->module_count]),
+                           value);
+            entry->module_count++;
+        }
+    } else if (strcmp(command, "cmdline") == 0) {
+        cur = trim_left_mut(cur);
+        trim_right_mut(cur);
+        str_copy_limit(entry->cmdline, sizeof(entry->cmdline), cur);
+    } else if (command[0] == '}') {
+        finish_menu_entry(entry_index);
+        *in_menuentry = 0;
+    }
+}
+
 static void parse_config(const char *text, uint32_t size) {
     const char *cur = text;
     const char *end = text + size;
     uint32_t entry_index = 0;
+    int in_menuentry = 0;
 
     memset(g_menu_entries, 0, sizeof(g_menu_entries));
     g_menu_count = 0;
 
     while (cur < end && entry_index < BOOTX_UEFI_MAX_MENU_ENTRIES) {
-        const char *line = cur;
+        char line_buffer[256];
+        const char *line_start = cur;
         const char *line_end;
         const char *eq;
         const char *key_start;
         const char *key_end;
         const char *value_start;
         const char *value_end;
+        const char *token_end;
+        char *line;
+        size_t line_len;
 
         while (cur < end && *cur != '\n') {
             cur++;
@@ -685,17 +822,49 @@ static void parse_config(const char *text, uint32_t size) {
         if (cur < end && *cur == '\n') {
             cur++;
         }
-        eq = line;
-        while (eq < line_end && *eq != '=') {
-            eq++;
+        line_len = (size_t)(line_end - line_start);
+        if (line_len >= sizeof(line_buffer)) {
+            line_len = sizeof(line_buffer) - 1u;
         }
-        if (eq >= line_end || line == line_end || *line == '#') {
+        memcpy(line_buffer, line_start, line_len);
+        line_buffer[line_len] = '\0';
+        line = line_buffer;
+        trim_right_mut(line);
+        strip_comment(line);
+        trim_right_mut(line);
+        line = trim_left_mut(line);
+
+        if (*line == '\0') {
+            if (!in_menuentry && g_menu_entries[entry_index].kernel[0] != '\0') {
+                finish_menu_entry(&entry_index);
+            }
             continue;
         }
+
+        token_end = line;
+        while (*token_end != '\0' && *token_end != ' ' && *token_end != '\t' && *token_end != '=') {
+            token_end++;
+        }
+        if (!key_equals(line, (uint32_t)(token_end - line), "LABEL") &&
+            !key_equals(line, (uint32_t)(token_end - line), "KERNEL") &&
+            !key_equals(line, (uint32_t)(token_end - line), "CMDLINE") &&
+            !key_equals(line, (uint32_t)(token_end - line), "MODULE")) {
+            parse_config_command(line, &entry_index, &in_menuentry);
+            continue;
+        }
+
+        eq = token_end;
+        while (*eq != '\0' && *eq != '=') {
+            eq++;
+        }
+        if (*eq == '\0') {
+            continue;
+        }
+
         key_start = line;
         key_end = eq;
         value_start = eq + 1;
-        value_end = line_end;
+        value_end = line + strlen(line);
         trim_span(&key_start, &key_end);
         trim_span(&value_start, &value_end);
         if (key_equals(key_start, (uint32_t)(key_end - key_start), "LABEL")) {
@@ -735,91 +904,53 @@ static void parse_config(const char *text, uint32_t size) {
     }
 }
 
-static void render_entry_info(uint32_t selected, uint32_t marquee_phase) {
-    const UINTN side_col = 56u;
-    const UINTN side_width = 22u;
-    const UINTN side_value_col = side_col + 7u;
+static void draw_menu_border(UINTN row, UINTN col, UINTN width, UINTN height) {
+    const CHAR16 top_left = 0x250cu;
+    const CHAR16 top_right = 0x2510u;
+    const CHAR16 bottom_left = 0x2514u;
+    const CHAR16 bottom_right = 0x2518u;
+    const CHAR16 horizontal = 0x2500u;
+    const CHAR16 vertical = 0x2502u;
 
-    efi_puts_at(8, side_col + 1u, "label:");
-    efi_puts_marquee_at(8, side_value_col, g_menu_entries[selected].label, side_width - 8u, marquee_phase);
-    efi_puts_at(10, side_col + 1u, "kernel:");
-    efi_puts_marquee_at(10, side_value_col + 1u, g_menu_entries[selected].kernel, side_width - 9u, marquee_phase);
-    efi_puts_at(12, side_col + 1u, "cmdline:");
-    efi_puts_marquee_at(13,
-                        side_col + 1u,
-                        g_menu_entries[selected].cmdline[0] ? g_menu_entries[selected].cmdline : "(empty)",
-                        side_width - 2u,
-                        marquee_phase);
-    efi_puts_at(15, side_col + 1u, "modules:");
-    if (g_menu_entries[selected].module_count != 0u) {
-        for (uint32_t i = 0; i < g_menu_entries[selected].module_count && i < 3u; i++) {
-            efi_puts_marquee_at(16u + i,
-                                side_col + 3u,
-                                g_menu_entries[selected].modules[i],
-                                side_width - 4u,
-                                marquee_phase);
-        }
-    } else {
-        efi_puts_at(16, side_col + 3u, "none");
+    efi_set_attribute(0x0fu);
+    efi_hline16(row, col, width, horizontal);
+    efi_hline16(row + height - 1u, col, width, horizontal);
+    efi_put_char16_at(row, col, top_left);
+    efi_put_char16_at(row, col + width - 1u, top_right);
+    efi_put_char16_at(row + height - 1u, col, bottom_left);
+    efi_put_char16_at(row + height - 1u, col + width - 1u, bottom_right);
+
+    for (UINTN i = 1u; i + 1u < height; i++) {
+        efi_put_char16_at(row + i, col, vertical);
+        efi_put_char16_at(row + i, col + width - 1u, vertical);
     }
 }
 
-static void render_menu(uint32_t selected, uint32_t marquee_phase) {
-    const UINTN list_width = 52u;
-    const UINTN side_col = 56u;
-    const UINTN side_width = 22u;
-    UINTN row = 0;
+static void render_menu(uint32_t selected) {
+    const UINTN box_width = 48u;
+    const UINTN box_height = (UINTN)g_menu_count + 2u;
+    const UINTN box_col = (80u - box_width) / 2u;
+    const UINTN box_row = (25u - box_height) / 2u;
+    const UINTN inner_col = box_col + 1u;
+    const UINTN inner_width = box_width - 2u;
+    const UINTN label_col = box_col + 2u;
+    const UINTN label_width = box_width - 4u;
 
+    efi_set_attribute(0x0fu);
     efi_clear_screen();
-    efi_hline(row, 0, 80, ' ');
-    efi_puts_at(row, 2, "boot/x loader");
-    efi_puts_at(row, 62, "UEFI x86_64");
-    row += 2u;
-
-    efi_puts_at(row++, 2, "Select a kernel image");
-    efi_puts_at(row++, 2, "Arrow keys or W/S move, Enter boots.");
-    row++;
+    efi_puts_at(0, 0, "janus");
+    draw_menu_border(box_row, box_col, box_width, box_height);
 
     for (uint32_t i = 0; i < g_menu_count; i++) {
-        char index_text[3];
+        UINTN row = box_row + 1u + i;
+        UINTN attribute = (i == selected) ? 0x70u : 0x0fu;
 
-        efi_hline(row, 2, list_width, ' ');
-        efi_puts_at(row, 4, i == selected ? ">" : " ");
-        index_text[0] = (char)('1' + i);
-        index_text[1] = '.';
-        index_text[2] = '\0';
-        efi_puts_at(row, 6, index_text);
-        efi_puts_clipped_at(row, 9, g_menu_entries[i].label, list_width - 9u);
-        row++;
-
-        efi_hline(row, 2, list_width, ' ');
-        efi_puts_at(row, 6, "kernel:");
-        efi_puts_clipped_at(row, 14, g_menu_entries[i].kernel, 24u);
-        efi_puts_at(row, 40, "modules:");
-        if (g_menu_entries[i].module_count == 0u) {
-            efi_puts_at(row, 49, "0");
-        } else if (g_menu_entries[i].module_count < 10u) {
-            char module_count_text[2];
-            module_count_text[0] = (char)('0' + g_menu_entries[i].module_count);
-            module_count_text[1] = '\0';
-            efi_puts_at(row, 49, module_count_text);
-        } else {
-            efi_puts_at(row, 49, "9+");
-        }
-        row += 2u;
+        efi_set_attribute(attribute);
+        efi_hline(row, inner_col, inner_width, ' ');
+        efi_puts_clipped_at(row, label_col, g_menu_entries[i].label, label_width);
     }
 
-    efi_hline(6, side_col, side_width, ' ');
-    efi_puts_at(6, side_col + 3u, "entry info");
-    for (UINTN info_row = 7u; info_row <= 18u; info_row++) {
-        efi_hline(info_row, side_col, side_width, ' ');
-    }
-
-    render_entry_info(selected, marquee_phase);
-
-    efi_hline(22, 0, 80, ' ');
-    efi_puts_at(22, 2, "Enter boot   Up/Down or W/S move   1-8 quick select");
-    efi_puts_at(24, 2, "boot/x protocol v2  higher-half ELF64 / FAT32");
+    efi_set_attribute(0x0fu);
 }
 
 static int efi_poll_key(struct efi_input_key *key) {
@@ -841,10 +972,8 @@ static int efi_poll_key(struct efi_input_key *key) {
 
 static uint32_t choose_menu_entry(void) {
     uint32_t selected = 0;
-    uint32_t marquee_phase = 0;
-    uint32_t marquee_elapsed = 0;
 
-    render_menu(selected, marquee_phase);
+    render_menu(selected);
     for (;;) {
         struct efi_input_key key;
         CHAR16 ch;
@@ -853,42 +982,28 @@ static uint32_t choose_menu_entry(void) {
             if (g_bs != 0 && g_bs->Stall != 0) {
                 g_bs->Stall(BOOTX_UEFI_MENU_POLL_USEC);
             }
-            marquee_elapsed += BOOTX_UEFI_MENU_POLL_USEC;
-            if (marquee_elapsed >= BOOTX_UEFI_MARQUEE_STEP_USEC) {
-                marquee_elapsed -= BOOTX_UEFI_MARQUEE_STEP_USEC;
-                marquee_phase++;
-                render_entry_info(selected, marquee_phase);
-            }
             continue;
         }
         ch = key.UnicodeChar;
 
         if (ch >= '1' && ch < (CHAR16)('1' + g_menu_count)) {
             selected = (uint32_t)(ch - '1');
-            marquee_phase = 0;
-            marquee_elapsed = 0;
-            render_menu(selected, marquee_phase);
+            render_menu(selected);
         } else if (ch == '\r') {
             return selected;
         } else if ((ch == 'w' || ch == 'W' || ch == 'k' || ch == 'K' ||
                     key.ScanCode == 1u) &&
                    selected > 0u) {
             selected--;
-            marquee_phase = 0;
-            marquee_elapsed = 0;
-            render_menu(selected, marquee_phase);
+            render_menu(selected);
         } else if ((ch == 's' || ch == 'S' || ch == 'j' || ch == 'J' ||
                     key.ScanCode == 2u) &&
                    selected + 1u < g_menu_count) {
             selected++;
-            marquee_phase = 0;
-            marquee_elapsed = 0;
-            render_menu(selected, marquee_phase);
+            render_menu(selected);
         } else if (ch == 0x1bu) {
             selected = 0;
-            marquee_phase = 0;
-            marquee_elapsed = 0;
-            render_menu(selected, marquee_phase);
+            render_menu(selected);
         }
     }
 }
@@ -1474,7 +1589,7 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, struct efi_system_table *system_tab
     if (g_bs->SetWatchdogTimer != 0) {
         g_bs->SetWatchdogTimer(0, 0, 0, 0);
     }
-    efi_puts("boot/x UEFI\n");
+    efi_puts("janus UEFI\n");
     open_boot_volume(image_handle);
     config_init_default(&g_menu_entries[0]);
     g_menu_count = 1;

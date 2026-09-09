@@ -345,6 +345,7 @@ int ehci_finish_device_enumeration(struct ehci_msc_device *dev,
         dev->blockdev.read = ehci_msc_read_impl;
         dev->blockdev.write = ehci_msc_write_impl;
         dev->blockdev.flush = ehci_msc_flush_impl;
+        dev->blockdev.reset = ehci_msc_reset_block_device;
         dev->blockdev.driver_data = dev;
         dev->present = 1u;
         if (blockdev_register(&dev->blockdev) != 0) {
@@ -529,7 +530,9 @@ static void ehci_detach_hub_children(uint8_t hub_addr) {
         struct ehci_msc_device *dev = &g_ehci_msc[i];
 
         if (dev->present && dev->hub_addr == hub_addr) {
-            (void)blockdev_unregister(&dev->blockdev);
+            if (blockdev_unregister(&dev->blockdev) != 0) {
+                continue;
+            }
             dev->present = 0u;
             dev->read_cache_valid = 0u;
         }
@@ -557,7 +560,9 @@ static void ehci_mark_root_port_detached(uint32_t port_index) {
         struct ehci_msc_device *dev = &g_ehci_msc[i];
 
         if (dev->present && dev->hub_addr == 0u && dev->root_port == (uint8_t)port_index) {
-            (void)blockdev_unregister(&dev->blockdev);
+            if (blockdev_unregister(&dev->blockdev) != 0) {
+                continue;
+            }
             dev->present = 0u;
             dev->read_cache_valid = 0u;
         }

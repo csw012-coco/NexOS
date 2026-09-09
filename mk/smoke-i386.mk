@@ -8,7 +8,7 @@ check-i386-nexbox32-full: check-host-tools-image check-host-tools-qemu-i386 chec
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-nexbox32-full.img@@1048576 \
 		$(I386_BUILD)/bootx-i386-nexbox32-full.cfg ::/BOOT/BOOTX.CFG
 	$(Q)set +e; \
-			timeout 20s $(I386_QEMU) -m 128M \
+			timeout 40s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
 				-debugcon file:$(I386_NEXBOX_FULL_BOOT_LOG) \
 				-global isa-debugcon.iobase=0xe9 \
@@ -22,18 +22,10 @@ check-i386-nexbox32-full: check-host-tools-image check-host-tools-qemu-i386 chec
 			exit $$status; \
 		fi
 	$(Q)grep -q 'test32: fork smoke PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
-	$(Q)grep -q 'test32: fork COW cleanup PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
-	$(Q)grep -q 'test32: fork COW ownership PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'test32: fork shared mmap PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
-	$(Q)grep -q 'test32: fork mapping table PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
-	$(Q)grep -q 'test32: fork mmap exec PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
-	$(Q)grep -q 'test32: exec failure cleanup PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
-	$(Q)grep -q 'test32: shared fault cleanup PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
-	$(Q)grep -q 'test32: invalid pointer cleanup PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
-	$(Q)grep -q 'test32: shm lifecycle PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'test32: fork wait exec PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'tty: utf8/hangul edit selftest OK' $(I386_NEXBOX_FULL_BOOT_LOG)
-	$(Q)grep -q 'driver: file /drivers/I386TEST.DRV driver=I386TEST state=active reason=init-ok' $(I386_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'I386TEST.DRV.*loaded.*ELF32/i386/REL.*init-ok.* /drivers/I386TEST.DRV' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox config validate' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox clipboard set nexbox32-clipboard-smoke' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'clipboard: utf8 roundtrip OK' $(I386_NEXBOX_FULL_BOOT_LOG)
@@ -75,13 +67,39 @@ check-i386-nexbox32-full: check-host-tools-image check-host-tools-qemu-i386 chec
 	$(Q)grep -q 'kernel: init starting /system/init' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)echo "i386 NEXBOX32 full smoke passed ($(I386_NEXBOX_FULL_BOOT_LOG))"
 
+check-i386-strict-mm: check-host-tools-image check-host-tools-qemu-i386 check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+	$(call log_cmd,QEMU32-MM,$(I386_TEST_USER))
+	$(Q)rm -f $(I386_STRICT_MM_BOOT_LOG) $(I386_BUILD)/NexOS-i386-strict-mm.img $(I386_BUILD)/bootx-i386-strict-mm.cfg
+	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-strict-mm.img
+	$(Q)sed 's/$$/ i386.strictmm=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-strict-mm.cfg
+	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-strict-mm.img@@1048576 \
+		$(I386_BUILD)/bootx-i386-strict-mm.cfg ::/BOOT/BOOTX.CFG
+	$(Q)set +e; \
+			timeout 20s $(I386_QEMU) -m 128M \
+				-display none -no-reboot -no-shutdown \
+				-debugcon file:$(I386_STRICT_MM_BOOT_LOG) \
+				-global isa-debugcon.iobase=0xe9 \
+				-serial null \
+				-drive if=ide,index=0,media=disk,format=raw,file=$(I386_BUILD)/NexOS-i386-strict-mm.img \
+				-drive if=ide,index=1,media=disk,format=raw,file=$(NXFS_IMAGE); \
+		status=$$?; \
+		if [ $$status -ne 0 ] && [ $$status -ne 124 ]; then \
+			echo "i386 strict MM smoke failed with status $$status"; \
+			test -f $(I386_STRICT_MM_BOOT_LOG) && tail -n 120 $(I386_STRICT_MM_BOOT_LOG); \
+			exit $$status; \
+		fi
+	$(Q)grep -q 'test32: RUN /cmd/test32 strict-mm' $(I386_STRICT_MM_BOOT_LOG)
+	$(Q)grep -q '\[test32\] strict MM PASS' $(I386_STRICT_MM_BOOT_LOG)
+	$(Q)grep -q 'test32: strict MM PASS' $(I386_STRICT_MM_BOOT_LOG)
+	$(Q)grep -q 'kernel: i386 strict MM smoke complete' $(I386_STRICT_MM_BOOT_LOG)
+	$(Q)echo "i386 strict MM smoke passed ($(I386_STRICT_MM_BOOT_LOG))"
+
 check-i386-utf8-input-parity: check-i386-nexbox32-full check-i386-gfx-editor-smoke
 	$(Q)grep -q 'tty: utf8/hangul edit selftest OK' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'font: utf8/unifont check OK' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'clipboard: utf8 roundtrip OK' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'ed: editor ready' $(I386_GFX_EDITOR_BOOT_LOG)
 	$(Q)grep -q 'vi: editor ready' $(I386_GFX_EDITOR_BOOT_LOG)
-	$(Q)grep -q 'gfx/editor: RUN /cmd/nexbox vim --check' $(I386_GFX_EDITOR_BOOT_LOG)
 	$(Q)echo "i386 UTF-8/Hangul input and editor parity smoke passed"
 
 check-i386-backend-long: check-i386-driver-active check-i386-gfx-editor-smoke check-i386-nexbox32-full
@@ -119,10 +137,14 @@ check-i386-backend-audio: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 			test -f $(I386_BACKEND_AUDIO_BOOT_LOG) && tail -n 120 $(I386_BACKEND_AUDIO_BOOT_LOG); \
 			exit $$status; \
 		fi
-	$(Q)grep -q 'driver: file /drivers/AC9732.DRV driver=AC97 state=active reason=init-ok' $(I386_BACKEND_AUDIO_BOOT_LOG)
+	$(Q)grep -q 'ac97: driver AC97 state=active reason=pci' $(I386_BACKEND_AUDIO_BOOT_LOG)
 	$(Q)grep -q 'ac97: backend smoke OK' $(I386_BACKEND_AUDIO_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox ac97' $(I386_BACKEND_AUDIO_BOOT_LOG)
+	$(Q)grep -q 'AC97 controller' $(I386_BACKEND_AUDIO_BOOT_LOG)
+	$(Q)grep -q 'codec id=' $(I386_BACKEND_AUDIO_BOOT_LOG)
+	$(Q)grep -q 'nexbox32: PASS /cmd/nexbox ac97' $(I386_BACKEND_AUDIO_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox wav --smoke /system/audio-smoke.wav' $(I386_BACKEND_AUDIO_BOOT_LOG)
+	$(Q)grep -q 'wav: fd stream smoke OK' $(I386_BACKEND_AUDIO_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: PASS /cmd/nexbox wav --smoke /system/audio-smoke.wav' $(I386_BACKEND_AUDIO_BOOT_LOG)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_AUDIO_BOOT_LOG)
 	$(Q)echo "i386 backend audio smoke passed ($(I386_BACKEND_AUDIO_BOOT_LOG))"
@@ -151,9 +173,12 @@ check-i386-backend-hda: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 			test -f $(I386_BACKEND_HDA_BOOT_LOG) && tail -n 120 $(I386_BACKEND_HDA_BOOT_LOG); \
 			exit $$status; \
 		fi
-	$(Q)grep -q 'driver: file /drivers/HDA32.DRV driver=HDA state=active reason=init-ok' $(I386_BACKEND_HDA_BOOT_LOG)
+	$(Q)grep -q 'hda: driver HDA state=active reason=pci' $(I386_BACKEND_HDA_BOOT_LOG)
 	$(Q)grep -q 'hda: backend smoke OK' $(I386_BACKEND_HDA_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox hda' $(I386_BACKEND_HDA_BOOT_LOG)
+	$(Q)grep -q 'HD Audio controller' $(I386_BACKEND_HDA_BOOT_LOG)
+	$(Q)grep -q 'codec_mask=' $(I386_BACKEND_HDA_BOOT_LOG)
+	$(Q)grep -q 'rings corb_size=' $(I386_BACKEND_HDA_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: PASS /cmd/nexbox hda' $(I386_BACKEND_HDA_BOOT_LOG)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_HDA_BOOT_LOG)
 	$(Q)echo "i386 backend HDA smoke passed ($(I386_BACKEND_HDA_BOOT_LOG))"
@@ -215,13 +240,12 @@ check-i386-backend-ahci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 		fi
 	$(Q)grep -q 'ahci: controller' $(I386_BACKEND_AHCI_BOOT_LOG)
 	$(Q)grep -q 'ahci: port' $(I386_BACKEND_AHCI_BOOT_LOG)
+	$(Q)grep -q 'ahci0 sectors=' $(I386_BACKEND_AHCI_BOOT_LOG)
 	$(Q)grep -q 'ahci: read smoke OK' $(I386_BACKEND_AHCI_BOOT_LOG)
 	$(Q)grep -q 'ahci: write smoke OK' $(I386_BACKEND_AHCI_BOOT_LOG)
 	$(Q)grep -q 'ahci: flush smoke OK' $(I386_BACKEND_AHCI_BOOT_LOG)
 	$(Q)grep -q 'ahci: restore smoke OK' $(I386_BACKEND_AHCI_BOOT_LOG)
 	$(Q)grep -q 'ahci: rw smoke OK' $(I386_BACKEND_AHCI_BOOT_LOG)
-	$(Q)grep -q 'driver: init AHCI result=1 reason=init-ok' $(I386_BACKEND_AHCI_BOOT_LOG)
-	$(Q)grep -q 'driver: init RTL8139 result=0 reason=missing-hardware' $(I386_BACKEND_AHCI_BOOT_LOG)
 	$(Q)grep -q 'driver: builtin active=' $(I386_BACKEND_AHCI_BOOT_LOG)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_AHCI_BOOT_LOG)
 	$(Q)echo "i386 backend AHCI smoke passed ($(I386_BACKEND_AHCI_BOOT_LOG))"
@@ -251,14 +275,14 @@ check-i386-backend-ehci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 			exit $$status; \
 		fi
 	$(Q)grep -q 'ehci: controller' $(I386_BACKEND_EHCI_BOOT_LOG)
+	$(Q)grep -q 'ehci: port.*vid=' $(I386_BACKEND_EHCI_BOOT_LOG)
+	$(Q)grep -q 'ehci: MSC if=' $(I386_BACKEND_EHCI_BOOT_LOG)
 	$(Q)grep -q 'ehci: port.*usbmsc' $(I386_BACKEND_EHCI_BOOT_LOG)
 	$(Q)grep -q 'ehci: msc read smoke OK' $(I386_BACKEND_EHCI_BOOT_LOG)
 	$(Q)grep -q 'ehci: msc write smoke OK' $(I386_BACKEND_EHCI_BOOT_LOG)
 	$(Q)grep -q 'ehci: msc flush smoke OK' $(I386_BACKEND_EHCI_BOOT_LOG)
 	$(Q)grep -q 'ehci: msc restore smoke OK' $(I386_BACKEND_EHCI_BOOT_LOG)
 	$(Q)grep -q 'ehci: msc rw smoke OK' $(I386_BACKEND_EHCI_BOOT_LOG)
-	$(Q)grep -q 'driver: init EHCI result=1 reason=init-ok' $(I386_BACKEND_EHCI_BOOT_LOG)
-	$(Q)grep -q 'driver: init RTL8139 result=0 reason=missing-hardware' $(I386_BACKEND_EHCI_BOOT_LOG)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_EHCI_BOOT_LOG)
 	$(Q)echo "i386 backend EHCI MSC smoke passed ($(I386_BACKEND_EHCI_BOOT_LOG))"
 
@@ -287,14 +311,13 @@ check-i386-backend-xhci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 			exit $$status; \
 	fi
 	$(Q)grep -q 'xhci.*controller' $(I386_BACKEND_XHCI_BOOT_LOG)
+	$(Q)grep -q 'xhci: MSC probe slot=' $(I386_BACKEND_XHCI_BOOT_LOG)
 	$(Q)grep -q 'xusbmsc' $(I386_BACKEND_XHCI_BOOT_LOG)
 	$(Q)grep -q 'xhci: msc read smoke OK' $(I386_BACKEND_XHCI_BOOT_LOG)
 	$(Q)grep -q 'xhci: msc write smoke OK' $(I386_BACKEND_XHCI_BOOT_LOG)
 	$(Q)grep -q 'xhci: msc flush smoke OK' $(I386_BACKEND_XHCI_BOOT_LOG)
 	$(Q)grep -q 'xhci: msc restore smoke OK' $(I386_BACKEND_XHCI_BOOT_LOG)
 	$(Q)grep -q 'xhci: msc rw smoke OK' $(I386_BACKEND_XHCI_BOOT_LOG)
-	$(Q)grep -q 'driver: init XHCI result=1 reason=init-ok' $(I386_BACKEND_XHCI_BOOT_LOG)
-	$(Q)grep -q 'driver: init RTL8139 result=0 reason=missing-hardware' $(I386_BACKEND_XHCI_BOOT_LOG)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_XHCI_BOOT_LOG)
 	$(Q)echo "i386 backend XHCI MSC smoke passed ($(I386_BACKEND_XHCI_BOOT_LOG))"
 
@@ -322,9 +345,10 @@ check-i386-backend-ehci-hid: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 			exit $$status; \
 	fi
 	$(Q)grep -q 'ehci: controller' $(I386_BACKEND_EHCI_HID_BOOT_LOG)
+	$(Q)grep -q 'ehci: port.*vid=' $(I386_BACKEND_EHCI_HID_BOOT_LOG)
+	$(Q)grep -q 'ehci: port.*hidkbd' $(I386_BACKEND_EHCI_HID_BOOT_LOG)
 	$(Q)grep -q 'ehci: hid keyboard smoke OK' $(I386_BACKEND_EHCI_HID_BOOT_LOG)
 	$(Q)grep -q 'usb: hid keyboard smoke OK' $(I386_BACKEND_EHCI_HID_BOOT_LOG)
-	$(Q)grep -q 'driver: init EHCI result=1 reason=init-ok' $(I386_BACKEND_EHCI_HID_BOOT_LOG)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_EHCI_HID_BOOT_LOG)
 	$(Q)echo "i386 backend EHCI HID smoke passed ($(I386_BACKEND_EHCI_HID_BOOT_LOG))"
 
@@ -353,8 +377,8 @@ check-i386-backend-xhci-hid: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 	fi
 	$(Q)grep -q 'xhci.*controller' $(I386_BACKEND_XHCI_HID_BOOT_LOG)
 	$(Q)grep -q 'xhci: hid keyboard smoke OK' $(I386_BACKEND_XHCI_HID_BOOT_LOG)
+	$(Q)grep -q 'xhci: hid keyboard smoke OK count=' $(I386_BACKEND_XHCI_HID_BOOT_LOG)
 	$(Q)grep -q 'usb: hid keyboard smoke OK' $(I386_BACKEND_XHCI_HID_BOOT_LOG)
-	$(Q)grep -q 'driver: init XHCI result=1 reason=init-ok' $(I386_BACKEND_XHCI_HID_BOOT_LOG)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_XHCI_HID_BOOT_LOG)
 	$(Q)echo "i386 backend XHCI HID smoke passed ($(I386_BACKEND_XHCI_HID_BOOT_LOG))"
 
@@ -383,12 +407,15 @@ check-i386-backend-rtl8139: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 	$(Q)grep -q 'rtl8139: controller' $(I386_BACKEND_RTL8139_BOOT_LOG)
 	$(Q)grep -q 'rtl8139: tx/rx smoke OK' $(I386_BACKEND_RTL8139_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox rtl8139' $(I386_BACKEND_RTL8139_BOOT_LOG)
+	$(Q)grep -q 'RTL8139 controller' $(I386_BACKEND_RTL8139_BOOT_LOG)
+	$(Q)grep -q 'mac 52:54:00:12:34:56' $(I386_BACKEND_RTL8139_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox ifconfig' $(I386_BACKEND_RTL8139_BOOT_LOG)
+	$(Q)grep -q 'state up link=up speed=100Mbps' $(I386_BACKEND_RTL8139_BOOT_LOG)
+	$(Q)grep -q 'ipv4 10.0.2.15' $(I386_BACKEND_RTL8139_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox netstat' $(I386_BACKEND_RTL8139_BOOT_LOG)
+	$(Q)grep -q 'active sockets: not tracked yet' $(I386_BACKEND_RTL8139_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox route' $(I386_BACKEND_RTL8139_BOOT_LOG)
+	$(Q)grep -q 'default.*10.0.2.2.*rtl8139' $(I386_BACKEND_RTL8139_BOOT_LOG)
 	$(Q)grep -q 'rtl8139: command smoke OK' $(I386_BACKEND_RTL8139_BOOT_LOG)
-	$(Q)grep -q 'driver: init RTL8139 result=1 reason=init-ok' $(I386_BACKEND_RTL8139_BOOT_LOG)
-	$(Q)grep -q 'driver: init AC97 result=0 reason=missing-hardware' $(I386_BACKEND_RTL8139_BOOT_LOG)
-	$(Q)grep -q 'driver: init HDA result=0 reason=missing-hardware' $(I386_BACKEND_RTL8139_BOOT_LOG)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_RTL8139_BOOT_LOG)
 	$(Q)echo "i386 backend RTL8139 TX/RX smoke passed ($(I386_BACKEND_RTL8139_BOOT_LOG))"

@@ -57,8 +57,8 @@ int sched_policy_restore_runqueue_current(struct process *process,
  * Select the next ready process to run.
  * 
  * Implements the scheduling algorithm (FIFO, round-robin, priority, etc).
- * Returns -1 for the foreground session, a runtime slot for a background
- * process, or -2 if no eligible process is ready.
+ * Returns -1 for the root user session, a spawned job runtime slot, or -2 if
+ * no eligible process is ready.
  * 
  * This is the core policy decision point.
  */

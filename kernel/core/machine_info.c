@@ -71,7 +71,7 @@ void kernel_fill_machine_info(struct syscall_machine_info *info) {
     machine_info_copy_text(info->kernel_name, sizeof(info->kernel_name), "kernel64");
     machine_info_copy_text(info->kernel_version, sizeof(info->kernel_version), NOS_KERNEL_VERSION);
     machine_info_copy_text(info->build_date, sizeof(info->build_date), __DATE__ " " __TIME__);
-    machine_info_copy_text(info->arch_name, sizeof(info->arch_name), "x86_64");
+    machine_info_copy_text(info->arch_name, sizeof(info->arch_name), hal_arch_name());
 
     hal_cpu_cpuid(0u,
                   0u,

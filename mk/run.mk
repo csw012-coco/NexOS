@@ -8,7 +8,7 @@ run-i386: $(I386_IMAGE) $(NXFS_IMAGE)
 run: arch-run
 
 run-x86_64: $(IMAGE) $(NXFS_IMAGE)
-	$(QEMU_X86_64) -enable-kvm \
+	$(QEMU_X86_64) -enable-kvm -machine pc,acpi=on \
 	$(QEMU_SERIAL) \
 	$(QEMU_NET) \
 	-drive if=ide,index=0,media=disk,format=raw,file=$(IMAGE) \

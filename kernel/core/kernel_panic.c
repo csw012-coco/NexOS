@@ -5,19 +5,12 @@
 #include "kernel/internal/proc/process_internal_base.h"
 #include "kernel/internal/proc/process_types_internal.h"
 #include "kernel/internal/sys/syscall_internal.h"
+#include "kernel/public/proc/scheduler.h"
 #include "kernel/public/core/console.h"
 #include "kernel/public/core/tty.h"
 #include "kernel/public/mem/address_space.h"
 #include "kernel/public/mem/vmm.h"
-
-struct kernel_fault_context {
-    uint64_t cr0;
-    uint64_t cr2;
-    uint64_t cr3;
-    uint64_t cr4;
-    uint64_t fault_rsp;
-    uint64_t fault_ss;
-};
+#include "kernel/public/sys/syscall.h"
 
 enum kernel_panic_detail {
     KERNEL_PANIC_DETAIL_COMPACT = 0,
@@ -202,26 +195,38 @@ static void panic_write_pair(struct tty *shell_tty,
     panic_putc(shell_tty, '\n');
 }
 
-static void kernel_collect_fault_context(const struct exception_frame *frame,
-                                         struct kernel_fault_context *context) {
-    const uint64_t *raw = (const uint64_t *)frame;
+struct kernel_panic_trace_ctx {
+    struct tty *shell_tty;
+};
 
-    if (frame == 0 || context == 0) {
+static void kernel_panic_trace_text(void *ctx, const char *text) {
+    struct kernel_panic_trace_ctx *trace_ctx = (struct kernel_panic_trace_ctx *)ctx;
+
+    if (trace_ctx == 0) {
         return;
     }
+    panic_write_str(trace_ctx->shell_tty, text);
+    panic_putc(trace_ctx->shell_tty, '\n');
+}
 
-    __asm__ __volatile__("mov %%cr0, %0" : "=r"(context->cr0));
-    __asm__ __volatile__("mov %%cr2, %0" : "=r"(context->cr2));
-    __asm__ __volatile__("mov %%cr3, %0" : "=r"(context->cr3));
-    __asm__ __volatile__("mov %%cr4, %0" : "=r"(context->cr4));
-    __asm__ __volatile__("mov %%ss, %0" : "=r"(context->fault_ss));
+static void kernel_panic_trace_hex64(void *ctx, const char *label, uint64_t value) {
+    struct kernel_panic_trace_ctx *trace_ctx = (struct kernel_panic_trace_ctx *)ctx;
 
-    if ((frame->cs & 0x3u) == 0x3u) {
-        context->fault_rsp = raw[19];
-        context->fault_ss = raw[20];
-    } else {
-        context->fault_rsp = (uint64_t)(uintptr_t)(frame + 1);
+    if (trace_ctx == 0) {
+        return;
     }
+    panic_write_label_value(trace_ctx->shell_tty, label, value);
+}
+
+static void kernel_panic_trace_ops_for_tty(struct tty *shell_tty,
+                                           struct kernel_panic_trace_ctx *ctx,
+                                           struct hal_boot_trace_ops *ops) {
+    if (ctx == 0 || ops == 0) {
+        return;
+    }
+    ctx->shell_tty = shell_tty;
+    ops->text = kernel_panic_trace_text;
+    ops->hex64 = kernel_panic_trace_hex64;
 }
 
 static const char *kernel_process_state_name(enum process_state state) {
@@ -274,6 +279,8 @@ static const char *kernel_syscall_name(uint64_t number) {
         case SYS_PROC_QUERY: return "proc_query";
         case SYS_FG: return "fg";
         case SYS_BG: return "bg";
+        case SYS_TTY_CLAIM: return "tty_claim";
+        case SYS_SETCAP: return "setcap";
         case SYS_FORK: return "fork";
         case SYS_MMAP: return "mmap";
         case SYS_MUNMAP: return "munmap";
@@ -295,7 +302,7 @@ static int kernel_addr_in_user_range(uint64_t addr) {
 
 static void kernel_panic_write_header(struct tty *shell_tty,
                                       uint32_t vector,
-                                      const struct kernel_fault_context *context,
+                                      const struct hal_exception_snapshot *context,
                                       enum kernel_panic_detail detail) {
     panic_clear(shell_tty);
     panic_write_str(shell_tty, "[");
@@ -324,35 +331,55 @@ static void kernel_panic_write_header(struct tty *shell_tty,
 
     if (vector == 14) {
         panic_write_str(shell_tty, "Fault Address    : ");
-        panic_write_hex64(shell_tty, context->cr2);
+        panic_write_hex64(shell_tty, context->fault_address);
         panic_putc(shell_tty, '\n');
     } else {
         panic_write_str(shell_tty, "Fault Address    : N/A (CR2 is only valid for #PF)\n");
         panic_write_str(shell_tty, "CR2              : ");
-        panic_write_hex64(shell_tty, context->cr2);
+        panic_write_hex64(shell_tty, context->fault_address);
         panic_write_str(shell_tty, " (stale/last page-fault address)\n");
     }
 }
 
 static void kernel_panic_write_cpu_state(struct tty *shell_tty,
-                                         const struct exception_frame *frame,
-                                         const struct kernel_fault_context *context) {
+                                         const struct hal_exception_snapshot *context) {
     panic_write_str(shell_tty, "--- CPU STATE ---\n");
-    panic_write_reg4(shell_tty, "RAX=", frame->rax, "RBX=", frame->rbx, "RCX=", frame->rcx, "RDX=", frame->rdx);
-    panic_write_reg4(shell_tty, "RSI=", frame->rsi, "RDI=", frame->rdi, "RBP=", frame->rbp, "RSP=", context->fault_rsp);
-    panic_write_reg4(shell_tty, "R8 =", frame->r8, "R9 =", frame->r9, "R10=", frame->r10, "R11=", frame->r11);
-    panic_write_reg4(shell_tty, "R12=", frame->r12, "R13=", frame->r13, "R14=", frame->r14, "R15=", frame->r15);
-    panic_write_reg4(shell_tty, "EXCEPTION RIP=", frame->rip, "RFL=", frame->rflags, "EXCEPTION CS =", frame->cs, "SS =", context->fault_ss);
-    panic_write_label_value(shell_tty, "Error Code       : ", frame->error_code);
+    panic_write_reg4(shell_tty,
+                     "RAX=", context->general[HAL_EXCEPTION_REGISTER_RAX],
+                     "RBX=", context->general[HAL_EXCEPTION_REGISTER_RBX],
+                     "RCX=", context->general[HAL_EXCEPTION_REGISTER_RCX],
+                     "RDX=", context->general[HAL_EXCEPTION_REGISTER_RDX]);
+    panic_write_reg4(shell_tty,
+                     "RSI=", context->general[HAL_EXCEPTION_REGISTER_RSI],
+                     "RDI=", context->general[HAL_EXCEPTION_REGISTER_RDI],
+                     "RBP=", context->general[HAL_EXCEPTION_REGISTER_RBP],
+                     "SP =", context->stack_pointer);
+    panic_write_reg4(shell_tty,
+                     "R8 =", context->general[HAL_EXCEPTION_REGISTER_R8],
+                     "R9 =", context->general[HAL_EXCEPTION_REGISTER_R9],
+                     "R10=", context->general[HAL_EXCEPTION_REGISTER_R10],
+                     "R11=", context->general[HAL_EXCEPTION_REGISTER_R11]);
+    panic_write_reg4(shell_tty,
+                     "R12=", context->general[HAL_EXCEPTION_REGISTER_R12],
+                     "R13=", context->general[HAL_EXCEPTION_REGISTER_R13],
+                     "R14=", context->general[HAL_EXCEPTION_REGISTER_R14],
+                     "R15=", context->general[HAL_EXCEPTION_REGISTER_R15]);
+    panic_write_reg4(shell_tty,
+                     "EXCEPTION IP =", context->instruction_pointer,
+                     "RFL=", context->flags,
+                     "EXCEPTION CS =", context->code_selector,
+                     "SS =", context->stack_selector);
+    panic_write_label_value(shell_tty, "Error Code       : ", context->error_code);
 }
 
 static void kernel_panic_write_compact_cpu_state(struct tty *shell_tty,
-                                                 const struct exception_frame *frame,
-                                                 const struct kernel_fault_context *context) {
+                                                 const struct hal_exception_snapshot *context) {
     panic_write_str(shell_tty, "--- CPU SUMMARY ---\n");
-    panic_write_pair(shell_tty, "RIP=", frame->rip, " RSP=", context->fault_rsp);
-    panic_write_pair(shell_tty, "RAX=", frame->rax, " ERR=", frame->error_code);
-    panic_write_pair(shell_tty, "CS =", frame->cs, " SS =", context->fault_ss);
+    panic_write_pair(shell_tty, "IP =", context->instruction_pointer, " SP =", context->stack_pointer);
+    panic_write_pair(shell_tty,
+                     "RAX=", context->general[HAL_EXCEPTION_REGISTER_RAX],
+                     " ERR=", context->error_code);
+    panic_write_pair(shell_tty, "CS =", context->code_selector, " SS =", context->stack_selector);
 }
 
 static void kernel_panic_write_error_code_type(struct tty *shell_tty, uint32_t vector) {
@@ -392,28 +419,31 @@ static void kernel_panic_write_process(struct tty *shell_tty, const struct proce
 }
 
 static void kernel_panic_write_code_bytes(struct tty *shell_tty,
-                                          const struct kernel_fault_context *context,
-                                          const struct exception_frame *frame) {
+                                          const struct hal_exception_snapshot *context) {
     uint64_t phys = 0;
     uint64_t flags = 0;
     uint64_t start;
     uint64_t page_remaining;
     uint32_t count;
 
-    if (context == 0 || frame == 0) {
+    if (context == 0) {
         return;
     }
 
-    panic_write_str(shell_tty, "--- CODE BYTES AT EXCEPTION RIP ---\n");
-    panic_write_label_value(shell_tty, "RIP              : ", frame->rip);
+    panic_write_str(shell_tty, "--- CODE BYTES AT EXCEPTION IP ---\n");
+    panic_write_label_value(shell_tty, "IP               : ", context->instruction_pointer);
 
-    if (frame->rip == 0 || !vmm_query_mapping_in_context(context->cr3, frame->rip, &phys, &flags)) {
+    if (context->instruction_pointer == 0 ||
+        !hal_paging_get_mapping_info_in_root(context->paging_root,
+                                             context->instruction_pointer,
+                                             &phys,
+                                             &flags)) {
         panic_write_str(shell_tty, "READABLE         : no\n");
         panic_write_str(shell_tty, "BYTES            : unavailable\n");
         return;
     }
 
-    start = frame->rip;
+    start = context->instruction_pointer;
     page_remaining = 0x1000ull - (start & 0xfffull);
     count = page_remaining < 16u ? (uint32_t)page_remaining : 16u;
 
@@ -438,10 +468,10 @@ static void kernel_panic_write_code_bytes(struct tty *shell_tty,
 
 static void kernel_panic_write_raw_trap_frame(struct tty *shell_tty,
                                               const struct exception_frame *frame,
-                                              const struct kernel_fault_context *context,
+                                              const struct hal_exception_snapshot *context,
                                               uint32_t vector,
                                               const struct process *proc) {
-    const uint64_t *raw = (const uint64_t *)frame;
+    uint32_t i;
 
     if (frame == 0 || context == 0) {
         return;
@@ -456,117 +486,14 @@ static void kernel_panic_write_raw_trap_frame(struct tty *shell_tty,
         panic_write_str(shell_tty, proc->name != 0 ? proc->name : "(unnamed)");
         panic_putc(shell_tty, '\n');
     }
-    panic_write_label_value(shell_tty, "frame+00 rax     = ", raw[0]);
-    panic_write_label_value(shell_tty, "frame+78 err     = ", frame->error_code);
-    panic_write_label_value(shell_tty, "frame+80 rip     = ", frame->rip);
-    panic_write_label_value(shell_tty, "frame+88 cs      = ", frame->cs);
-    panic_write_label_value(shell_tty, "frame+90 rflags  = ", frame->rflags);
-    panic_write_label_value(shell_tty, "frame+98 rsp     = ", (frame->cs & 0x3u) == 0x3u ? raw[19] : context->fault_rsp);
-    panic_write_label_value(shell_tty, "frame+a0 ss      = ", (frame->cs & 0x3u) == 0x3u ? raw[20] : context->fault_ss);
+    for (i = 0; i < context->raw_word_count; i++) {
+        panic_write_str(shell_tty, "frame+");
+        panic_write_hex64(shell_tty, (uint64_t)i * 8u);
+        panic_write_str(shell_tty, "       = ");
+        panic_write_hex64(shell_tty, context->raw_words[i]);
+        panic_putc(shell_tty, '\n');
+    }
     panic_write_label_value(shell_tty, "vector           = ", vector);
-}
-
-static void kernel_panic_write_entry_map(struct tty *shell_tty, uint64_t current_user_raw_entry) {
-    uint64_t entry_phys = 0;
-    uint64_t entry_flags = 0;
-    uint64_t pml4e = 0;
-    uint64_t pdpte = 0;
-    uint64_t pde = 0;
-    uint64_t pte = 0;
-
-    if (current_user_raw_entry == 0) {
-        return;
-    }
-
-        panic_write_str(shell_tty, "ENTRY MAP        : ");
-    if (vmm_query_info(current_user_raw_entry, &entry_phys, &entry_flags)) {
-        panic_write_hex64(shell_tty, entry_phys);
-        panic_write_str(shell_tty, " flags=");
-        panic_write_hex64(shell_tty, entry_flags);
-    } else {
-        panic_write_str(shell_tty, "<unmapped>");
-    }
-    panic_putc(shell_tty, '\n');
-
-    if (vmm_query_page_walk(current_user_raw_entry, &pml4e, &pdpte, &pde, &pte)) {
-        panic_write_str(shell_tty, "ENTRY PML4E      : ");
-        panic_write_hex64(shell_tty, pml4e);
-        panic_putc(shell_tty, '\n');
-        panic_write_str(shell_tty, "ENTRY PDPTE      : ");
-        panic_write_hex64(shell_tty, pdpte);
-        panic_putc(shell_tty, '\n');
-        panic_write_str(shell_tty, "ENTRY PDE        : ");
-        panic_write_hex64(shell_tty, pde);
-        panic_putc(shell_tty, '\n');
-        panic_write_str(shell_tty, "ENTRY PTE        : ");
-        panic_write_hex64(shell_tty, pte);
-        panic_putc(shell_tty, '\n');
-    }
-
-    if (entry_phys != 0) {
-        uint64_t entry_page_off = current_user_raw_entry & 0xfffull;
-        const uint8_t *entry_bytes = (const uint8_t *)hal_phys_direct_map(entry_phys + entry_page_off);
-        uint32_t i;
-
-        panic_write_str(shell_tty, "ENTRY BYTES      : ");
-        for (i = 0; i < 8; i++) {
-            if (i != 0) {
-                panic_putc(shell_tty, ' ');
-            }
-            panic_write_hex64(shell_tty, entry_bytes[i]);
-        }
-        panic_putc(shell_tty, '\n');
-    }
-}
-
-static void kernel_panic_write_target_entry_map(struct tty *shell_tty,
-                                                uint64_t current_user_raw_entry,
-                                                const struct process *proc) {
-    uint64_t target_cr3;
-    uint64_t entry_phys = 0;
-    uint64_t entry_flags = 0;
-    uint64_t pml4e = 0;
-    uint64_t pdpte = 0;
-    uint64_t pde = 0;
-    uint64_t pte = 0;
-
-    if (proc == 0 || proc->address_space == 0 || current_user_raw_entry == 0) {
-        return;
-    }
-
-    target_cr3 = proc->address_space->user_cr3;
-    if (target_cr3 == 0) {
-        return;
-    }
-
-    panic_write_str(shell_tty, "TARGET USER CR3  : ");
-    panic_write_hex64(shell_tty, target_cr3);
-    panic_putc(shell_tty, '\n');
-
-    panic_write_str(shell_tty, "TARGET ENTRY MAP : ");
-    if (vmm_query_mapping_in_context(target_cr3, current_user_raw_entry, &entry_phys, &entry_flags)) {
-        panic_write_hex64(shell_tty, entry_phys);
-        panic_write_str(shell_tty, " flags=");
-        panic_write_hex64(shell_tty, entry_flags);
-    } else {
-        panic_write_str(shell_tty, "<unmapped>");
-    }
-    panic_putc(shell_tty, '\n');
-
-    if (vmm_query_page_walk_in_context(target_cr3, current_user_raw_entry, &pml4e, &pdpte, &pde, &pte)) {
-        panic_write_str(shell_tty, "TARGET PML4E     : ");
-        panic_write_hex64(shell_tty, pml4e);
-        panic_putc(shell_tty, '\n');
-        panic_write_str(shell_tty, "TARGET PDPTE     : ");
-        panic_write_hex64(shell_tty, pdpte);
-        panic_putc(shell_tty, '\n');
-        panic_write_str(shell_tty, "TARGET PDE       : ");
-        panic_write_hex64(shell_tty, pde);
-        panic_putc(shell_tty, '\n');
-        panic_write_str(shell_tty, "TARGET PTE       : ");
-        panic_write_hex64(shell_tty, pte);
-        panic_putc(shell_tty, '\n');
-    }
 }
 
 static void kernel_panic_write_addr_map(struct tty *shell_tty, const char *label, uint64_t addr) {
@@ -588,56 +515,49 @@ static void kernel_panic_write_addr_map(struct tty *shell_tty, const char *label
     panic_putc(shell_tty, '\n');
 }
 
-static void kernel_panic_write_switch_trace(struct tty *shell_tty, uint64_t current_user_raw_entry) {
-    struct vmm_page_fault_trace trace = {0};
+static void kernel_panic_write_arch_paging_details(struct tty *shell_tty,
+                                                  uint64_t current_user_raw_entry,
+                                                  const struct process *proc) {
+    struct kernel_panic_trace_ctx trace_ctx;
+    struct hal_boot_trace_ops trace_ops;
+    uint64_t target_root = 0;
 
-    vmm_get_page_fault_trace(&trace);
-    if (trace.requested_cr3 == 0 && trace.previous_cr3 == 0 && trace.actual_cr3 == 0) {
-        return;
+    kernel_panic_trace_ops_for_tty(shell_tty, &trace_ctx, &trace_ops);
+    if (proc != 0 && proc->address_space != 0) {
+        target_root = proc->address_space->user_root;
     }
-
-    panic_write_str(shell_tty, "--- CR3 SWITCH TRACE ---\n");
-    panic_write_reg4(shell_tty, "REQ=", trace.requested_cr3, "PREV=", trace.previous_cr3, "ACTUAL=", trace.actual_cr3, "FLAGS=", trace.reject_flags);
-    panic_write_reg4(shell_tty, "CHECKPOINT RIP=", trace.current_rip, "CHECKPOINT RSP=", trace.current_rsp, "CUR CR3=", vmm_get_current_cr3(), "ENTRY=", current_user_raw_entry);
-
-    if (trace.reject_flags != 0) {
-        panic_write_str(shell_tty, "REJECT REASON    : ");
-        if (trace.reject_flags & VMM_SWITCH_REJECT_ZERO) {
-            panic_write_str(shell_tty, "ZERO ");
-        }
-        if (trace.reject_flags & VMM_SWITCH_REJECT_RIP_UNMAPPED) {
-            panic_write_str(shell_tty, "RIP ");
-        }
-        if (trace.reject_flags & VMM_SWITCH_REJECT_RSP_UNMAPPED) {
-            panic_write_str(shell_tty, "RSP ");
-        }
-        panic_putc(shell_tty, '\n');
-    }
+    hal_paging_log_panic_entry(&trace_ops, &trace_ctx, current_user_raw_entry);
+    hal_paging_log_panic_target_entry(&trace_ops,
+                                      &trace_ctx,
+                                      target_root,
+                                      current_user_raw_entry);
+    hal_paging_log_panic_switch_trace(&trace_ops,
+                                      &trace_ctx,
+                                      current_user_raw_entry);
 }
 
 static void kernel_panic_write_user_return_check(struct tty *shell_tty,
-                                                 const struct exception_frame *frame,
-                                                 const struct kernel_fault_context *context,
+                                                 const struct hal_exception_snapshot *context,
                                                  const struct process *proc) {
-    uint64_t saved_user_rip = 0;
-    uint64_t saved_user_rsp = 0;
-    uint64_t target_cr3 = context != 0 ? context->cr3 : 0;
+    uint64_t saved_user_ip = 0;
+    uint64_t saved_user_sp = 0;
+    uint64_t target_root = context != 0 ? context->paging_root : 0;
     int task_runnable = 0;
 
-    if (frame == 0) {
+    if (context == 0) {
         return;
     }
 
     if (proc != 0) {
         if (proc->has_saved_frame) {
-            saved_user_rip = proc->saved_frame.rip;
-            saved_user_rsp = proc->saved_frame.rsp;
+            saved_user_ip = hal_syscall_frame_ip(&proc->saved_frame);
+            saved_user_sp = hal_syscall_frame_sp(&proc->saved_frame);
         } else {
-            saved_user_rip = proc->entry;
-            saved_user_rsp = proc->stack_top;
+            saved_user_ip = proc->entry;
+            saved_user_sp = proc->stack_top;
         }
-        if (proc->address_space != 0 && proc->address_space->user_cr3 != 0) {
-            target_cr3 = proc->address_space->user_cr3;
+        if (proc->address_space != 0 && proc->address_space->user_root != 0) {
+            target_root = proc->address_space->user_root;
         }
         task_runnable = proc->image_kind != PROCESS_IMAGE_NONE &&
                         proc->state != PROCESS_STATE_FREE &&
@@ -646,18 +566,18 @@ static void kernel_panic_write_user_return_check(struct tty *shell_tty,
 
     panic_write_str(shell_tty, "--- USER RETURN CHECK ---\n");
     panic_write_str(shell_tty, "RETURN MODE      : ");
-    panic_write_str(shell_tty, (frame->cs & 0x3u) == 0x3u ? "user\n" : "kernel\n");
-    panic_write_label_value(shell_tty, "TARGET CS        : ", frame->cs);
-    panic_write_label_value(shell_tty, "TARGET SS        : ", context != 0 ? context->fault_ss : 0);
-    panic_write_label_value(shell_tty, "TARGET RIP       : ", frame->rip);
-    panic_write_label_value(shell_tty, "TARGET RSP       : ", context != 0 ? context->fault_rsp : 0);
-    panic_write_label_value(shell_tty, "TARGET CR3       : ", target_cr3);
-    panic_write_label_value(shell_tty, "SAVED USER RIP   : ", saved_user_rip);
-    panic_write_label_value(shell_tty, "SAVED USER RSP   : ", saved_user_rsp);
-    panic_write_str(shell_tty, "RIP USER RANGE   : ");
-    panic_write_str(shell_tty, kernel_addr_in_user_range(frame->rip) ? "PASS\n" : "FAIL\n");
-    panic_write_str(shell_tty, "RSP USER RANGE   : ");
-    panic_write_str(shell_tty, context != 0 && kernel_addr_in_user_range(context->fault_rsp) ? "PASS\n" : "FAIL\n");
+    panic_write_str(shell_tty, context->user_mode ? "user\n" : "kernel\n");
+    panic_write_label_value(shell_tty, "TARGET CS        : ", context->code_selector);
+    panic_write_label_value(shell_tty, "TARGET SS        : ", context->stack_selector);
+    panic_write_label_value(shell_tty, "TARGET IP        : ", context->instruction_pointer);
+    panic_write_label_value(shell_tty, "TARGET SP        : ", context->stack_pointer);
+    panic_write_label_value(shell_tty, "TARGET ROOT      : ", target_root);
+    panic_write_label_value(shell_tty, "SAVED USER IP    : ", saved_user_ip);
+    panic_write_label_value(shell_tty, "SAVED USER SP    : ", saved_user_sp);
+    panic_write_str(shell_tty, "IP USER RANGE    : ");
+    panic_write_str(shell_tty, kernel_addr_in_user_range(context->instruction_pointer) ? "PASS\n" : "FAIL\n");
+    panic_write_str(shell_tty, "SP USER RANGE    : ");
+    panic_write_str(shell_tty, kernel_addr_in_user_range(context->stack_pointer) ? "PASS\n" : "FAIL\n");
     panic_write_str(shell_tty, "TASK RUNNABLE    : ");
     if (task_runnable) {
         panic_write_str(shell_tty, "PASS\n");
@@ -684,8 +604,8 @@ static void kernel_panic_write_syscall_trace(struct tty *shell_tty) {
     panic_write_label_value(shell_tty, "LAST SYSCALL ARG0: ", g_last_syscall_trace.arg0);
     panic_write_label_value(shell_tty, "LAST SYSCALL ARG1: ", g_last_syscall_trace.arg1);
     panic_write_label_value(shell_tty, "LAST SYSCALL ARG2: ", g_last_syscall_trace.arg2);
-    panic_write_label_value(shell_tty, "LAST SYSCALL RIP : ", g_last_syscall_trace.rip);
-    panic_write_label_value(shell_tty, "LAST SYSCALL RSP : ", g_last_syscall_trace.rsp);
+    panic_write_label_value(shell_tty, "LAST SYSCALL IP  : ", g_last_syscall_trace.instruction_pointer);
+    panic_write_label_value(shell_tty, "LAST SYSCALL SP  : ", g_last_syscall_trace.stack_pointer);
     panic_write_label_value(shell_tty, "LAST SYSCALL RET : ", g_last_syscall_trace.result);
     panic_write_str(shell_tty, "SYSCALL RETURNED : ");
     panic_write_str(shell_tty, g_last_syscall_trace.returned ? "yes\n" : "no/kernel-resume\n");
@@ -704,7 +624,7 @@ static void kernel_panic_write_compact_syscall_trace(struct tty *shell_tty) {
     panic_write_str(shell_tty, "LAST SYSCALL NAME: ");
     panic_write_str(shell_tty, kernel_syscall_name(g_last_syscall_trace.number));
     panic_putc(shell_tty, '\n');
-    panic_write_label_value(shell_tty, "LAST SYSCALL RIP : ", g_last_syscall_trace.rip);
+    panic_write_label_value(shell_tty, "LAST SYSCALL IP  : ", g_last_syscall_trace.instruction_pointer);
     panic_write_label_value(shell_tty, "LAST SYSCALL RET : ", g_last_syscall_trace.result);
 }
 
@@ -748,8 +668,14 @@ static void kernel_panic_write_sched_trace_limited(struct tty *shell_tty, uint32
     }
 }
 
-static void kernel_panic_write_page_fault_info(struct tty *shell_tty, const struct exception_frame *frame) {
-    uint32_t page_error = (uint32_t)frame->error_code;
+static void kernel_panic_write_page_fault_info(struct tty *shell_tty,
+                                               const struct hal_exception_snapshot *context) {
+    uint32_t page_error;
+
+    if (context == 0) {
+        return;
+    }
+    page_error = (uint32_t)context->error_code;
 
     panic_write_str(shell_tty, "--- PAGE FAULT INFO ---\n");
     panic_write_str(shell_tty, "Error Code = ");
@@ -768,16 +694,16 @@ static void kernel_panic_write_page_fault_info(struct tty *shell_tty, const stru
 }
 
 static void kernel_panic_write_fault_maps(struct tty *shell_tty,
-                                          const struct kernel_fault_context *context,
+                                          const struct hal_exception_snapshot *context,
                                           const struct process *proc) {
     if (context == 0) {
         return;
     }
 
     panic_write_str(shell_tty, "FAULT ADDR       : ");
-    panic_write_hex64(shell_tty, context->cr2);
+    panic_write_hex64(shell_tty, context->fault_address);
     panic_putc(shell_tty, '\n');
-    kernel_panic_write_addr_map(shell_tty, "FAULT MAP        : ", context->cr2);
+    kernel_panic_write_addr_map(shell_tty, "FAULT MAP        : ", context->fault_address);
 
     if (proc != 0 && proc->stack_top >= 8u) {
         panic_write_str(shell_tty, "STACK CHECK ADDR : ");
@@ -789,23 +715,21 @@ static void kernel_panic_write_fault_maps(struct tty *shell_tty,
 
 static void kernel_panic_write_summary(struct tty *shell_tty,
                                        uint64_t current_user_raw_entry,
-                                       const struct kernel_fault_context *context,
-                                       const struct exception_frame *frame,
+                                       const struct hal_exception_snapshot *context,
                                        const struct process *proc) {
-    struct vmm_page_fault_trace trace = {0};
-    struct vmm_page_walk_info walk = {0};
+    struct kernel_panic_trace_ctx trace_ctx;
+    struct hal_boot_trace_ops trace_ops;
     uint64_t entry_phys = 0;
     uint64_t entry_flags = 0;
     uint64_t stack_check = 0;
     uint64_t stack_phys = 0;
     uint64_t stack_flags = 0;
+    uint64_t target_root = context != 0 ? context->paging_root : 0;
 
-    if (context == 0 || frame == 0) {
+    if (context == 0) {
         return;
     }
 
-    vmm_get_page_fault_trace(&trace);
-    (void)vmm_query_page_walk_full(context->cr3, current_user_raw_entry, &walk);
     if (proc != 0 && proc->stack_top >= 8u) {
         stack_check = proc->stack_top - 8u;
         (void)vmm_query_info(stack_check, &stack_phys, &stack_flags);
@@ -813,21 +737,24 @@ static void kernel_panic_write_summary(struct tty *shell_tty,
     (void)vmm_query_info(current_user_raw_entry, &entry_phys, &entry_flags);
 
     panic_write_str(shell_tty, "--- SUMMARY ---\n");
-    panic_write_pair(shell_tty, "CR2=", context->cr2, " ERR=", frame->error_code);
-    panic_write_pair(shell_tty, "CR3=", context->cr3, " SW=", trace.reject_flags);
-    panic_write_pair(shell_tty, "RIP=", frame->rip, " RSP=", context->fault_rsp);
-    panic_write_pair(shell_tty, "ENT=", current_user_raw_entry, " EPH=", entry_phys);
-    panic_write_pair(shell_tty, "EFL=", entry_flags, " STK=", stack_check);
-    panic_write_pair(shell_tty, "SPH=", stack_phys, " SFL=", stack_flags);
-    panic_write_pair(shell_tty, "PML4=", walk.pml4_phys, " PDPT=", walk.pdpt_phys);
-    panic_write_pair(shell_tty, "PD=", walk.pd_phys, " PT=", walk.pt_phys);
+    panic_write_pair(shell_tty, "FAULT=", context->fault_address, " ERR=", context->error_code);
+    panic_write_pair(shell_tty, "ROOT=", context->paging_root, " IP=", context->instruction_pointer);
+    panic_write_pair(shell_tty, "SP=", context->stack_pointer, " ENT=", current_user_raw_entry);
+    panic_write_pair(shell_tty, "EPH=", entry_phys, " EFL=", entry_flags);
+    panic_write_pair(shell_tty, "STK=", stack_check, " SPH=", stack_phys);
+    panic_write_label_value(shell_tty, "SFL=", stack_flags);
+    kernel_panic_trace_ops_for_tty(shell_tty, &trace_ctx, &trace_ops);
+    hal_paging_log_panic_summary(&trace_ops,
+                                 &trace_ctx,
+                                 target_root,
+                                 current_user_raw_entry);
 }
 
 void kernel_panic_handle_exception(struct tty *shell_tty,
                                    uint64_t current_user_raw_entry,
                                    uint32_t vector,
                                    const struct exception_frame *frame) {
-    struct kernel_fault_context context = {0};
+    struct hal_exception_snapshot context = {0};
     const struct process *proc;
     enum kernel_panic_detail detail;
 
@@ -836,32 +763,36 @@ void kernel_panic_handle_exception(struct tty *shell_tty,
     }
 
     hal_cpu_cli();
-    kernel_collect_fault_context(frame, &context);
+    hal_exception_snapshot(frame, &context);
     detail = kernel_panic_detail_for_console();
     kernel_panic_write_header(shell_tty, vector, &context, detail);
     if (detail == KERNEL_PANIC_DETAIL_COMPACT) {
-        kernel_panic_write_compact_cpu_state(shell_tty, frame, &context);
+        kernel_panic_write_compact_cpu_state(shell_tty, &context);
     } else {
-        kernel_panic_write_cpu_state(shell_tty, frame, &context);
+        kernel_panic_write_cpu_state(shell_tty, &context);
     }
     kernel_panic_write_error_code_type(shell_tty, vector);
 
     panic_write_str(shell_tty, "--- PAGING REGISTERS ---\n");
     if (detail == KERNEL_PANIC_DETAIL_COMPACT) {
-        panic_write_pair(shell_tty, "CR2=", context.cr2, " CR3=", context.cr3);
+        panic_write_pair(shell_tty, "FAULT=", context.fault_address, " ROOT=", context.paging_root);
     } else {
-        panic_write_reg4(shell_tty, "CR0=", context.cr0, "CR2=", context.cr2, "CR3=", context.cr3, "CR4=", context.cr4);
+        panic_write_reg4(shell_tty,
+                         "CR0=", context.control0,
+                         "FAULT=", context.fault_address,
+                         "ROOT=", context.paging_root,
+                         "CR4=", context.control4);
     }
     if (vector != 14) {
-        panic_write_str(shell_tty, "CR2 NOTE         : stale/last page-fault address; not valid for this exception\n");
+        panic_write_str(shell_tty, "FAULT NOTE       : stale/last page-fault address; not valid for this exception\n");
     }
     panic_write_label_value(shell_tty, "USER ENTRY       : ", current_user_raw_entry);
     proc = process_current(); 
     kernel_panic_write_process(shell_tty, proc);
 
     if (detail != KERNEL_PANIC_DETAIL_COMPACT) {
-        kernel_panic_write_code_bytes(shell_tty, &context, frame);
-        kernel_panic_write_user_return_check(shell_tty, frame, &context, proc);
+        kernel_panic_write_code_bytes(shell_tty, &context);
+        kernel_panic_write_user_return_check(shell_tty, &context, proc);
     }
     if (detail == KERNEL_PANIC_DETAIL_COMPACT) {
         kernel_panic_write_compact_syscall_trace(shell_tty);
@@ -873,32 +804,28 @@ void kernel_panic_handle_exception(struct tty *shell_tty,
 
     if (detail == KERNEL_PANIC_DETAIL_FULL) {
         kernel_panic_write_raw_trap_frame(shell_tty, frame, &context, vector, proc);
-        kernel_panic_write_entry_map(shell_tty, current_user_raw_entry);
-        kernel_panic_write_target_entry_map(shell_tty, current_user_raw_entry, proc);
-        kernel_panic_write_switch_trace(shell_tty, current_user_raw_entry);
+        kernel_panic_write_arch_paging_details(shell_tty, current_user_raw_entry, proc);
     } else {
         panic_write_str(0, "\n--- SERIAL-ONLY FULL PANIC DETAILS ---\n");
         if (detail == KERNEL_PANIC_DETAIL_COMPACT) {
-            kernel_panic_write_cpu_state(0, frame, &context);
-            kernel_panic_write_code_bytes(0, &context, frame);
-            kernel_panic_write_user_return_check(0, frame, &context, proc);
+            kernel_panic_write_cpu_state(0, &context);
+            kernel_panic_write_code_bytes(0, &context);
+            kernel_panic_write_user_return_check(0, &context, proc);
             kernel_panic_write_syscall_trace(0);
             kernel_panic_write_sched_trace_limited(0, 0u);
         }
         kernel_panic_write_raw_trap_frame(0, frame, &context, vector, proc);
-        kernel_panic_write_entry_map(0, current_user_raw_entry);
-        kernel_panic_write_target_entry_map(0, current_user_raw_entry, proc);
-        kernel_panic_write_switch_trace(0, current_user_raw_entry);
+        kernel_panic_write_arch_paging_details(0, current_user_raw_entry, proc);
     }
 
     if (vector == 14) {
-        kernel_panic_write_page_fault_info(shell_tty, frame);
+        kernel_panic_write_page_fault_info(shell_tty, &context);
         if (detail != KERNEL_PANIC_DETAIL_COMPACT) {
             kernel_panic_write_fault_maps(shell_tty, &context, proc);
         } else {
             kernel_panic_write_fault_maps(0, &context, proc);
         }
-        kernel_panic_write_summary(shell_tty, current_user_raw_entry, &context, frame, proc);
+        kernel_panic_write_summary(shell_tty, current_user_raw_entry, &context, proc);
     }
 
     panic_write_str(shell_tty, "\nSystem Halted.");

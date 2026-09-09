@@ -17,9 +17,11 @@ Review Cadence:
 
 Current Focus Areas:
 - Keep the Friendly CLI + Action CLI strategy aligned across shell, NexBox, procfs, and capability work.
-- Remove user-to-kernel header shortcuts.
-- Finish the remaining layer-direction cleanup after the recent syscall-query and root-query boundary fixes.
-- Re-review VFS and mount-query surfaces for any leftover service-to-filesystem shortcuts.
+- Keep README/docs aligned with implemented behavior; mark smoke-only, stub, and experimental paths explicitly.
+- Finish i386 structural parity by shrinking remaining scheduler/process glue and split syscall adapters into thin arch backends.
+- Continue fork/COW/MM cleanup validation for per-process mapping tables, shared mappings, and fault exits.
+- Continue driver/backend parity validation for AHCI, EHCI/XHCI, USB MSC/HID, RTL8139, AC97/HDA, framebuffer, editor, and Doom-like user programs.
+- Re-review VFS, pseudo-fs, and mount-query surfaces for leftover service-to-filesystem shortcuts.
 - Keep build and docs aligned with SOSP v1.4 governance requirements.
 
 Related Strategy Docs:

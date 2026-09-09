@@ -129,6 +129,25 @@ int file_is_active(const struct file *file) {
     return file != 0 && file->kind != KERNEL_FILE_NONE && file->ops != 0;
 }
 
+int file_can_read(const struct file *file) {
+    return file_is_active(file) &&
+           (file->kind == KERNEL_FILE_TTY_STDIN ||
+            file->kind == KERNEL_FILE_PIPE_READ ||
+            (file->flags & KERNEL_FILE_ACCESS_READ) != 0u);
+}
+
+int file_can_write(const struct file *file) {
+    return file_is_active(file) &&
+           (file->kind == KERNEL_FILE_TTY_STDOUT ||
+            file->kind == KERNEL_FILE_TTY_STDERR ||
+            file->kind == KERNEL_FILE_PIPE_WRITE ||
+            (file->flags & KERNEL_FILE_ACCESS_WRITE) != 0u);
+}
+
+int file_can_readdir(const struct file *file) {
+    return file_can_read(file);
+}
+
 void *file_tty_private_handle(const struct file *file) {
     if (file == 0 || !file_is_active(file) || file->private_data == 0) {
         return 0;
@@ -142,6 +161,7 @@ void *file_tty_private_handle(const struct file *file) {
         return 0;
     }
     if (file->vfs_node.aux_index == VFS_DEV_TTY ||
+        file->vfs_node.aux_index == VFS_DEV_TTY1 ||
         file->vfs_node.aux_index == VFS_DEV_TTY2 ||
         file->vfs_node.aux_index == VFS_DEV_TTY3 ||
         file->vfs_node.aux_index == VFS_DEV_STDIN ||
@@ -153,7 +173,12 @@ void *file_tty_private_handle(const struct file *file) {
 }
 
 int file_init_pipe_pair(struct file *read_file, struct file *write_file) {
-    return file_pipe_backend_init_pair(read_file, write_file);
+    if (!file_pipe_backend_init_pair(read_file, write_file)) {
+        return 0;
+    }
+    read_file->flags |= KERNEL_FILE_ACCESS_READ;
+    write_file->flags |= KERNEL_FILE_ACCESS_WRITE;
+    return 1;
 }
 
 void file_discard(struct file *file) {
@@ -187,6 +212,7 @@ int file_read_would_block(const struct file *file) {
         if (file->kind == KERNEL_FILE_VFS &&
             file->vfs_node.mount_kind == VFS_MOUNT_DEVFS &&
             (file->vfs_node.aux_index == VFS_DEV_TTY ||
+             file->vfs_node.aux_index == VFS_DEV_TTY1 ||
              file->vfs_node.aux_index == VFS_DEV_TTY2 ||
              file->vfs_node.aux_index == VFS_DEV_TTY3 ||
              file->vfs_node.aux_index == VFS_DEV_STDIN ||
@@ -209,6 +235,9 @@ int64_t file_read(struct file *file,
     if (!file_is_active(file) || file->ops->read == 0) {
         return -1;
     }
+    if (!file_can_read(file)) {
+        return -NEX_ERR_ACCES;
+    }
     return file->ops->read(file, vfs, buffer, size, flags);
 }
 
@@ -218,6 +247,9 @@ int64_t file_write(struct file *file,
                    uint32_t size) {
     if (!file_is_active(file) || file->ops->write == 0) {
         return -1;
+    }
+    if (!file_can_write(file)) {
+        return -NEX_ERR_ACCES;
     }
     return file->ops->write(file, vfs, buffer, size);
 }
@@ -234,6 +266,9 @@ int64_t file_readdir(struct file *file,
                      struct vfs_dirent *entry) {
     if (!file_is_active(file) || file->ops->readdir == 0) {
         return -1;
+    }
+    if (!file_can_readdir(file)) {
+        return -NEX_ERR_ACCES;
     }
     return file->ops->readdir(file, vfs, entry);
 }

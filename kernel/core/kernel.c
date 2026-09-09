@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "bootx/bootx.h"
+#include "drivers/bus/ioapic.h"
 #include "hal/hal.h"
 #include "kernel/internal/core/device_poll_internal.h"
 #include "kernel/internal/core/boot_log_internal.h"
@@ -8,6 +9,8 @@
 #include "kernel/internal/core/kernel_boot_internal.h"
 #include "kernel/internal/core/kernel_init_internal.h"
 #include "kernel/internal/core/kernel_panic_internal.h"
+#include "kernel/internal/fs/file_device_backend.h"
+#include "kernel/internal/fs/fs_service_fd_internal.h"
 #include "kernel/internal/proc/process_internal_base.h"
 #include "kernel/internal/proc/process_types_internal.h"
 #include "kernel/internal/proc/process_elf_internal.h"
@@ -47,6 +50,37 @@ enum {
 
 static void kernel_boot_trace(const char *text);
 
+static void kernel_fs_service_ensure_terminal_owner(
+    const struct process *proc) {
+    job_ensure_process_terminal_owner(proc);
+}
+
+static void kernel_fs_service_tick_excluding_pid(uint32_t pid) {
+    sched_tick_excluding_pid(pid);
+}
+
+static int kernel_file_device_serial_foreground_allowed(void) {
+    return job_serial_current_process_foreground_allowed();
+}
+
+static void kernel_register_fs_service_runtime_ops(void) {
+    const struct fs_service_fd_runtime_ops ops = {
+        .ensure_terminal_owner = kernel_fs_service_ensure_terminal_owner,
+        .tick_excluding_pid = kernel_fs_service_tick_excluding_pid
+    };
+
+    fs_service_fd_runtime_ops_register(&ops);
+}
+
+static void kernel_register_file_device_runtime_ops(void) {
+    const struct file_device_backend_runtime_ops ops = {
+        .serial_foreground_allowed =
+            kernel_file_device_serial_foreground_allowed
+    };
+
+    file_device_backend_runtime_ops_register(&ops);
+}
+
 static void kernel_halt_forever(void) {
     for (;;) {
         hal_display_service_pending();
@@ -62,20 +96,8 @@ static void kernel_panic_init_exit(void) {
     kernel_halt_forever();
 }
 
-static void kernel_run_console_shell_forever(struct vfs *vfs) {
-    if (vfs == 0) {
-        kernel_panic_init_exit();
-    }
-
-    for (;;) {
-        kernel_boot_trace("kernel: init complete");
-        kernel_boot_trace("kernel: console shell starting /cmd/ush");
-        if (!process_exec(vfs, "/cmd/ush --tty /dev/tty", 0, PROCESS_EXEC_AUTO)) {
-            kernel_boot_trace("kernel: console shell exec failed");
-            break;
-        }
-        kernel_boot_trace("kernel: console shell exited");
-    }
+static void kernel_panic_after_init_return(void) {
+    kernel_boot_trace("kernel: init exited");
     kernel_panic_init_exit();
 }
 
@@ -84,9 +106,11 @@ static uint64_t kernel_handle_user_exception(uint32_t vector, const struct excep
     struct user_page_mapping *mappings;
     const struct process *proc;
     uint64_t fault_addr = 0;
+    uint64_t fault_error = 0;
+    uint64_t fault_ip = 0;
     int32_t exit_code = -11;
 
-    if (frame == 0 || (frame->cs & 0x3u) != 0x3u) {
+    if (!hal_exception_frame_is_user(frame)) {
         return IRQ_DISPATCH_CONTINUE;
     }
     if (vector != 0u && vector != 6u && vector != 8u && vector != 13u && vector != 14u) {
@@ -102,8 +126,8 @@ static uint64_t kernel_handle_user_exception(uint32_t vector, const struct excep
             session = current_cpu_user_state()->active_sessions[index];
             mappings = current_cpu_user_state()->active_mappings[index];
             process_bind_session(session, mappings);
-            if (session->address_space.user_cr3 != 0) {
-                (void)vmm_switch_root_or_fail(session->address_space.user_cr3);
+            if (session->address_space.user_root != 0) {
+                (void)vmm_switch_root_or_fail(session->address_space.user_root);
             }
         }
     }
@@ -118,33 +142,35 @@ static uint64_t kernel_handle_user_exception(uint32_t vector, const struct excep
         exit_code = -4;
     }
 
+    fault_error = hal_exception_frame_error_code(frame);
+    fault_ip = hal_exception_frame_ip(frame);
     if (vector == 14u) {
-        __asm__ __volatile__("mov %%cr2, %0" : "=r"(fault_addr));
-        if (session->address_space.user_cr3 != 0 &&
-            vmm_resolve_cow_fault(session->address_space.user_cr3,
+        fault_addr = hal_page_fault_address();
+        if (session->address_space.user_root != 0 &&
+            vmm_resolve_cow_fault(session->address_space.user_root,
                                   fault_addr,
-                                  frame->error_code)) {
+                                  fault_error)) {
             return IRQ_DISPATCH_RESUME_FAULT;
         }
         if (process_handle_demand_page_fault(session,
                                              mappings,
                                              fault_addr,
-                                             frame->error_code)) {
+                                             fault_error)) {
             return IRQ_DISPATCH_RESUME_FAULT;
         }
-        kprint("proc: fatal user exception pid=%u vec=%u rip=%lx err=%lx cr2=%lx name=%s\n",
+        kprint("proc: fatal user exception pid=%u vec=%u ip=%lx err=%lx fault=%lx name=%s\n",
                proc->pid,
                vector,
-               frame->rip,
-               frame->error_code,
+               fault_ip,
+               fault_error,
                fault_addr,
                proc->name != 0 ? proc->name : "(unnamed)");
     } else {
-        kprint("proc: fatal user exception pid=%u vec=%u rip=%lx err=%lx name=%s\n",
+        kprint("proc: fatal user exception pid=%u vec=%u ip=%lx err=%lx name=%s\n",
                proc->pid,
                vector,
-               frame->rip,
-               frame->error_code,
+               fault_ip,
+               fault_error,
                proc->name != 0 ? proc->name : "(unnamed)");
     }
     process_exit_current(session, exit_code);
@@ -221,8 +247,8 @@ static int kernel_feed_keyboard_event(const struct keyboard_event *event, const 
     }
     ctrl_c = event->pressed && event->ctrl && event->keycode == KEYBOARD_KEY_C;
     ctrl_z = event->pressed && event->ctrl && event->keycode == KEYBOARD_KEY_Z;
-    sigint = ctrl_c && job_tty_sigint(target_tty);
-    sigtstp = ctrl_z && job_tty_sigtstp(target_tty, frame);
+    sigint = ctrl_c && job_tty_deliver_sigint(target_tty) > 0;
+    sigtstp = ctrl_z && job_tty_deliver_sigtstp(target_tty, frame) > 0;
     if (sigint) {
         input_focus_clear();
         tty_write_str(target_tty, "^C\n", 0x0f);
@@ -247,7 +273,7 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
         struct keyboard_event uart_event;
         int usb_signal = 0;
 
-        kernel_irq_state_record(0u, frame != 0 && (frame->cs & 0x3u) == 0x3u);
+        kernel_irq_state_record(0u, hal_syscall_frame_is_user(frame));
         hal_timer_notify_tick();
         timer_ticks++;
         device_poll_poll_usb_mouse_events(&timer_ticks);
@@ -263,7 +289,7 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
         }
         sched_on_timer_tick(timer_ticks);
         hal_irq_ack(0);
-        if (usb_signal && frame != 0 && (frame->cs & 0x3u) == 0x3u) {
+        if (usb_signal && hal_syscall_frame_is_user(frame)) {
             return IRQ_DISPATCH_RESUME_KERNEL;
         }
         return IRQ_DISPATCH_CONTINUE;
@@ -273,18 +299,18 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
         struct keyboard_event event;
         int signal = 0;
 
-        kernel_irq_state_record(1u, frame != 0 && (frame->cs & 0x3u) == 0x3u);
+        kernel_irq_state_record(1u, hal_syscall_frame_is_user(frame));
         event = device_poll_read_ps2_keyboard_event();
         signal = kernel_feed_keyboard_event(&event, frame);
         hal_irq_ack(1);
-        if (signal && frame != 0 && (frame->cs & 0x3u) == 0x3u) {
+        if (signal && hal_syscall_frame_is_user(frame)) {
             return IRQ_DISPATCH_RESUME_KERNEL;
         }
         return IRQ_DISPATCH_CONTINUE;
     }
 
     if (vector == IRQ_VECTOR_MOUSE) {
-        kernel_irq_state_record(12u, frame != 0 && (frame->cs & 0x3u) == 0x3u);
+        kernel_irq_state_record(12u, hal_syscall_frame_is_user(frame));
         device_poll_handle_mouse_irq(&timer_ticks);
         hal_irq_ack(12);
         return IRQ_DISPATCH_CONTINUE;
@@ -294,7 +320,7 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
         struct keyboard_event event;
         int signal = 0;
 
-        kernel_irq_state_record(4u, frame != 0 && (frame->cs & 0x3u) == 0x3u);
+        kernel_irq_state_record(4u, hal_syscall_frame_is_user(frame));
         device_poll_handle_uart_irq();
         while (device_poll_poll_uart_keyboard_event(&event)) {
             if (kernel_feed_keyboard_event(&event, frame)) {
@@ -302,7 +328,7 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
             }
         }
         hal_irq_ack(4);
-        if (signal && frame != 0 && (frame->cs & 0x3u) == 0x3u) {
+        if (signal && hal_syscall_frame_is_user(frame)) {
             return IRQ_DISPATCH_RESUME_KERNEL;
         }
         return IRQ_DISPATCH_CONTINUE;
@@ -313,7 +339,7 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
     }
 
     irq_line = (uint8_t)(vector - IRQ_VECTOR_BASE);
-    kernel_irq_state_record(irq_line, frame != 0 && (frame->cs & 0x3u) == 0x3u);
+    kernel_irq_state_record(irq_line, hal_syscall_frame_is_user(frame));
     device_poll_handle_network_irq(irq_line);
     hal_irq_ack(irq_line);
     return IRQ_DISPATCH_CONTINUE;
@@ -363,10 +389,10 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     }
     kernel_boot_state_init(boot_info->cmdline != 0 ?
                                (const char *)(uintptr_t)boot_info->cmdline :
-                               "",
+                           "",
                            "kernel64",
                            "0.1.1",
-                           "x86_64");
+                           hal_arch_name());
     kernel_irq_state_reset();
 
     memmap = (const struct bootx_memmap_entry *)(uintptr_t)boot_info->memmap;
@@ -377,7 +403,10 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     hal_paging_init(kernel_phys_base);
     kernel_log_paging_info();
     kernel_boot_trace("kernel: pmm init");
-    pmm_init(memmap, boot_info->memmap_count, kernel_phys_base, boot_info->kernel_phys_size);
+    if (!hal_pmm_init_from_boot(boot_info, kernel_phys_base)) {
+        kernel_boot_trace("kernel: pmm init failed");
+        kernel_halt_forever();
+    }
     kernel_reserve_boot_modules(boot_info);
     if (boot_info->console.type == BOOTX_CONSOLE_FRAMEBUFFER) {
         uint64_t framebuffer_size =
@@ -400,6 +429,8 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
 
     kernel_boot_trace("kernel: tty/process/vfs");
     kprint_set_boot_time(&timer_ticks);  /* Enable timestamp logging (SOSP feature) */
+    kernel_register_fs_service_runtime_ops();
+    kernel_register_file_device_runtime_ops();
     vfs = kernel_init_core_services(&shell_tty, &timer_ticks, boot_info);
     if (vfs == 0) {
         kernel_boot_trace("kernel: core services failed");
@@ -408,8 +439,15 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     if (kernel_apply_root_cmdline(vfs, boot_info) > 0) {
         kernel_boot_trace("kernel: root cmdline applied");
     }
+    uint32_t discovered = 0;
+
     kernel_boot_trace("kernel: discover drivers");
-    (void)driver_discover_root(vfs, "/DRIVERS");
+
+    discovered += driver_discover_root(vfs, "/drivers");
+    discovered += driver_discover_root(vfs, "/DRIVERS");
+    discovered += driver_discover_root(vfs, "/ram/DRIVERS");
+    (void)discovered;
+
     (void)driver_load_all(vfs);
     (void)driver_init_all();
     kernel_boot_trace("pseudo fs: devfs procfs eventfs ready");
@@ -418,12 +456,22 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
 
     kernel_boot_trace("kernel: interrupts");
     kernel_init_interrupts();
+    if (boot_info->cmdline != 0u &&
+        ioapic_configure_from_cmdline((const char *)(uintptr_t)boot_info->cmdline) > 0) {
+        uint32_t ioapic_mask = ioapic_enabled_irq_mask();
+
+        for (uint8_t irq = 0u; irq < 16u; irq++) {
+            if ((ioapic_mask & (1u << irq)) != 0u) {
+                hal_irq_set_mask(irq, 0);
+            }
+        }
+    }
     kernel_boot_trace("kernel: services online");
 
     kernel_boot_trace("kernel: system/init");
     init_started = kernel_try_run_init(vfs, &shell_tty, &g_kernel_boot_trace_row, boot_info);
     if (init_started) {
-        kernel_run_console_shell_forever(vfs);
+        kernel_panic_after_init_return();
     }
     kernel_boot_trace("kernel: init missing");
 

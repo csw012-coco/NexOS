@@ -4,11 +4,215 @@
 #include "kernel/internal/proc/process_types_internal.h"
 #include "fs/vfs.h"
 #include "fs/vfs_internal.h"
+#include "kernel/public/core/kprint.h"
+#include "kernel/public/proc/process.h"
 #include "lib/parse.h"
 #include "lib/string.h"
 
 static uint64_t fs_service_mount_error(uint32_t code) {
     return (uint64_t)(-(int64_t)code);
+}
+
+static uint32_t fs_service_nxfs_effective_mode(const struct vfs_node *node);
+
+static uint64_t fs_service_access_denied_path(const char *path,
+                                              const struct vfs_node *node,
+                                              uint32_t required) {
+    const struct process *proc = process_current();
+    uint32_t mode = 0u;
+    uint32_t owner_uid = 0u;
+    uint32_t owner_gid = 0u;
+    uint32_t mount_kind = 0u;
+
+    if (node != 0) {
+        mount_kind = node->mount_kind;
+        if (node->mount_kind == VFS_MOUNT_NXFS) {
+            mode = fs_service_nxfs_effective_mode(node);
+            owner_uid = node->handle.nxfs_inode.uid;
+            owner_gid = node->handle.nxfs_inode.gid;
+        }
+    }
+
+    kprint("security: vfs access denied pid=%u uid=%u gid=%u caps=%x path=%s mount=%u mode=%u owner=%u:%u req=%u\n",
+           proc != 0 ? proc->pid : 0u,
+           process_uid(proc),
+           process_gid(proc),
+           process_capabilities(proc),
+           path != 0 ? path : "(null)",
+           mount_kind,
+           mode,
+           owner_uid,
+           owner_gid,
+           required);
+    return (uint64_t)(int64_t)-NEX_ERR_ACCES;
+}
+
+static int fs_service_process_has_capability(struct process *proc,
+                                             uint32_t cap) {
+    return process_has_capability(proc, cap);
+}
+
+static uint32_t fs_service_map_file_access_flags(uint32_t syscall_flags);
+
+enum {
+    FS_SERVICE_NXFS_PERM_EXEC = 1u,
+    FS_SERVICE_NXFS_PERM_WRITE = 2u,
+    FS_SERVICE_NXFS_PERM_READ = 4u,
+    FS_SERVICE_NXFS_FILE_DEFAULT_MODE = 0644u,
+    FS_SERVICE_NXFS_DIR_DEFAULT_MODE = 0755u,
+    FS_SERVICE_NXFS_MODE_PERM_MASK = 07777u,
+    FS_SERVICE_NXFS_CAP_MODE_SHIFT = 16u,
+    FS_SERVICE_NXFS_CAP_POLICY_PRESENT = 1u << 31
+};
+
+static uint32_t fs_service_nxfs_effective_mode(
+    const struct vfs_node *node) {
+    uint32_t mode;
+
+    if (node == 0 || node->mount_kind != VFS_MOUNT_NXFS) {
+        return 0u;
+    }
+    mode = node->handle.nxfs_inode.mode & 0777u;
+    if (mode != 0u) {
+        return mode;
+    }
+    return node->kind == VFS_NODE_DIR
+        ? FS_SERVICE_NXFS_DIR_DEFAULT_MODE
+        : FS_SERVICE_NXFS_FILE_DEFAULT_MODE;
+}
+
+static int fs_service_can_access_nxfs_node(struct process *proc,
+                                           const struct vfs_node *node,
+                                           uint32_t required) {
+    uint32_t mode;
+    uint32_t bits;
+
+    if (node == 0 || node->mount_kind != VFS_MOUNT_NXFS || required == 0u) {
+        return 1;
+    }
+    if (proc == 0) {
+        return 0;
+    }
+    if (process_uid(proc) == 0u) {
+        return 1;
+    }
+    mode = fs_service_nxfs_effective_mode(node);
+    if (process_uid(proc) == node->handle.nxfs_inode.uid) {
+        bits = (mode >> 6) & 7u;
+    } else if (process_gid(proc) == node->handle.nxfs_inode.gid) {
+        bits = (mode >> 3) & 7u;
+    } else {
+        bits = mode & 7u;
+    }
+    return (bits & required) == required;
+}
+
+static int fs_service_parent_path(const char *path, char *out, uint32_t size) {
+    uint32_t last_slash = 0u;
+    uint32_t i = 0u;
+    uint32_t len;
+
+    if (path == 0 || out == 0 || size < 2u) {
+        return 0;
+    }
+    while (path[i] != '\0') {
+        if (path[i] == '/') {
+            last_slash = i;
+        }
+        i++;
+    }
+    if (last_slash == 0u) {
+        out[0] = '/';
+        out[1] = '\0';
+        return 1;
+    }
+    len = last_slash;
+    if (len + 1u > size) {
+        return 0;
+    }
+    for (i = 0u; i < len; i++) {
+        out[i] = path[i];
+    }
+    out[len] = '\0';
+    return 1;
+}
+
+static int fs_service_can_access_parent_dir(struct process *proc,
+                                            struct vfs *vfs,
+                                            const char *path,
+                                            uint32_t required) {
+    char parent_path[NOS_PATH_BUFFER_SIZE];
+    struct vfs_node parent;
+
+    if (required == 0u) {
+        return 1;
+    }
+    if (!fs_service_parent_path(path, parent_path, sizeof(parent_path))) {
+        return 0;
+    }
+    if (vfs_opendir(vfs, parent_path, &parent) != 0) {
+        return 0;
+    }
+    return fs_service_can_access_nxfs_node(proc, &parent, required);
+}
+
+static uint32_t fs_service_open_required_nxfs_permissions(uint32_t flags) {
+    uint32_t required = 0u;
+    uint32_t access = fs_service_map_file_access_flags(flags);
+
+    if ((access & KERNEL_FILE_ACCESS_READ) != 0u) {
+        required |= FS_SERVICE_NXFS_PERM_READ;
+    }
+    if ((access & KERNEL_FILE_ACCESS_WRITE) != 0u ||
+        (flags & (SYS_OPEN_CREAT | SYS_OPEN_TRUNC | SYS_OPEN_APPEND)) != 0u) {
+        required |= FS_SERVICE_NXFS_PERM_WRITE;
+    }
+    return required;
+}
+
+static int fs_service_apply_created_nxfs_metadata(struct process *proc,
+                                                  struct vfs *vfs,
+                                                  struct vfs_node *node,
+                                                  uint32_t mode) {
+    struct vfs_mount_instance mount;
+    struct nxfs_volume *nxfs;
+
+    if (proc == 0 || vfs == 0 || node == 0 ||
+        node->mount_kind != VFS_MOUNT_NXFS) {
+        return 1;
+    }
+    if (!vfs_get_mount_instance(vfs,
+                                VFS_MOUNT_NXFS,
+                                node->mount_slot,
+                                &mount)) {
+        return 0;
+    }
+    nxfs = (struct nxfs_volume *)mount.fs_data;
+    return nxfs_set_inode_metadata(nxfs,
+                                   node->aux_index,
+                                   &node->handle.nxfs_inode,
+                                   (node->handle.nxfs_inode.mode &
+                                    ~FS_SERVICE_NXFS_MODE_PERM_MASK) |
+                                       (mode & FS_SERVICE_NXFS_MODE_PERM_MASK),
+                                   process_uid(proc),
+                                   process_gid(proc)) == 0;
+}
+
+static int fs_service_lookup_nxfs_node(struct vfs *vfs,
+                                       const char *path,
+                                       struct vfs_node *node) {
+    if (vfs == 0 || path == 0 || node == 0) {
+        return 0;
+    }
+    if (vfs_open(vfs, path, 0, node) == 0 &&
+        node->mount_kind == VFS_MOUNT_NXFS) {
+        return 1;
+    }
+    if (vfs_opendir(vfs, path, node) == 0 &&
+        node->mount_kind == VFS_MOUNT_NXFS) {
+        return 1;
+    }
+    return 0;
 }
 
 static int fs_service_is_digit(char ch) {
@@ -54,6 +258,124 @@ static uint32_t fs_service_map_open_flags(uint32_t syscall_flags) {
         flags |= VFS_OPEN_APPEND;
     }
     return flags;
+}
+
+static uint32_t fs_service_map_file_access_flags(uint32_t syscall_flags) {
+    uint32_t access = 0u;
+
+    if ((syscall_flags & SYS_OPEN_READ) != 0u) {
+        access |= KERNEL_FILE_ACCESS_READ;
+    }
+    if ((syscall_flags & SYS_OPEN_WRITE) != 0u) {
+        access |= KERNEL_FILE_ACCESS_WRITE;
+    }
+    if (access == 0u) {
+        access = ((syscall_flags &
+                   (SYS_OPEN_CREAT | SYS_OPEN_TRUNC | SYS_OPEN_APPEND)) != 0u)
+            ? KERNEL_FILE_ACCESS_WRITE
+            : KERNEL_FILE_ACCESS_READ;
+    }
+    return access;
+}
+
+static uint32_t fs_service_devfs_required_capability(
+    const struct vfs_node *node) {
+    if (node == 0 || node->mount_kind != VFS_MOUNT_DEVFS) {
+        return 0u;
+    }
+    switch (node->aux_index) {
+        case VFS_DEV_BLOCK_DEVICE:
+        case VFS_DEV_BLOCK_PARTITION:
+            return PROCESS_CAP_RAW_BLOCK;
+        case VFS_DEV_FRAMEBUFFER:
+            return PROCESS_CAP_DISPLAY;
+        case VFS_DEV_AUDIO:
+        case VFS_DEV_SPEAKER:
+            return PROCESS_CAP_AUDIO;
+        default:
+            return 0u;
+    }
+}
+
+static uint32_t fs_service_eventfs_required_capability(
+    const struct vfs_node *node) {
+    if (node == 0 || node->mount_kind != VFS_MOUNT_EVENTFS) {
+        return 0u;
+    }
+    switch (node->aux_index) {
+        case VFS_EVENT_INPUT_DIR:
+        case VFS_EVENT_INPUT_KEYBOARD:
+        case VFS_EVENT_INPUT_KEYBOARD_JSON:
+        case VFS_EVENT_INPUT_MOUSE:
+        case VFS_EVENT_INPUT_MOUSE_JSON:
+            return PROCESS_CAP_INPUT;
+        case VFS_EVENT_NET_DIR:
+        case VFS_EVENT_NET_STATUS:
+        case VFS_EVENT_NET_STATUS_JSON:
+            return PROCESS_CAP_NET_RAW;
+        case VFS_EVENT_BLOCK_DIR:
+        case VFS_EVENT_BLOCK_CHANGE:
+        case VFS_EVENT_BLOCK_CHANGE_JSON:
+            return PROCESS_CAP_RAW_BLOCK;
+        case VFS_EVENT_SECURITY_DIR:
+        case VFS_EVENT_SECURITY_CAPABILITY:
+        case VFS_EVENT_SECURITY_CAPABILITY_JSON:
+            return PROCESS_CAP_DEBUG;
+        default:
+            return 0u;
+    }
+}
+
+static uint32_t fs_service_procfs_required_capability(
+    const struct vfs_node *node) {
+    if (node == 0 || node->mount_kind != VFS_MOUNT_PROCFS) {
+        return 0u;
+    }
+    switch (node->aux_index) {
+        case VFS_PROC_KMSG:
+        case VFS_PROC_MEMINFO:
+        case VFS_PROC_DRIVERS:
+        case VFS_PROC_INTERRUPTS:
+            return PROCESS_CAP_DEBUG;
+        case VFS_PROC_BLOCK:
+        case VFS_PROC_PARTITIONS:
+            return PROCESS_CAP_RAW_BLOCK;
+        case VFS_PROC_FB:
+            return PROCESS_CAP_DISPLAY;
+        default:
+            return 0u;
+    }
+}
+
+static uint32_t fs_service_open_required_capability(
+    const struct vfs_node *node) {
+    uint32_t cap;
+
+    cap = fs_service_devfs_required_capability(node);
+    if (cap != 0u) {
+        return cap;
+    }
+    cap = fs_service_eventfs_required_capability(node);
+    if (cap != 0u) {
+        return cap;
+    }
+    return fs_service_procfs_required_capability(node);
+}
+
+static int fs_service_can_open_node(struct process *proc,
+                                    const struct vfs_node *node) {
+    uint32_t cap = fs_service_open_required_capability(node);
+
+    return cap == 0u || fs_service_process_has_capability(proc, cap);
+}
+
+static void fs_service_set_file_access_flags(struct file *file,
+                                             uint32_t syscall_flags) {
+    if (file == 0) {
+        return;
+    }
+    file->flags &= ~(KERNEL_FILE_ACCESS_READ | KERNEL_FILE_ACCESS_WRITE);
+    file->flags |= fs_service_map_file_access_flags(syscall_flags);
 }
 
 static int fs_service_parse_disk_part_label(const char *text, uint32_t *disk_index_out, uint32_t *part_index_out) {
@@ -179,7 +501,9 @@ static int fs_service_stdio_aux_to_fd(uint32_t aux_index) {
     return -1;
 }
 
-static uint64_t fs_service_open_stdio_alias(struct process *proc, uint32_t src_fd) {
+static uint64_t fs_service_open_stdio_alias(struct process *proc,
+                                            uint32_t src_fd,
+                                            uint32_t flags) {
     struct file *src;
     struct file *dst;
     uint32_t fd;
@@ -199,6 +523,7 @@ static uint64_t fs_service_open_stdio_alias(struct process *proc, uint32_t src_f
         file_discard(dst);
         return (uint64_t)-1;
     }
+    fs_service_set_file_access_flags(dst, flags);
     return fd;
 }
 
@@ -226,26 +551,78 @@ static uint64_t fs_service_open_node(struct process *proc,
     return fd;
 }
 
-uint64_t fs_service_mkdir(struct vfs *vfs, const char *path) {
-    if (!fs_service_valid_path_request(vfs, path)) {
+uint64_t fs_service_mkdir(struct process *proc, struct vfs *vfs, const char *path) {
+    struct vfs_node node;
+
+    if (proc == 0 || !fs_service_valid_path_request(vfs, path)) {
         return (uint64_t)-1;
     }
-    return vfs_mkdir(vfs, path) == 0 ? 0u : (uint64_t)-1;
+    if (!fs_service_can_access_parent_dir(proc,
+                                          vfs,
+                                          path,
+                                          FS_SERVICE_NXFS_PERM_WRITE |
+                                              FS_SERVICE_NXFS_PERM_EXEC)) {
+        return fs_service_access_denied_path(path,
+                                             0,
+                                             FS_SERVICE_NXFS_PERM_WRITE |
+                                                 FS_SERVICE_NXFS_PERM_EXEC);
+    }
+    if (vfs_mkdir(vfs, path) != 0) {
+        return (uint64_t)-1;
+    }
+    if (vfs_opendir(vfs, path, &node) == 0) {
+        (void)fs_service_apply_created_nxfs_metadata(
+            proc, vfs, &node, FS_SERVICE_NXFS_DIR_DEFAULT_MODE);
+    }
+    return 0u;
 }
 
-uint64_t fs_service_rmdir(struct vfs *vfs, const char *path) {
-    if (!fs_service_valid_path_request(vfs, path)) {
+uint64_t fs_service_rmdir(struct process *proc, struct vfs *vfs, const char *path) {
+    struct vfs_node node;
+
+    if (proc == 0 || !fs_service_valid_path_request(vfs, path)) {
         return (uint64_t)-1;
+    }
+    if (vfs_opendir(vfs, path, &node) != 0) {
+        return (uint64_t)-1;
+    }
+    if (!fs_service_can_access_parent_dir(proc,
+                                          vfs,
+                                          path,
+                                          FS_SERVICE_NXFS_PERM_WRITE |
+                                              FS_SERVICE_NXFS_PERM_EXEC)) {
+        return fs_service_access_denied_path(path,
+                                             &node,
+                                             FS_SERVICE_NXFS_PERM_WRITE |
+                                                 FS_SERVICE_NXFS_PERM_EXEC);
     }
     return vfs_rmdir(vfs, path) == 0 ? 0u : (uint64_t)-1;
 }
 
-uint64_t fs_service_remove(struct vfs *vfs, const char *path) {
-    if (!fs_service_valid_path_request(vfs, path)) {
+uint64_t fs_service_remove(struct process *proc, struct vfs *vfs, const char *path) {
+    struct vfs_node node;
+
+    if (proc == 0 || !fs_service_valid_path_request(vfs, path)) {
         return (uint64_t)-1;
     }
     if (file_pipe_backend_unlink_named(path)) {
         return 0;
+    }
+    if (vfs_open(vfs, path, 0, &node) != 0) {
+        return (uint64_t)-1;
+    }
+    if (!fs_service_can_access_nxfs_node(proc,
+                                         &node,
+                                         FS_SERVICE_NXFS_PERM_WRITE) ||
+        !fs_service_can_access_parent_dir(proc,
+                                          vfs,
+                                          path,
+                                          FS_SERVICE_NXFS_PERM_WRITE |
+                                              FS_SERVICE_NXFS_PERM_EXEC)) {
+        return fs_service_access_denied_path(path,
+                                             &node,
+                                             FS_SERVICE_NXFS_PERM_WRITE |
+                                                 FS_SERVICE_NXFS_PERM_EXEC);
     }
     return vfs_unlink(vfs, path) == 0 ? 0u : (uint64_t)-1;
 }
@@ -259,6 +636,117 @@ uint64_t fs_service_mkfifo(struct vfs *vfs, const char *path) {
         return (uint64_t)-1;
     }
     return file_pipe_backend_create_named(path) ? 0u : (uint64_t)-1;
+}
+
+uint64_t fs_service_chmod(struct process *proc,
+                          struct vfs *vfs,
+                          const char *path,
+                          uint32_t mode) {
+    struct vfs_node node;
+    struct vfs_mount_instance mount;
+    struct nxfs_volume *nxfs;
+
+    if (proc == 0 || !fs_service_valid_path_request(vfs, path) ||
+        (mode & ~07777u) != 0u) {
+        return (uint64_t)-1;
+    }
+    if (!fs_service_lookup_nxfs_node(vfs, path, &node)) {
+        return (uint64_t)-1;
+    }
+    if (process_uid(proc) != 0u &&
+        process_uid(proc) != node.handle.nxfs_inode.uid) {
+        return fs_service_access_denied_path(path, &node, 0u);
+    }
+    if (!vfs_get_mount_instance(vfs,
+                                VFS_MOUNT_NXFS,
+                                node.mount_slot,
+                                &mount)) {
+        return (uint64_t)-1;
+    }
+    nxfs = (struct nxfs_volume *)mount.fs_data;
+    return nxfs_set_inode_metadata(nxfs,
+                                   node.aux_index,
+                                   &node.handle.nxfs_inode,
+                                   (node.handle.nxfs_inode.mode &
+                                    ~FS_SERVICE_NXFS_MODE_PERM_MASK) |
+                                       (mode & FS_SERVICE_NXFS_MODE_PERM_MASK),
+                                   node.handle.nxfs_inode.uid,
+                                   node.handle.nxfs_inode.gid) == 0
+        ? 0u
+        : (uint64_t)-1;
+}
+
+uint64_t fs_service_chown(struct process *proc,
+                          struct vfs *vfs,
+                          const char *path,
+                          uint32_t uid,
+                          uint32_t gid) {
+    struct vfs_node node;
+    struct vfs_mount_instance mount;
+    struct nxfs_volume *nxfs;
+
+    if (proc == 0 || !fs_service_valid_path_request(vfs, path)) {
+        return (uint64_t)-1;
+    }
+    if (process_uid(proc) != 0u) {
+        return fs_service_access_denied_path(path, 0, 0u);
+    }
+    if (!fs_service_lookup_nxfs_node(vfs, path, &node)) {
+        return (uint64_t)-1;
+    }
+    if (!vfs_get_mount_instance(vfs,
+                                VFS_MOUNT_NXFS,
+                                node.mount_slot,
+                                &mount)) {
+        return (uint64_t)-1;
+    }
+    nxfs = (struct nxfs_volume *)mount.fs_data;
+    return nxfs_set_inode_metadata(nxfs,
+                                   node.aux_index,
+                                   &node.handle.nxfs_inode,
+                                   node.handle.nxfs_inode.mode,
+                                   uid,
+                                   gid) == 0 ? 0u : (uint64_t)-1;
+}
+
+uint64_t fs_service_setcap(struct process *proc,
+                           struct vfs *vfs,
+                           const char *path,
+                           uint32_t caps) {
+    struct vfs_node node;
+    struct vfs_mount_instance mount;
+    struct nxfs_volume *nxfs;
+    uint32_t mode;
+
+    if (proc == 0 || !fs_service_valid_path_request(vfs, path) ||
+        (caps & ~PROCESS_CAP_SYS_ADMIN) != 0u) {
+        return (uint64_t)-1;
+    }
+    if (process_uid(proc) != 0u) {
+        return fs_service_access_denied_path(path, 0, 0u);
+    }
+    if (!fs_service_lookup_nxfs_node(vfs, path, &node) ||
+        node.kind != VFS_NODE_FILE) {
+        return (uint64_t)-1;
+    }
+    if (!vfs_get_mount_instance(vfs,
+                                VFS_MOUNT_NXFS,
+                                node.mount_slot,
+                                &mount)) {
+        return (uint64_t)-1;
+    }
+    nxfs = (struct nxfs_volume *)mount.fs_data;
+    mode = (node.handle.nxfs_inode.mode & FS_SERVICE_NXFS_MODE_PERM_MASK) |
+           FS_SERVICE_NXFS_CAP_POLICY_PRESENT |
+           ((caps & PROCESS_CAP_SYS_ADMIN) << FS_SERVICE_NXFS_CAP_MODE_SHIFT);
+    return nxfs_set_inode_metadata(nxfs,
+                                   node.aux_index,
+                                   &node.handle.nxfs_inode,
+                                   mode,
+                                   node.handle.nxfs_inode.uid,
+                                   node.handle.nxfs_inode.gid) == 0
+        ? 0u
+        : (uint64_t)-1;
 }
 
 uint64_t fs_service_mount(struct vfs *vfs, const char *source, const char *target, uint32_t syscall_kind) {
@@ -309,17 +797,21 @@ uint64_t fs_service_umount(struct vfs *vfs, const char *target) {
 uint64_t fs_service_switch_root(struct vfs *vfs, const char *target) {
     uint32_t disk_index;
     uint32_t part_index;
+    int rc;
 
     if (vfs == 0 || target == 0) {
-        return (uint64_t)-1;
+        return fs_service_mount_error(SYS_MOUNT_ERR_BAD_ARGS);
     }
     if (streq(target, "/dev/root") || streq(target, "root")) {
-        return vfs_switch_root_to_first_kind(vfs, VFS_MOUNT_NXFS) == 0 ? 0u : (uint64_t)-1;
+        rc = vfs_switch_root_to_first_kind(vfs, VFS_MOUNT_NXFS);
+        return rc == 0 ? 0u : (uint64_t)(int64_t)rc;
     }
     if (fs_service_parse_block_target(target, &disk_index, &part_index)) {
-        return vfs_switch_root_to_source(vfs, disk_index, part_index) == 0 ? 0u : (uint64_t)-1;
+        rc = vfs_switch_root_to_source(vfs, disk_index, part_index);
+        return rc == 0 ? 0u : (uint64_t)(int64_t)rc;
     }
-    return vfs_set_root_mount(vfs, target) == 0 ? 0u : (uint64_t)-1;
+    rc = vfs_set_root_mount(vfs, target);
+    return rc == 0 ? 0u : fs_service_mount_error(SYS_MOUNT_ERR_TARGET_NOT_FOUND);
 }
 
 uint64_t fs_service_open(struct process *proc, struct vfs *vfs, const char *path, uint32_t flags) {
@@ -328,6 +820,8 @@ uint64_t fs_service_open(struct process *proc, struct vfs *vfs, const char *path
     uint64_t fd;
     uint32_t initial_offset = 0;
     uint32_t vfs_flags;
+    uint32_t nxfs_required;
+    int created = 0;
     int stdio_fd;
 
     if (proc == 0 || !fs_service_valid_path_request(vfs, path)) {
@@ -351,8 +845,45 @@ uint64_t fs_service_open(struct process *proc, struct vfs *vfs, const char *path
         return named_fd;
     }
     vfs_flags = fs_service_map_open_flags(flags);
-    if (vfs_open(vfs, path, vfs_flags, &node) != 0 || node.kind != VFS_NODE_FILE) {
+    if (vfs_open(vfs, path, 0, &node) != 0) {
+        if ((vfs_flags & VFS_OPEN_CREATE) == 0u) {
+            return (uint64_t)-1;
+        }
+        if (!fs_service_can_access_parent_dir(proc,
+                                              vfs,
+                                              path,
+                                              FS_SERVICE_NXFS_PERM_WRITE |
+                                                  FS_SERVICE_NXFS_PERM_EXEC)) {
+            return fs_service_access_denied_path(path,
+                                                 0,
+                                                 FS_SERVICE_NXFS_PERM_WRITE |
+                                                     FS_SERVICE_NXFS_PERM_EXEC);
+        }
+        if (vfs_open(vfs, path, vfs_flags, &node) != 0) {
+            return (uint64_t)-1;
+        }
+        created = 1;
+    }
+    if (node.kind != VFS_NODE_FILE) {
         return (uint64_t)-1;
+    }
+    if (!fs_service_can_open_node(proc, &node)) {
+        return fs_service_access_denied_path(path, &node, 0u);
+    }
+    if (created &&
+        !fs_service_apply_created_nxfs_metadata(
+            proc, vfs, &node, FS_SERVICE_NXFS_FILE_DEFAULT_MODE)) {
+        return (uint64_t)-1;
+    }
+    nxfs_required = fs_service_open_required_nxfs_permissions(flags);
+    if (!fs_service_can_access_parent_dir(proc,
+                                          vfs,
+                                          path,
+                                          FS_SERVICE_NXFS_PERM_EXEC) ||
+        !fs_service_can_access_nxfs_node(proc, &node, nxfs_required)) {
+        return fs_service_access_denied_path(path,
+                                             &node,
+                                             nxfs_required | FS_SERVICE_NXFS_PERM_EXEC);
     }
     if (vfs_prepare_opened_node(vfs, &node, path, vfs_flags, &initial_offset) != 0) {
         return (uint64_t)-1;
@@ -360,13 +891,14 @@ uint64_t fs_service_open(struct process *proc, struct vfs *vfs, const char *path
     if (node.mount_kind == VFS_MOUNT_DEVFS) {
         stdio_fd = fs_service_stdio_aux_to_fd(node.aux_index);
         if (stdio_fd >= 0) {
-            return fs_service_open_stdio_alias(proc, (uint32_t)stdio_fd);
+            return fs_service_open_stdio_alias(proc, (uint32_t)stdio_fd, flags);
         }
     }
     fd = fs_service_open_node(proc, &node, path, &opened_file);
     if (fd == (uint64_t)-1) {
         return (uint64_t)-1;
     }
+    fs_service_set_file_access_flags(opened_file, flags);
     if (initial_offset != 0u) {
         file_set_offset(opened_file, initial_offset);
     }
@@ -383,6 +915,25 @@ uint64_t fs_service_opendir(struct process *proc, struct vfs *vfs, const char *p
     if (vfs_opendir(vfs, path, &node) != 0) {
         return (uint64_t)-1;
     }
+    if (!fs_service_can_open_node(proc, &node)) {
+        return fs_service_access_denied_path(path, &node, 0u);
+    }
+    if (!fs_service_can_access_parent_dir(proc,
+                                          vfs,
+                                          path,
+                                          FS_SERVICE_NXFS_PERM_EXEC) ||
+        !fs_service_can_access_nxfs_node(proc,
+                                         &node,
+                                         FS_SERVICE_NXFS_PERM_READ |
+                                             FS_SERVICE_NXFS_PERM_EXEC)) {
+        return fs_service_access_denied_path(path,
+                                             &node,
+                                             FS_SERVICE_NXFS_PERM_READ |
+                                                 FS_SERVICE_NXFS_PERM_EXEC);
+    }
     fd = fs_service_open_node(proc, &node, path, 0);
+    if (fd != (uint64_t)-1) {
+        proc->files[fd].flags |= KERNEL_FILE_ACCESS_READ;
+    }
     return fd;
 }

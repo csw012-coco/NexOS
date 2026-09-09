@@ -1012,10 +1012,15 @@ static int cmd_cpio_list_or_extract_local(int argc, char **argv, int extract_mod
             return 1;
         }
         if (((mode >> 12) & 0x0fu) == 4u) {
-            if (mkdir(out_path) != 0 && opendir(out_path) < 0) {
-                close((uint32_t)fd);
-                write_err_str("cpio: mkdir failed\n");
-                return 1;
+            if (mkdir(out_path) != 0) {
+                int dir_fd = opendir(out_path);
+
+                if (dir_fd < 0) {
+                    close((uint32_t)fd);
+                    write_err_str("cpio: mkdir failed\n");
+                    return 1;
+                }
+                close((uint32_t)dir_fd);
             }
             if (!cpio_skip_bytes_local(fd, file_size + cpio_align4_local(file_size))) {
                 close((uint32_t)fd);

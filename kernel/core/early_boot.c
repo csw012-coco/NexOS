@@ -23,17 +23,17 @@ static int early_string_self_test(void) {
     string_runtime_init();
     memset(source, 0, sizeof(source));
     memset(target, 0xa5, sizeof(target));
-    memcpy(source, "NexOS-i386", 11u);
+    memcpy(source, "NexOS-core", 11u);
     memcpy(target, source, 11u);
     memmove(target + 2, target, 9u);
 
     return str_len(source) == 10u &&
-           streq(source, "NexOS-i386") &&
+           streq(source, "NexOS-core") &&
            starts_with(source, "NexOS") &&
            target[0] == 'N' &&
            target[1] == 'e' &&
            target[2] == 'N' &&
-           target[10] == '8';
+           target[10] == 'r';
 }
 
 void kernel_early_boot(const struct bootx_boot_info *boot_info,
@@ -176,7 +176,7 @@ void kernel_early_boot(const struct bootx_boot_info *boot_info,
     early_kprint("Scheduler task ticks: task0=%u task1=%u\n",
                  report.scheduler_task0_ticks,
                  report.scheduler_task1_ticks);
-    early_kprint("Per-task CR3 OK, task0=%x task1=%x\n",
+    early_kprint("Per-task root OK, task0=%x task1=%x\n",
                  report.scheduler_task0_root,
                  report.scheduler_task1_root);
     early_kprint("Address-space isolation OK, task0=%x task1=%x\n",

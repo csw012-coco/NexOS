@@ -296,6 +296,11 @@ static int xhci_hid_pop_queued_report(struct xhci_hid_keyboard *kbd,
     return 1;
 }
 
+static int xhci_hid_completion_is_stopped(uint32_t completion) {
+    return completion == XHCI_CC_STOPPED ||
+           completion == XHCI_CC_STOPPED_LENGTH_INVALID;
+}
+
 static int xhci_hid_submit_interrupt_report(struct xhci_hid_keyboard *kbd) {
     uint32_t report_size;
 
@@ -310,13 +315,14 @@ static int xhci_hid_submit_interrupt_report(struct xhci_hid_keyboard *kbd) {
     }
     report_size = xhci_hid_report_transfer_size(kbd);
     memset(kbd->report, 0, report_size);
-    (void)xhci_transfer_ring_trb(kbd->interrupt_in_ring,
-                                 kbd->interrupt_in_ring_phys,
-                                 &kbd->interrupt_in_enqueue,
-                                 &kbd->interrupt_in_cycle,
-                                 kbd->report_phys,
-                                 report_size,
-                                 (XHCI_TRB_NORMAL << 10) | (1u << 5) | (1u << 2));
+    kbd->interrupt_pending_trb_phys =
+        xhci_transfer_ring_trb(kbd->interrupt_in_ring,
+                               kbd->interrupt_in_ring_phys,
+                               &kbd->interrupt_in_enqueue,
+                               &kbd->interrupt_in_cycle,
+                               kbd->report_phys,
+                               report_size,
+                               (XHCI_TRB_NORMAL << 10) | (1u << 5) | (1u << 2));
     kbd->interrupt_pending = 1u;
     xhci_write32(g_xhci.doorbell, (uint32_t)kbd->dev->slot_id * 4u, kbd->interrupt_in_epid);
     xhci_save_active_controller();
@@ -344,13 +350,19 @@ int xhci_hid_poll_interrupt_report(struct xhci_hid_keyboard *kbd, uint8_t report
     if (!xhci_wait_transfer_event_spins(kbd->dev->slot_id,
                                         kbd->interrupt_in_epid,
                                         &completion,
-                                        0u,
+                                        kbd->interrupt_pending_trb_phys,
                                         XHCI_HID_REPORT_WAIT_SPINS)) {
         xhci_save_active_controller();
         return 0;
     }
     kbd->interrupt_pending = 0u;
+    kbd->interrupt_pending_trb_phys = 0u;
 complete_transfer:
+    if (xhci_hid_completion_is_stopped(completion)) {
+        (void)xhci_hid_submit_interrupt_report(kbd);
+        xhci_save_active_controller();
+        return 0;
+    }
     if (completion != XHCI_CC_SUCCESS && completion != XHCI_CC_SHORT_PACKET) {
         if (!kbd->report_fail_logged) {
             kprint("xhci: hidkbd interrupt completion cc=%u epid=%u\n",
@@ -359,6 +371,12 @@ complete_transfer:
             kbd->report_fail_logged = 1u;
         }
         xhci_hid_release_all_keys(kbd);
+        (void)xhci_recover_endpoint_ring(kbd->dev,
+                                         kbd->interrupt_in_epid,
+                                         kbd->interrupt_in_ring,
+                                         kbd->interrupt_in_ring_phys,
+                                         &kbd->interrupt_in_enqueue,
+                                         &kbd->interrupt_in_cycle);
         (void)xhci_hid_submit_interrupt_report(kbd);
         xhci_save_active_controller();
         return 0;
@@ -494,7 +512,10 @@ static void xhci_hid_queue_event(struct keyboard_event event) {
     g_hid_event_count++;
 }
 
-int xhci_hid_defer_transfer_event(uint8_t slot_id, uint8_t endpoint_id, uint32_t completion) {
+int xhci_hid_defer_transfer_event(uint8_t slot_id,
+                                  uint8_t endpoint_id,
+                                  uint32_t completion,
+                                  uint64_t trb_phys) {
     for (uint32_t i = 0u; i < g_hid_keyboard_count && i < XHCI_MAX_HID_KEYBOARDS; i++) {
         struct xhci_hid_keyboard *kbd = &g_hid_keyboards[i];
 
@@ -503,10 +524,12 @@ int xhci_hid_defer_transfer_event(uint8_t slot_id, uint8_t endpoint_id, uint32_t
             kbd->dev == 0 ||
             kbd->dev->controller_index != g_xhci_active_controller ||
             kbd->dev->slot_id != slot_id ||
-            kbd->interrupt_in_epid != endpoint_id) {
+            kbd->interrupt_in_epid != endpoint_id ||
+            kbd->interrupt_pending_trb_phys != trb_phys) {
             continue;
         }
         kbd->interrupt_pending = 0u;
+        kbd->interrupt_pending_trb_phys = 0u;
         xhci_hid_queue_report(kbd, completion);
         (void)xhci_hid_submit_interrupt_report(kbd);
         return 1;
@@ -519,10 +542,12 @@ int xhci_hid_defer_transfer_event(uint8_t slot_id, uint8_t endpoint_id, uint32_t
             mouse->dev == 0 ||
             mouse->dev->controller_index != g_xhci_active_controller ||
             mouse->dev->slot_id != slot_id ||
-            mouse->interrupt_in_epid != endpoint_id) {
+            mouse->interrupt_in_epid != endpoint_id ||
+            mouse->interrupt_pending_trb_phys != trb_phys) {
             continue;
         }
         mouse->interrupt_pending = 0u;
+        mouse->interrupt_pending_trb_phys = 0u;
         xhci_hid_queue_report(mouse, completion);
         (void)xhci_hid_submit_interrupt_report(mouse);
         return 1;

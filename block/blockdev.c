@@ -1,5 +1,6 @@
 #include "block/blockdev.h"
 #include "block/block_event.h"
+#include "hal/hal.h"
 #include "kernel/public/core/profile.h"
 #include "lib/string.h"
 
@@ -18,7 +19,8 @@ enum {
     BLOCKDEV_GPT_TYPE_EFI_SYSTEM = 0xefu,
     BLOCKDEV_GPT_TYPE_MICROSOFT_BASIC = 0x07u,
     BLOCKDEV_GPT_TYPE_LINUX_DATA = 0x83u,
-    BLOCKDEV_GPT_TYPE_UNKNOWN = 0xeeu
+    BLOCKDEV_GPT_TYPE_UNKNOWN = 0xeeu,
+    BLOCKDEV_IO_TIMEOUT_TICKS = 5000u
 };
 
 static struct block_device *devices[BLOCKDEV_MAX];
@@ -26,6 +28,9 @@ static uint32_t device_count;
 static uint32_t g_block_profile_read;
 static uint32_t g_block_profile_write;
 static uint32_t g_block_profile_flush;
+static volatile uint32_t g_blockdev_lock;
+static volatile uint32_t g_blockdev_scan_lock;
+static struct blockdev_partition g_blockdev_scan_partitions[BLOCKDEV_MAX_PARTITIONS];
 
 struct blockdev_read_cache_entry {
     struct block_device *dev;
@@ -36,6 +41,172 @@ struct blockdev_read_cache_entry {
 
 static struct blockdev_read_cache_entry
     g_block_read_cache[BLOCKDEV_READ_CACHE_ENTRIES];
+
+static void blockdev_lock(void) {
+    while (__sync_lock_test_and_set(&g_blockdev_lock, 1u) != 0u) {
+        __asm__ __volatile__("pause");
+    }
+}
+
+static void blockdev_unlock(void) {
+    __sync_lock_release(&g_blockdev_lock);
+}
+
+static void blockdev_scan_lock(void) {
+    while (__sync_lock_test_and_set(&g_blockdev_scan_lock, 1u) != 0u) {
+        __asm__ __volatile__("pause");
+    }
+}
+
+static void blockdev_scan_unlock(void) {
+    __sync_lock_release(&g_blockdev_scan_lock);
+}
+
+static void blockdev_request_lock(struct block_device *dev) {
+    while (__sync_lock_test_and_set(&dev->request_lock, 1u) != 0u) {
+        __asm__ __volatile__("pause");
+    }
+}
+
+static void blockdev_request_unlock(struct block_device *dev) {
+    __sync_lock_release(&dev->request_lock);
+}
+
+static uint32_t blockdev_ms_to_ticks(uint32_t ms) {
+    uint32_t hz = hal_timer_hz();
+    uint64_t ticks;
+
+    if (ms == 0u) {
+        return 0u;
+    }
+    if (hz == 0u) {
+        return ms;
+    }
+    ticks = ((uint64_t)hz * (uint64_t)ms + 999u) / 1000u;
+    if (ticks == 0u) {
+        ticks = 1u;
+    }
+    if (ticks > 0xffffffffull) {
+        ticks = 0xffffffffu;
+    }
+    return (uint32_t)ticks;
+}
+
+/* Return 1 when a registered device reference was acquired, 0 for an
+ * internal, not-yet-published device, and -1 when removal is in progress. */
+static int blockdev_io_begin(struct block_device *dev) {
+    int registered = 0;
+
+    if (dev == 0) {
+        return -1;
+    }
+    blockdev_lock();
+    for (uint32_t i = 0u; i < device_count; i++) {
+        if (devices[i] != dev) {
+            continue;
+        }
+        registered = 1;
+        if (dev->removing == 0u && dev->state == BLOCKDEV_STATE_ONLINE) {
+            dev->io_refs++;
+            dev->request_cancelled = 0u;
+            dev->request_deadline = hal_timer_current_ticks() + BLOCKDEV_IO_TIMEOUT_TICKS;
+        }
+        break;
+    }
+    if (registered && (dev->removing != 0u || dev->state != BLOCKDEV_STATE_ONLINE)) {
+        blockdev_unlock();
+        return -1;
+    }
+    blockdev_unlock();
+    return registered ? 1 : 0;
+}
+
+void blockdev_cancel_request(struct block_device *dev) {
+    if (dev == 0) {
+        return;
+    }
+    __sync_lock_test_and_set(&dev->request_cancelled, 1u);
+}
+
+void blockdev_extend_request_deadline_ms(struct block_device *dev, uint32_t ms) {
+    uint32_t ticks;
+    uint32_t deadline;
+
+    if (dev == 0 || ms == 0u) {
+        return;
+    }
+    ticks = blockdev_ms_to_ticks(ms);
+    deadline = hal_timer_current_ticks() + ticks;
+    blockdev_lock();
+    if (dev->request_deadline == 0u ||
+        (int32_t)(deadline - dev->request_deadline) > 0) {
+        dev->request_deadline = deadline;
+    }
+    blockdev_unlock();
+}
+
+int blockdev_request_cancelled(const struct block_device *dev) {
+    uint32_t now;
+    uint32_t deadline;
+
+    if (dev == 0 || dev->request_cancelled != 0u) {
+        return 1;
+    }
+    deadline = dev->request_deadline;
+    if (deadline == 0u) {
+        return 0;
+    }
+    now = hal_timer_current_ticks();
+    return (int32_t)(now - deadline) >= 0;
+}
+
+void blockdev_record_failure(struct block_device *dev, int error, const char *reason) {
+    if (dev == 0) {
+        return;
+    }
+    blockdev_lock();
+    dev->failure_count++;
+    dev->consecutive_failures++;
+    dev->last_error = error;
+    if (reason != 0 && reason[0] != '\0') {
+        memcpy(dev->last_error_reason, reason, sizeof(dev->last_error_reason));
+        dev->last_error_reason[sizeof(dev->last_error_reason) - 1u] = '\0';
+    }
+    blockdev_unlock();
+}
+
+void blockdev_record_success(struct block_device *dev) {
+    if (dev == 0) {
+        return;
+    }
+    blockdev_lock();
+    dev->consecutive_failures = 0u;
+    blockdev_unlock();
+}
+
+void blockdev_record_rebind(struct block_device *dev, const char *reason) {
+    if (dev == 0) {
+        return;
+    }
+    blockdev_lock();
+    dev->rebind_count++;
+    if (reason != 0 && reason[0] != '\0') {
+        memcpy(dev->last_rebind_reason, reason, sizeof(dev->last_rebind_reason));
+        dev->last_rebind_reason[sizeof(dev->last_rebind_reason) - 1u] = '\0';
+    }
+    blockdev_unlock();
+}
+
+static void blockdev_io_end(struct block_device *dev, int acquired) {
+    if (dev == 0 || acquired != 1) {
+        return;
+    }
+    blockdev_lock();
+    if (dev->io_refs != 0u) {
+        dev->io_refs--;
+    }
+    blockdev_unlock();
+}
 
 static uint32_t blockdev_cache_index(struct block_device *dev, uint64_t lba) {
     uintptr_t device_bits = (uintptr_t)dev >> 4;
@@ -138,13 +309,6 @@ static int blockdev_read_sector(struct block_device *dev, uint64_t lba, uint8_t 
     return -1;
 }
 
-static int blockdev_read_mbr(struct block_device *dev, uint8_t *sector) {
-    if (blockdev_read_sector(dev, 0, sector) != 0) {
-        return -1;
-    }
-    return sector[510] == 0x55u && sector[511] == 0xaau ? 0 : -1;
-}
-
 static int blockdev_mbr_has_gpt_protective_entry(const uint8_t *sector) {
     for (uint32_t slot = 0; slot < BLOCKDEV_MBR_SLOT_COUNT; slot++) {
         const uint8_t *entry = &sector[BLOCKDEV_MBR_TABLE_OFFSET + slot * BLOCKDEV_MBR_ENTRY_SIZE];
@@ -169,7 +333,10 @@ static uint8_t blockdev_gpt_type_from_guid(const uint8_t *guid) {
     return BLOCKDEV_GPT_TYPE_UNKNOWN;
 }
 
-static int blockdev_scan_gpt(struct block_device *dev, const uint8_t *mbr_sector) {
+static int blockdev_scan_gpt(struct block_device *dev,
+                             const uint8_t *mbr_sector,
+                             struct blockdev_partition *parts,
+                             uint32_t *out_count) {
     uint8_t header[BLOCKDEV_SECTOR_SIZE];
     uint8_t entries[BLOCKDEV_SECTOR_SIZE];
     uint64_t entry_lba;
@@ -177,7 +344,8 @@ static int blockdev_scan_gpt(struct block_device *dev, const uint8_t *mbr_sector
     uint32_t entry_size;
     uint32_t count = 0;
 
-    if (dev == 0 || mbr_sector == 0 || dev->block_count <= BLOCKDEV_GPT_HEADER_LBA ||
+    if (dev == 0 || mbr_sector == 0 || parts == 0 || out_count == 0 ||
+        dev->block_count <= BLOCKDEV_GPT_HEADER_LBA ||
         !blockdev_mbr_has_gpt_protective_entry(mbr_sector)) {
         return -1;
     }
@@ -235,18 +403,20 @@ static int blockdev_scan_gpt(struct block_device *dev, const uint8_t *mbr_sector
         part.flags = 0;
         part.start_lba = first_lba;
         part.sector_count = last_lba - first_lba + 1u;
-        dev->partitions[count++] = part;
+        parts[count++] = part;
     }
 
-    dev->partition_count = count;
-    dev->partition_cache_valid = 1u;
+    *out_count = count;
     return 0;
 }
 
-static int blockdev_scan_mbr(struct block_device *dev, const uint8_t *sector) {
+static int blockdev_scan_mbr(struct block_device *dev,
+                             const uint8_t *sector,
+                             struct blockdev_partition *parts,
+                             uint32_t *out_count) {
     uint32_t count = 0;
 
-    if (dev == 0) {
+    if (dev == 0 || sector == 0 || parts == 0 || out_count == 0) {
         return -1;
     }
     for (uint32_t slot = 0; slot < BLOCKDEV_MBR_SLOT_COUNT; slot++) {
@@ -274,31 +444,67 @@ static int blockdev_scan_mbr(struct block_device *dev, const uint8_t *sector) {
             sector_count > dev->block_count - start_lba) {
             continue;
         }
-        dev->partitions[count++] = part;
+        parts[count++] = part;
     }
-    dev->partition_count = count;
-    dev->partition_cache_valid = 1u;
+    *out_count = count;
     return 0;
 }
 
 int blockdev_rescan_partitions(struct block_device *dev) {
     uint8_t sector[BLOCKDEV_SECTOR_SIZE];
+    uint32_t count = 0u;
+    int rc;
+    int acquired;
 
     if (dev == 0) {
         return -1;
     }
-    dev->partition_count = 0;
-    dev->partition_cache_valid = 0u;
-    if (blockdev_read_mbr(dev, sector) != 0) {
+    acquired = blockdev_io_begin(dev);
+    if (acquired < 0) {
         return -1;
     }
-    if (blockdev_scan_gpt(dev, sector) == 0) {
+    blockdev_scan_lock();
+    blockdev_lock();
+    dev->partition_count = 0;
+    dev->partition_cache_valid = 0u;
+    blockdev_unlock();
+    if (blockdev_read_sector(dev, 0u, sector) != 0) {
+        blockdev_scan_unlock();
+        blockdev_io_end(dev, acquired);
+        return -1;
+    }
+    /* A filesystem may occupy the whole device without an MBR.  Keep an
+     * empty, valid partition cache so callers can still probe LBA 0. */
+    if (sector[510] != 0x55u || sector[511] != 0xaau) {
+        blockdev_lock();
+        dev->partition_count = 0u;
+        dev->partition_cache_valid = 1u;
+        blockdev_unlock();
+        blockdev_scan_unlock();
+        blockdev_io_end(dev, acquired);
         return 0;
     }
-    return blockdev_scan_mbr(dev, sector);
+    rc = blockdev_scan_gpt(dev, sector, g_blockdev_scan_partitions, &count);
+    if (rc != 0) {
+        rc = blockdev_scan_mbr(dev, sector, g_blockdev_scan_partitions, &count);
+    }
+    if (rc == 0) {
+        blockdev_lock();
+        memcpy(dev->partitions,
+               g_blockdev_scan_partitions,
+               count * sizeof(g_blockdev_scan_partitions[0]));
+        dev->partition_count = count;
+        dev->partition_cache_valid = 1u;
+        blockdev_unlock();
+    }
+    blockdev_scan_unlock();
+    blockdev_io_end(dev, acquired);
+    return rc;
 }
 
 void blockdev_init(void) {
+    g_blockdev_lock = 0u;
+    g_blockdev_scan_lock = 0u;
     device_count = 0;
     for (uint32_t i = 0; i < BLOCKDEV_MAX; i++) {
         devices[i] = 0;
@@ -310,20 +516,134 @@ void blockdev_init(void) {
     }
 }
 
+enum blockdev_state blockdev_get_state(const struct block_device *dev) {
+    enum blockdev_state state;
+
+    if (dev == 0) {
+        return BLOCKDEV_STATE_OFFLINE;
+    }
+    blockdev_lock();
+    state = (enum blockdev_state)dev->state;
+    blockdev_unlock();
+    return state;
+}
+
+int blockdev_set_state(struct block_device *dev, enum blockdev_state state) {
+    if (dev == 0 || state > BLOCKDEV_STATE_REMOVING) {
+        return -1;
+    }
+    blockdev_lock();
+    if (dev->rootfs_protected &&
+        (state == BLOCKDEV_STATE_OFFLINE || state == BLOCKDEV_STATE_REMOVING)) {
+        if (dev->state == BLOCKDEV_STATE_OFFLINE || dev->state == BLOCKDEV_STATE_REMOVING) {
+            dev->state = BLOCKDEV_STATE_ONLINE;
+        }
+        dev->removing = 0u;
+        dev->request_cancelled = 0u;
+        blockdev_unlock();
+        return -1;
+    }
+    dev->state = (uint8_t)state;
+    if (state == BLOCKDEV_STATE_REMOVING) {
+        dev->removing = 1u;
+    }
+    blockdev_unlock();
+    return 0;
+}
+
+void blockdev_set_rootfs_protected(struct block_device *dev, uint8_t protected) {
+    if (dev == 0) {
+        return;
+    }
+    blockdev_lock();
+    dev->rootfs_protected = protected != 0u ? 1u : 0u;
+    if (dev->rootfs_protected &&
+        (dev->state == BLOCKDEV_STATE_OFFLINE || dev->state == BLOCKDEV_STATE_REMOVING)) {
+        dev->state = BLOCKDEV_STATE_ONLINE;
+        dev->removing = 0u;
+        dev->request_cancelled = 0u;
+    }
+    blockdev_unlock();
+}
+
+int blockdev_is_rootfs_protected(const struct block_device *dev) {
+    int protected;
+
+    if (dev == 0) {
+        return 0;
+    }
+    blockdev_lock();
+    protected = dev->rootfs_protected != 0u;
+    blockdev_unlock();
+    return protected;
+}
+
+int blockdev_reset(struct block_device *dev) {
+    blockdev_reset_fn reset = 0;
+    int registered = 0;
+    int rc;
+
+    if (dev == 0) {
+        return -1;
+    }
+    blockdev_lock();
+    for (uint32_t i = 0u; i < device_count; i++) {
+        if (devices[i] != dev) {
+            continue;
+        }
+        registered = 1;
+        if (dev->removing == 0u && dev->state == BLOCKDEV_STATE_ONLINE) {
+            reset = dev->reset;
+            if (reset != 0) {
+                dev->io_refs++;
+                dev->state = BLOCKDEV_STATE_RECOVERING;
+                dev->request_cancelled = 0u;
+                dev->request_deadline = hal_timer_current_ticks() + BLOCKDEV_IO_TIMEOUT_TICKS;
+            }
+        }
+        break;
+    }
+    blockdev_unlock();
+    if (!registered || reset == 0) {
+        return -1;
+    }
+    blockdev_request_lock(dev);
+    rc = reset(dev);
+    blockdev_request_unlock(dev);
+    if (rc == 0) {
+        blockdev_record_success(dev);
+    } else {
+        blockdev_record_failure(dev, rc, "reset");
+    }
+    blockdev_lock();
+    if (dev->removing == 0u) {
+        dev->state = (rc == 0 || dev->rootfs_protected)
+            ? BLOCKDEV_STATE_ONLINE
+            : BLOCKDEV_STATE_OFFLINE;
+    }
+    blockdev_unlock();
+    blockdev_release(dev);
+    return rc;
+}
+
 int blockdev_register(struct block_device *dev) {
     uint32_t disk_index;
+    int scan_rc;
 
     if (dev == 0 || dev->read == 0) {
         return -1;
     }
 
+    /* Do not publish a device until its partition metadata is stable.  MSC
+     * devices may need several BOT requests here, and query clients must not
+     * observe the half-initialized registration. */
+    blockdev_lock();
     for (uint32_t i = 0; i < device_count; i++) {
         if (devices[i] == dev) {
+            blockdev_unlock();
             return 0;
         }
     }
-    dev->partition_count = 0;
-    dev->partition_cache_valid = 0u;
     disk_index = BLOCKDEV_MAX;
     for (uint32_t i = 0; i < device_count; i++) {
         if (devices[i] == 0) {
@@ -333,12 +653,57 @@ int blockdev_register(struct block_device *dev) {
     }
     if (disk_index == BLOCKDEV_MAX) {
         if (device_count >= BLOCKDEV_MAX) {
+            blockdev_unlock();
+            return -1;
+        }
+        disk_index = device_count;
+    }
+    blockdev_unlock();
+
+    dev->partition_count = 0u;
+    dev->partition_cache_valid = 0u;
+    dev->io_refs = 0u;
+    dev->request_lock = 0u;
+    dev->failure_count = 0u;
+    dev->consecutive_failures = 0u;
+    dev->rebind_count = 0u;
+    dev->last_error = 0;
+    memset(dev->last_error_reason, 0, sizeof(dev->last_error_reason));
+    memset(dev->last_rebind_reason, 0, sizeof(dev->last_rebind_reason));
+    dev->rootfs_protected = 0u;
+    dev->request_cancelled = 1u;
+    dev->request_deadline = 0u;
+    dev->removing = 0u;
+    dev->state = BLOCKDEV_STATE_PROBING;
+    scan_rc = blockdev_rescan_partitions(dev);
+
+    blockdev_lock();
+    for (uint32_t i = 0; i < device_count; i++) {
+        if (devices[i] == dev) {
+            blockdev_unlock();
+            return 0;
+        }
+    }
+    disk_index = BLOCKDEV_MAX;
+    for (uint32_t i = 0; i < device_count; i++) {
+        if (devices[i] == 0) {
+            disk_index = i;
+            break;
+        }
+    }
+    if (disk_index == BLOCKDEV_MAX) {
+        if (device_count >= BLOCKDEV_MAX) {
+            blockdev_unlock();
             return -1;
         }
         disk_index = device_count++;
     }
+    dev->removing = 0u;
+    dev->state = BLOCKDEV_STATE_ONLINE;
     devices[disk_index] = dev;
-    (void)blockdev_rescan_partitions(dev);
+    blockdev_unlock();
+
+    (void)scan_rc;
     block_event_emit_change("add", disk_index, 0xffffffffu, dev->name, dev->block_count);
     for (uint32_t i = 0; i < dev->partition_count; i++) {
         struct blockdev_partition part = dev->partitions[i];
@@ -354,6 +719,7 @@ int blockdev_unregister(struct block_device *dev) {
     if (dev == 0) {
         return -1;
     }
+    blockdev_lock();
     for (uint32_t i = 0; i < device_count; i++) {
         if (devices[i] == dev) {
             disk_index = i;
@@ -361,6 +727,46 @@ int blockdev_unregister(struct block_device *dev) {
         }
     }
     if (disk_index == BLOCKDEV_MAX) {
+        blockdev_unlock();
+        return -1;
+    }
+    if (dev->rootfs_protected) {
+        dev->removing = 0u;
+        if (dev->state == BLOCKDEV_STATE_OFFLINE || dev->state == BLOCKDEV_STATE_REMOVING) {
+            dev->state = BLOCKDEV_STATE_ONLINE;
+        }
+        dev->request_cancelled = 0u;
+        blockdev_unlock();
+        return -1;
+    }
+    dev->removing = 1u;
+    dev->state = BLOCKDEV_STATE_REMOVING;
+    dev->request_cancelled = 1u;
+    blockdev_unlock();
+
+    /*
+     * Removal can be called from a controller hotplug poll while the
+     * controller serialization lock is held.  Waiting here for an active
+     * request would deadlock that request: it needs the same lock to finish.
+     * Leave the device published but REMOVING and let the next poll retry.
+     */
+    blockdev_lock();
+    if (dev->io_refs != 0u) {
+        blockdev_unlock();
+        return -1;
+    }
+    blockdev_unlock();
+
+    blockdev_lock();
+    disk_index = BLOCKDEV_MAX;
+    for (uint32_t i = 0u; i < device_count; i++) {
+        if (devices[i] == dev) {
+            disk_index = i;
+            break;
+        }
+    }
+    if (disk_index == BLOCKDEV_MAX) {
+        blockdev_unlock();
         return -1;
     }
     blockdev_cache_invalidate_device(dev);
@@ -371,59 +777,250 @@ int blockdev_unregister(struct block_device *dev) {
     }
     block_event_emit_change("remove", disk_index, 0xffffffffu, dev->name, dev->block_count);
     devices[disk_index] = 0;
+    dev->io_refs = 0u;
     dev->partition_count = 0;
     dev->partition_cache_valid = 0u;
     while (device_count > 0u && devices[device_count - 1u] == 0) {
         device_count--;
     }
+    blockdev_unlock();
     return 0;
 }
 
 struct block_device *blockdev_get(uint32_t index) {
+    struct block_device *dev;
+
+    blockdev_lock();
     if (index >= device_count) {
+        blockdev_unlock();
         return 0;
     }
-    return devices[index];
+    dev = devices[index];
+    blockdev_unlock();
+    return dev;
+}
+
+struct block_device *blockdev_acquire(uint32_t index) {
+    struct block_device *dev = 0;
+
+    blockdev_lock();
+    if (index < device_count) {
+        dev = devices[index];
+        if (dev == 0 || dev->removing != 0u ||
+            dev->state != BLOCKDEV_STATE_ONLINE) {
+            dev = 0;
+        } else {
+            dev->io_refs++;
+        }
+    }
+    blockdev_unlock();
+    return dev;
+}
+
+int blockdev_acquire_device(struct block_device *dev) {
+    int found = 0;
+
+    if (dev == 0) {
+        return -1;
+    }
+    blockdev_lock();
+    for (uint32_t i = 0u; i < device_count; i++) {
+        if (devices[i] != dev) {
+            continue;
+        }
+        found = 1;
+        if (dev->removing == 0u && dev->state == BLOCKDEV_STATE_ONLINE) {
+            dev->io_refs++;
+        } else {
+            found = 0;
+        }
+        break;
+    }
+    blockdev_unlock();
+    return found ? 0 : -1;
+}
+
+void blockdev_release(struct block_device *dev) {
+    if (dev == 0) {
+        return;
+    }
+    blockdev_lock();
+    if (dev->io_refs != 0u) {
+        dev->io_refs--;
+    }
+    blockdev_unlock();
 }
 
 uint32_t blockdev_count(void) {
-    return device_count;
+    uint32_t count;
+
+    blockdev_lock();
+    count = device_count;
+    blockdev_unlock();
+    return count;
 }
 
 int blockdev_get_info(uint32_t index, struct blockdev_info *out) {
-    struct block_device *dev = blockdev_get(index);
+    struct block_device *dev;
 
-    if (dev == 0 || out == 0) {
+    if (out == 0) {
         return -1;
     }
-    out->name = dev->name;
+    blockdev_lock();
+    dev = index < device_count ? devices[index] : 0;
+    if (dev == 0 || dev->removing != 0u) {
+        dev = 0;
+    } else {
+        dev->io_refs++;
+    }
+    blockdev_unlock();
+    if (dev == 0) {
+        return -1;
+    }
+    blockdev_lock();
+    memcpy(out->name, dev->name, sizeof(out->name));
+    out->name[sizeof(out->name) - 1u] = '\0';
     out->block_size = dev->block_size;
     out->block_count = dev->block_count;
     out->writable = dev->write != 0;
+    out->partition_count = dev->partition_cache_valid ? dev->partition_count : 0u;
+    out->failure_count = dev->failure_count;
+    out->consecutive_failures = dev->consecutive_failures;
+    out->rebind_count = dev->rebind_count;
+    out->last_error = dev->last_error;
+    memcpy(out->last_error_reason,
+           dev->last_error_reason,
+           sizeof(out->last_error_reason));
+    memcpy(out->last_rebind_reason,
+           dev->last_rebind_reason,
+           sizeof(out->last_rebind_reason));
+    blockdev_unlock();
+    blockdev_io_end(dev, 1);
+    return 0;
+}
+
+int blockdev_get_partition_info(uint32_t disk_index,
+                                uint32_t slot,
+                                struct blockdev_partition *out) {
+    struct block_device *dev;
+
+    if (out == 0) {
+        return -1;
+    }
+    blockdev_lock();
+    dev = disk_index < device_count ? devices[disk_index] : 0;
+    if (dev == 0 || dev->removing != 0u || !dev->partition_cache_valid ||
+        slot >= dev->partition_count) {
+        blockdev_unlock();
+        return -1;
+    }
+    dev->io_refs++;
+    *out = dev->partitions[slot];
+    dev->io_refs--;
+    blockdev_unlock();
     return 0;
 }
 
 uint32_t blockdev_partition_count(struct block_device *dev) {
+    int acquired;
+
     if (dev == 0) {
         return 0;
     }
-    if (!dev->partition_cache_valid) {
-        (void)blockdev_rescan_partitions(dev);
+    acquired = blockdev_io_begin(dev);
+    if (acquired < 0) {
+        return 0;
     }
-    return dev->partition_count;
+    blockdev_lock();
+    if (!dev->partition_cache_valid) {
+        blockdev_unlock();
+        blockdev_io_end(dev, acquired);
+        (void)blockdev_rescan_partitions(dev);
+        acquired = blockdev_io_begin(dev);
+        if (acquired < 0) {
+            return 0;
+        }
+        blockdev_lock();
+    }
+    {
+        uint32_t count = dev->partition_count;
+        blockdev_unlock();
+        blockdev_io_end(dev, acquired);
+        return count;
+    }
 }
 
 int blockdev_partition_get(struct block_device *dev, uint32_t index, struct blockdev_partition *out) {
+    int acquired;
+
     if (dev == 0 || out == 0) {
         return -1;
     }
+    acquired = blockdev_io_begin(dev);
+    if (acquired < 0) {
+        return -1;
+    }
+    blockdev_lock();
     if (!dev->partition_cache_valid) {
+        blockdev_unlock();
+        blockdev_io_end(dev, acquired);
         (void)blockdev_rescan_partitions(dev);
+        acquired = blockdev_io_begin(dev);
+        if (acquired < 0) {
+            return -1;
+        }
+        blockdev_lock();
     }
     if (index >= dev->partition_count) {
+        blockdev_unlock();
+        blockdev_io_end(dev, acquired);
         return -1;
     }
     *out = dev->partitions[index];
+    blockdev_unlock();
+    blockdev_io_end(dev, acquired);
+    return 0;
+}
+
+uint32_t blockdev_partition_count_cached(struct block_device *dev) {
+    uint32_t count;
+    int acquired;
+
+    if (dev == 0) {
+        return 0;
+    }
+    acquired = blockdev_io_begin(dev);
+    if (acquired < 0) {
+        return 0;
+    }
+    blockdev_lock();
+    count = dev->partition_cache_valid ? dev->partition_count : 0u;
+    blockdev_unlock();
+    blockdev_io_end(dev, acquired);
+    return count;
+}
+
+int blockdev_partition_get_cached(struct block_device *dev,
+                                  uint32_t index,
+                                  struct blockdev_partition *out) {
+    int acquired;
+
+    if (dev == 0 || out == 0) {
+        return -1;
+    }
+    acquired = blockdev_io_begin(dev);
+    if (acquired < 0) {
+        return -1;
+    }
+    blockdev_lock();
+    if (!dev->partition_cache_valid || index >= dev->partition_count) {
+        blockdev_unlock();
+        blockdev_io_end(dev, acquired);
+        return -1;
+    }
+    *out = dev->partitions[index];
+    blockdev_unlock();
+    blockdev_io_end(dev, acquired);
     return 0;
 }
 
@@ -431,10 +1028,17 @@ int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *
     uint8_t *out = (uint8_t *)buffer;
     uint64_t start;
     int rc;
+    int acquired;
 
-    if (dev == 0 || dev->read == 0 || buffer == 0 || count == 0) {
+    if (dev == 0 || buffer == 0 || count == 0) {
         return -1;
     }
+    acquired = blockdev_io_begin(dev);
+    if (acquired < 0 || dev->read == 0) {
+        blockdev_io_end(dev, acquired);
+        return -1;
+    }
+    blockdev_lock();
     if (dev->block_size == BLOCKDEV_SECTOR_SIZE) {
         uint32_t cached;
 
@@ -451,14 +1055,25 @@ int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *
                    BLOCKDEV_SECTOR_SIZE);
         }
         if (cached == count) {
+            blockdev_unlock();
+            blockdev_io_end(dev, acquired);
             return 0;
         }
     }
+    blockdev_unlock();
     if (g_block_profile_read == 0u) {
         g_block_profile_read = kernel_profile_register("block.read");
     }
     start = kernel_profile_clock();
+    blockdev_request_lock(dev);
     rc = dev->read(dev, lba, count, buffer);
+    blockdev_request_unlock(dev);
+    if (rc == 0) {
+        blockdev_record_success(dev);
+    } else {
+        blockdev_record_failure(dev, rc, 0);
+    }
+    blockdev_lock();
     if (rc == 0 && dev->block_size == BLOCKDEV_SECTOR_SIZE) {
         for (uint32_t i = 0u; i < count; i++) {
             struct blockdev_read_cache_entry *entry =
@@ -471,17 +1086,27 @@ int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *
             entry->lba = lba + i;
             entry->valid = 1u;
         }
+    } else if (rc != 0 && dev->block_size == BLOCKDEV_SECTOR_SIZE) {
+        blockdev_cache_invalidate_range(dev, lba, count);
     }
     kernel_profile_record(g_block_profile_read,
                           kernel_profile_clock() - start,
                           rc == 0 ? (uint64_t)count * dev->block_size : 0u);
+    blockdev_unlock();
+    blockdev_io_end(dev, acquired);
     return rc;
 }
 
 int blockdev_write(struct block_device *dev, uint64_t lba, uint32_t count, const void *buffer) {
     int rc;
+    int acquired;
 
-    if (dev == 0 || dev->write == 0 || buffer == 0 || count == 0) {
+    if (dev == 0 || buffer == 0 || count == 0) {
+        return -1;
+    }
+    acquired = blockdev_io_begin(dev);
+    if (acquired < 0 || dev->write == 0) {
+        blockdev_io_end(dev, acquired);
         return -1;
     }
     if (g_block_profile_write == 0u) {
@@ -490,37 +1115,67 @@ int blockdev_write(struct block_device *dev, uint64_t lba, uint32_t count, const
     {
         uint64_t start = kernel_profile_clock();
 
+        blockdev_request_lock(dev);
         rc = dev->write(dev, lba, count, buffer);
+        blockdev_request_unlock(dev);
+        if (rc == 0) {
+            blockdev_record_success(dev);
+        } else {
+            blockdev_record_failure(dev, rc, 0);
+        }
         kernel_profile_record(g_block_profile_write,
                               kernel_profile_clock() - start,
                               rc == 0 ? (uint64_t)count * dev->block_size : 0u);
     }
+    blockdev_lock();
     if (rc == 0) {
         blockdev_cache_invalidate_range(dev, lba, count);
+    } else {
+        blockdev_cache_invalidate_range(dev, lba, count);
+        dev->partition_cache_valid = 0u;
     }
     if (rc == 0 && lba == 0u) {
+        blockdev_unlock();
+        blockdev_io_end(dev, acquired);
         (void)blockdev_rescan_partitions(dev);
+        return rc;
     }
+    blockdev_unlock();
+    blockdev_io_end(dev, acquired);
     return rc;
 }
 
 int blockdev_flush(struct block_device *dev) {
     uint64_t start;
     int rc;
+    int acquired;
 
     if (dev == 0) {
         return -1;
     }
+    acquired = blockdev_io_begin(dev);
+    if (acquired < 0) {
+        return -1;
+    }
     if (dev->flush == 0) {
+        blockdev_io_end(dev, acquired);
         return 0;
     }
     if (g_block_profile_flush == 0u) {
         g_block_profile_flush = kernel_profile_register("block.flush");
     }
     start = kernel_profile_clock();
+    blockdev_request_lock(dev);
     rc = dev->flush(dev);
+    blockdev_request_unlock(dev);
+    if (rc == 0) {
+        blockdev_record_success(dev);
+    } else {
+        blockdev_record_failure(dev, rc, 0);
+    }
     kernel_profile_record(g_block_profile_flush,
                           kernel_profile_clock() - start,
                           0u);
+    blockdev_io_end(dev, acquired);
     return rc;
 }

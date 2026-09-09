@@ -1,6 +1,8 @@
 #include "kernel/internal/proc/process_lifecycle_internal.h"
 #include "kernel/internal/proc/process_elf_internal.h"
+#include "kernel/internal/proc/process_reap_internal.h"
 #include "kernel/public/mem/vmm.h"
+#include "kernel/public/core/kprint.h"
 #include "kernel/public/proc/sched_policy.h"
 #include "hal/hal.h"
 #include "lib/string.h"
@@ -28,7 +30,7 @@ uint32_t g_process_exec_read_file_size;
 uint32_t g_process_exec_read_bytes;
 uint32_t g_process_exec_read_result;
 struct process g_last_exited_process;
-struct job_runtime g_bg_runtimes[USER_PROCESS_LIMIT];
+struct job_runtime g_job_runtimes[USER_PROCESS_LIMIT];
 uint32_t g_scheduler_next_slot;
 
 static int process_session_has_image(const struct process_session *session) {
@@ -108,6 +110,10 @@ static void process_prepare_slot(struct process *proc,
     process_discard_files(proc);
     process_set_default_state(proc, slot, PROCESS_STATE_RUNNING);
     proc->pid = g_next_pid++;
+    process_set_capabilities(
+        proc,
+        parent_proc != NULL ? process_capabilities(parent_proc) : PROCESS_CAP_SYS_ADMIN);
+    process_inherit_identity(proc, parent_proc);
     proc->console_handle = parent_proc != NULL ? parent_proc->console_handle : g_user_tty;
     if (parent_proc != NULL && parent_proc->image_kind != PROCESS_IMAGE_NONE) {
         for (uint32_t i = 0; i <= SYS_FD_STDERR; i++) {
@@ -127,7 +133,7 @@ static void process_reset_slots(void) {
     for (uint32_t i = 0; i < USER_PROCESS_LIMIT; i++) {
         g_process_slot_used[i] = 0;
         process_set_default_state(&g_process_slots[i], i, PROCESS_STATE_FREE);
-        job_reset_runtime_slot(&g_bg_runtimes[i]);
+        job_reset_runtime_slot(&g_job_runtimes[i]);
     }
 }
 
@@ -182,8 +188,8 @@ void addrspace_reset(struct address_space *address_space) {
     if (address_space == NULL) {
         return;
     }
-    address_space->kernel_cr3 = 0;
-    address_space->user_cr3 = 0;
+    address_space->kernel_root = 0;
+    address_space->user_root = 0;
     address_space->reserved_phys_base = 0;
     address_space->reserved_phys_limit = 0;
     address_space->reserved_phys_next = 0;
@@ -259,6 +265,17 @@ struct process *process_alloc_slot(struct process_session *session, const struct
             return &g_process_slots[i];
         }
     }
+
+    process_reap_orphan_zombies();
+
+    for (uint32_t i = 0; i < USER_PROCESS_LIMIT; i++) {
+        if (!g_process_slot_used[i]) {
+            g_process_slot_used[i] = 1;
+            process_prepare_slot(&g_process_slots[i], i, address_space, parent_proc);
+            return &g_process_slots[i];
+        }
+    }
+
     return NULL;
 }
 
@@ -310,8 +327,8 @@ static void process_wake_matching_file_waiter(struct process *proc,
 void process_wake_file_waiters(void *private_data, uint8_t file_kind) {
     process_wake_matching_file_waiter(&g_user_session.process, private_data, file_kind);
     for (uint32_t i = 0; i < USER_PROCESS_LIMIT; i++) {
-        if (g_bg_runtimes[i].used) {
-            process_wake_matching_file_waiter(&g_bg_runtimes[i].session.process,
+        if (g_job_runtimes[i].used) {
+            process_wake_matching_file_waiter(&g_job_runtimes[i].session.process,
                                               private_data,
                                               file_kind);
         }
@@ -361,7 +378,7 @@ void process_init(struct tty *tty, volatile uint32_t *timer_ticks) {
     g_user_session.elf_image_size = 0;
     g_user_session.elf_segment_count = 0;
     addrspace_reset(&g_user_session.address_space);
-    g_user_session.address_space.kernel_cr3 = vmm_current_root();
+    g_user_session.address_space.kernel_root = vmm_current_root();
     process_reset_slots();
     process_reset_exit_record(&g_last_exited_process);
     process_clear_slot_state(&g_user_session.process);
@@ -411,6 +428,16 @@ void sched_sleep_current(struct process_session *session, const struct syscall_f
     if (ticks != 0u) {
         sched_policy_note_sleep(session->process.wake_tick);
     }
+}
+
+void sched_wait_current(struct process_session *session,
+                        const struct syscall_frame *frame,
+                        uint64_t result) {
+    if (frame == NULL || !process_session_has_image(session)) {
+        return;
+    }
+    sched_save_process_frame(&session->process, frame, result);
+    session->process.state = PROCESS_STATE_WAITING;
 }
 
 void sched_preempt_current(struct process_session *session, const struct syscall_frame *frame) {

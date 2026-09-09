@@ -181,8 +181,18 @@ int ehci_msc_command(struct ehci_msc_device *dev,
             csw_tag = usb_read_u32le(dev->csw + 4);
             dev->last_msc_residue = usb_read_u32le(dev->csw + 8);
             dev->last_msc_status = dev->csw[12];
-            if (signature == MSC_CSW_SIGNATURE && csw_tag == tag) {
+            if (signature == MSC_CSW_SIGNATURE && csw_tag == tag &&
+                dev->last_msc_residue <= data_len &&
+                dev->last_msc_status <= 2u) {
                 if (dev->last_msc_status == 0u) {
+                    /* READ/WRITE(10) must transfer the complete request.
+                     * Do not expose a short DMA buffer as a successful block I/O. */
+                    if (dev->last_msc_residue != 0u &&
+                        (cmd[0] == SCSI_READ_10 || cmd[0] == SCSI_WRITE_10)) {
+                        dev->last_msc_phase = 4u;
+                        dev->last_msc_status = MSC_STATUS_TRANSPORT_ERROR;
+                        return 0;
+                    }
                     break;
                 }
                 if (dev->last_msc_status == 1u) {
@@ -198,6 +208,15 @@ int ehci_msc_command(struct ehci_msc_device *dev,
             }
             if (csw_retry != 0u) {
                 dev->last_msc_phase = 4u;
+                dev->last_msc_status = MSC_STATUS_TRANSPORT_ERROR;
+                kprint("ehci: invalid CSW tag=%x op=%x sig=%x tag=%x/%x status=%u residue=%x\n",
+                       tag,
+                       (uint32_t)cmd[0],
+                       signature,
+                       csw_tag,
+                       tag,
+                       (uint32_t)dev->last_msc_status,
+                       dev->last_msc_residue);
                 return 0;
             }
         } else {

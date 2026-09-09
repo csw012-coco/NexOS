@@ -7,6 +7,13 @@ struct file;
 struct process;
 struct vfs;
 
+struct fs_service_fd_runtime_ops {
+    void (*ensure_terminal_owner)(const struct process *proc);
+    void (*tick_excluding_pid)(uint32_t pid);
+};
+
+void fs_service_fd_runtime_ops_register(
+    const struct fs_service_fd_runtime_ops *ops);
 uint64_t fs_service_read(struct process *proc,
                          struct vfs *vfs,
                          uint32_t fd,

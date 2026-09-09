@@ -21,8 +21,6 @@ ARCH_RUN_TARGET := arch-unsupported
 endif
 
 CCACHE ?= $(shell command -v ccache 2>/dev/null)
-DEFAULT_CROSS_BINDIR := $(HOME)/opt/cross/bin
-DEFAULT_CROSS_PREFIX := $(if $(shell command -v x86_64-elf-gcc 2>/dev/null),x86_64-elf-,$(if $(wildcard $(DEFAULT_CROSS_BINDIR)/x86_64-elf-gcc),$(DEFAULT_CROSS_BINDIR)/x86_64-elf-,x86_64-elf-))
 CROSS_PREFIX ?= $(DEFAULT_CROSS_PREFIX)
 ifeq ($(origin CC),default)
 CC := $(if $(CCACHE),$(CCACHE) ,)$(CROSS_PREFIX)gcc

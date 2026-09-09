@@ -1,7 +1,9 @@
 #include "kernel/internal/core/system_power_internal.h"
 
+#include "abi/syscall_abi.h"
 #include "hal/hal.h"
 #include "kernel/public/core/kprint.h"
+#include "drivers/bus/acpi.h"
 
 static void kernel_reboot_io_delay(void) {
     for (uint32_t i = 0; i < 0x10000u; i++) {
@@ -34,21 +36,18 @@ static void kernel_reboot_try_kbc(void) {
 }
 
 static void kernel_reboot_triple_fault(void) {
-    struct {
-        uint16_t limit;
-        uint64_t base;
-    } __attribute__((packed)) null_idt = {0u, 0u};
-
-    __asm__ __volatile__("lidt %0\n\t"
-                         "int3\n\t"
-                         :
-                         : "m"(null_idt)
-                         : "memory");
+    hal_cpu_trigger_triple_fault();
 }
 
 uint64_t kernel_reboot(void) {
     kprint("kernel: reboot requested\n");
     hal_cpu_cli();
+
+    if (acpi_reset()) {
+        for (;;) {
+            hal_cpu_halt();
+        }
+    }
 
     kernel_reboot_try_cf9();
     kernel_reboot_try_kbc();
@@ -57,4 +56,14 @@ uint64_t kernel_reboot(void) {
     for (;;) {
         hal_cpu_halt();
     }
+}
+
+uint64_t kernel_poweroff(void) {
+    kprint("kernel: poweroff requested\n");
+    hal_cpu_cli();
+    if (acpi_poweroff()) {
+        return 0u;
+    }
+    kprint("kernel: ACPI poweroff unavailable\n");
+    return (uint64_t)(int64_t)-NEX_ERR_NOSYS;
 }

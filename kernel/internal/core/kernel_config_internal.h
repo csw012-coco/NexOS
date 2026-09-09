@@ -11,6 +11,8 @@ struct kernel_config {
     uint8_t ring3_smoke;
     uint8_t mouse_cursor;
     uint8_t serial_shell;
+    uint8_t virtual_tty_shells;
+    char security_root_token[64];
     char init_path[NOS_PATH_BUFFER_SIZE];
 };
 

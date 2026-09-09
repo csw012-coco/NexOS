@@ -271,6 +271,9 @@ int file_pipe_backend_open_named(struct file *file, const char *path, int writab
         return 0;
     }
     file_pipe_init_end(file, kind, pipe, ops);
+    file->flags |= writable ?
+        KERNEL_FILE_ACCESS_WRITE :
+        KERNEL_FILE_ACCESS_READ;
     file_pipe_acquire_end(pipe, kind);
     return 1;
 }

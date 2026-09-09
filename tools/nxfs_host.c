@@ -5,9 +5,18 @@
 #include <time.h>
 
 #include "fs/nxfs.h"
+#include "kernel/public/proc/process.h"
 
 enum {
-    NXFS_HOST_DEFAULT_BLOCKS = 147456
+    NXFS_HOST_DEFAULT_BLOCKS = 147456,
+    NXFS_HOST_CAP_MODE_SHIFT = 16u,
+    NXFS_HOST_CAP_POLICY_PRESENT = 1u << 31,
+    NXFS_HOST_CAP_POLICY_MAX = 8192u,
+    NXFS_HOST_CAP_TOKEN_MAX = 96u,
+    NXFS_HOST_CAP_MATCH_NONE = 0u,
+    NXFS_HOST_CAP_MATCH_DEFAULT = 1u,
+    NXFS_HOST_CAP_MATCH_BASENAME = 2u,
+    NXFS_HOST_CAP_MATCH_EXACT = 3u
 };
 
 static FILE *g_disk = NULL;
@@ -492,11 +501,457 @@ static void info_local(const char *image, const char *path) {
         close_disk_local();
         exit(1);
     }
-    printf("ino=%u type=%u size=%u", ino, inode.type, inode.size);
+    printf("ino=%u type=%u size=%u mode=%03o uid=%u gid=%u",
+           ino,
+           inode.type,
+           inode.size,
+           inode.mode & 07777u,
+           inode.uid,
+           inode.gid);
+    if ((inode.mode & NXFS_HOST_CAP_POLICY_PRESENT) != 0u) {
+        printf(" cap_policy=1 caps=%x",
+               (inode.mode >> NXFS_HOST_CAP_MODE_SHIFT) &
+                   PROCESS_CAP_SYS_ADMIN);
+    }
     for (uint32_t i = 0; i < NXFS_EXTENTS; i++) {
         printf(" extent%u=%u:%u", i, inode.extents[i].start, inode.extents[i].len);
     }
     printf("\n");
+    close_disk_local();
+}
+
+static uint32_t parse_octal_mode_or_die(const char *text) {
+    uint32_t mode = 0;
+
+    if (text == NULL || text[0] == '\0') {
+        fprintf(stderr, "nxfs_host: empty mode\n");
+        exit(1);
+    }
+    for (uint32_t i = 0; text[i] != '\0'; i++) {
+        if (text[i] < '0' || text[i] > '7') {
+            fprintf(stderr, "nxfs_host: bad octal mode: %s\n", text);
+            exit(1);
+        }
+        mode = (mode << 3) | (uint32_t)(text[i] - '0');
+        if (mode > 07777u) {
+            fprintf(stderr, "nxfs_host: mode out of range: %s\n", text);
+            exit(1);
+        }
+    }
+    return mode;
+}
+
+static uint32_t parse_u32_or_die(const char *text, const char *name) {
+    uint32_t value = 0;
+
+    if (text == NULL || text[0] == '\0') {
+        fprintf(stderr, "nxfs_host: empty %s\n", name);
+        exit(1);
+    }
+    for (uint32_t i = 0; text[i] != '\0'; i++) {
+        if (text[i] < '0' || text[i] > '9') {
+            fprintf(stderr, "nxfs_host: bad %s: %s\n", name, text);
+            exit(1);
+        }
+        value = value * 10u + (uint32_t)(text[i] - '0');
+    }
+    return value;
+}
+
+static const char *cap_policy_basename_local(const char *path) {
+    const char *base = path;
+
+    if (path == NULL) {
+        return "";
+    }
+    for (uint32_t i = 0; path[i] != '\0'; i++) {
+        if (path[i] == '/') {
+            base = path + i + 1u;
+        }
+    }
+    return base;
+}
+
+static int cap_policy_has_path_local(const char *text) {
+    if (text == NULL) {
+        return 0;
+    }
+    for (uint32_t i = 0; text[i] != '\0'; i++) {
+        if (text[i] == '/') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const char *cap_policy_line_end_local(const char *line) {
+    while (line != NULL && line[0] != '\0' && line[0] != '\n' && line[0] != '\r') {
+        line++;
+    }
+    return line;
+}
+
+static const char *cap_policy_skip_inline_spaces_local(const char *cursor,
+                                                       const char *line_end) {
+    while (cursor < line_end && (cursor[0] == ' ' || cursor[0] == '\t')) {
+        cursor++;
+    }
+    return cursor;
+}
+
+static int cap_policy_read_token_local(const char **cursor_io,
+                                       const char *line_end,
+                                       char *out,
+                                       uint32_t out_size) {
+    const char *cursor;
+    uint32_t len = 0u;
+
+    if (cursor_io == NULL || out == NULL || out_size == 0u) {
+        return 0;
+    }
+    cursor = cap_policy_skip_inline_spaces_local(*cursor_io, line_end);
+    if (cursor >= line_end || cursor[0] == '#') {
+        out[0] = '\0';
+        *cursor_io = cursor;
+        return 0;
+    }
+    while (cursor < line_end &&
+           cursor[0] != ' ' && cursor[0] != '\t' &&
+           cursor[0] != '#') {
+        if (len + 1u >= out_size) {
+            return 0;
+        }
+        out[len++] = *cursor++;
+    }
+    out[len] = '\0';
+    *cursor_io = cursor;
+    return len != 0u;
+}
+
+static int cap_policy_streq_local(const char *a, const char *b) {
+    uint32_t i = 0u;
+
+    if (a == NULL || b == NULL) {
+        return 0;
+    }
+    while (a[i] == b[i]) {
+        if (a[i] == '\0') {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+static uint32_t cap_policy_match_score_local(const char *pattern,
+                                             const char *image_name) {
+    if (pattern == NULL || image_name == NULL || pattern[0] == '\0') {
+        return NXFS_HOST_CAP_MATCH_NONE;
+    }
+    if (cap_policy_streq_local(pattern, "*") ||
+        cap_policy_streq_local(pattern, "default")) {
+        return NXFS_HOST_CAP_MATCH_DEFAULT;
+    }
+    if (cap_policy_has_path_local(pattern)) {
+        return cap_policy_streq_local(pattern, image_name)
+            ? NXFS_HOST_CAP_MATCH_EXACT
+            : NXFS_HOST_CAP_MATCH_NONE;
+    }
+    return cap_policy_streq_local(pattern, cap_policy_basename_local(image_name))
+        ? NXFS_HOST_CAP_MATCH_BASENAME
+        : NXFS_HOST_CAP_MATCH_NONE;
+}
+
+static int cap_policy_parse_cap_local(const char *name, uint32_t *cap_out) {
+    char *end = NULL;
+    unsigned long numeric;
+
+    if (name == NULL || cap_out == NULL) {
+        return 0;
+    }
+    if (strcmp(name, "none") == 0 || strcmp(name, "-") == 0) {
+        *cap_out = 0u;
+        return 1;
+    }
+    if (strcmp(name, "all") == 0) {
+        *cap_out = PROCESS_CAP_SYS_ADMIN;
+        return 1;
+    }
+    if (strcmp(name, "power") == 0) {
+        *cap_out = PROCESS_CAP_POWER;
+        return 1;
+    }
+    if (strcmp(name, "raw-block") == 0 || strcmp(name, "raw_block") == 0 ||
+        strcmp(name, "block") == 0) {
+        *cap_out = PROCESS_CAP_RAW_BLOCK;
+        return 1;
+    }
+    if (strcmp(name, "mount") == 0) {
+        *cap_out = PROCESS_CAP_MOUNT;
+        return 1;
+    }
+    if (strcmp(name, "signal") == 0 || strcmp(name, "kill") == 0) {
+        *cap_out = PROCESS_CAP_SIGNAL;
+        return 1;
+    }
+    if (strcmp(name, "grant") == 0) {
+        *cap_out = PROCESS_CAP_GRANT;
+        return 1;
+    }
+    if (strcmp(name, "audio") == 0) {
+        *cap_out = PROCESS_CAP_AUDIO;
+        return 1;
+    }
+    if (strcmp(name, "net-raw") == 0 || strcmp(name, "net_raw") == 0 ||
+        strcmp(name, "network") == 0 || strcmp(name, "rtl8139") == 0) {
+        *cap_out = PROCESS_CAP_NET_RAW;
+        return 1;
+    }
+    if (strcmp(name, "display") == 0 || strcmp(name, "gfx") == 0) {
+        *cap_out = PROCESS_CAP_DISPLAY;
+        return 1;
+    }
+    if (strcmp(name, "input") == 0) {
+        *cap_out = PROCESS_CAP_INPUT;
+        return 1;
+    }
+    if (strcmp(name, "clipboard") == 0) {
+        *cap_out = PROCESS_CAP_CLIPBOARD;
+        return 1;
+    }
+    if (strcmp(name, "debug") == 0) {
+        *cap_out = PROCESS_CAP_DEBUG;
+        return 1;
+    }
+    numeric = strtoul(name, &end, 0);
+    if (end != name && *end == '\0' && numeric <= PROCESS_CAP_SYS_ADMIN) {
+        *cap_out = (uint32_t)numeric;
+        return 1;
+    }
+    return 0;
+}
+
+static int cap_policy_parse_caps_local(const char *cursor,
+                                       const char *line_end,
+                                       uint32_t *mask_out) {
+    char token[NXFS_HOST_CAP_TOKEN_MAX];
+    uint32_t mask = 0u;
+    int saw_cap = 0;
+
+    cursor = cap_policy_skip_inline_spaces_local(cursor, line_end);
+    while (cursor < line_end && cursor[0] != '#') {
+        uint32_t cap;
+
+        if (!cap_policy_read_token_local(&cursor, line_end, token, sizeof(token)) ||
+            !cap_policy_parse_cap_local(token, &cap)) {
+            return 0;
+        }
+        mask |= cap;
+        saw_cap = 1;
+        cursor = cap_policy_skip_inline_spaces_local(cursor, line_end);
+    }
+    if (!saw_cap || mask_out == NULL) {
+        return 0;
+    }
+    *mask_out = mask & PROCESS_CAP_SYS_ADMIN;
+    return 1;
+}
+
+static void cap_policy_apply_line_local(const char *line,
+                                        const char *image_name,
+                                        uint32_t *best_score_io,
+                                        uint32_t *policy_mask_io) {
+    char pattern[NXFS_HOST_CAP_TOKEN_MAX];
+    const char *cursor = line;
+    const char *line_end = cap_policy_line_end_local(line);
+    uint32_t score;
+    uint32_t mask;
+
+    if (!cap_policy_read_token_local(&cursor, line_end, pattern, sizeof(pattern))) {
+        return;
+    }
+    score = cap_policy_match_score_local(pattern, image_name);
+    if (score == NXFS_HOST_CAP_MATCH_NONE ||
+        score < *best_score_io ||
+        !cap_policy_parse_caps_local(cursor, line_end, &mask)) {
+        return;
+    }
+    *best_score_io = score;
+    *policy_mask_io = mask;
+}
+
+static int cap_policy_load_file_local(const char *policy_path,
+                                      char *buffer,
+                                      uint32_t buffer_size) {
+    FILE *fp;
+    size_t got;
+
+    if (policy_path == NULL || buffer == NULL || buffer_size == 0u) {
+        return 0;
+    }
+    fp = fopen(policy_path, "rb");
+    if (fp == NULL) {
+        return 0;
+    }
+    got = fread(buffer, 1, buffer_size - 1u, fp);
+    if (ferror(fp)) {
+        fclose(fp);
+        return 0;
+    }
+    fclose(fp);
+    buffer[got] = '\0';
+    return 1;
+}
+
+static int cap_policy_match_image_local(const char *policy,
+                                        const char *image_name,
+                                        uint32_t *mask_out) {
+    uint32_t pos = 0u;
+    uint32_t best_score = NXFS_HOST_CAP_MATCH_NONE;
+    uint32_t mask = PROCESS_CAP_SYS_ADMIN;
+
+    if (policy == NULL || image_name == NULL || mask_out == NULL) {
+        return 0;
+    }
+    while (policy[pos] != '\0') {
+        cap_policy_apply_line_local(policy + pos, image_name, &best_score, &mask);
+        while (policy[pos] != '\0' && policy[pos] != '\n') {
+            pos++;
+        }
+        if (policy[pos] == '\n') {
+            pos++;
+        }
+    }
+    if (best_score == NXFS_HOST_CAP_MATCH_NONE) {
+        return 0;
+    }
+    *mask_out = mask & PROCESS_CAP_SYS_ADMIN;
+    return 1;
+}
+
+static void setcap_inode_local(struct nxfs_volume *vol,
+                               uint32_t ino,
+                               struct nxfs_inode *inode,
+                               uint32_t caps,
+                               const char *path) {
+    uint32_t mode;
+
+    if ((caps & ~PROCESS_CAP_SYS_ADMIN) != 0u || inode->type != NXFS_TYPE_FILE) {
+        fprintf(stderr, "nxfs_host: bad cap target: %s\n", path);
+        close_disk_local();
+        exit(1);
+    }
+    mode = (inode->mode & 07777u) |
+           NXFS_HOST_CAP_POLICY_PRESENT |
+           ((caps & PROCESS_CAP_SYS_ADMIN) << NXFS_HOST_CAP_MODE_SHIFT);
+    if (nxfs_set_inode_metadata(vol, ino, inode, mode, inode->uid, inode->gid) != 0) {
+        fprintf(stderr, "nxfs_host: setcap failed: %s\n", path);
+        close_disk_local();
+        exit(1);
+    }
+}
+
+static void chmod_local(const char *image, const char *mode_text, const char *path) {
+    struct nxfs_volume vol;
+    struct nxfs_inode inode;
+    uint32_t ino;
+    uint32_t mode = parse_octal_mode_or_die(mode_text);
+
+    mount_image_local(image, &vol);
+    if (nxfs_lookup_path(&vol, path, &ino, &inode) != 0) {
+        fprintf(stderr, "nxfs_host: not found: %s\n", path);
+        close_disk_local();
+        exit(1);
+    }
+    mode = (inode.mode & ~07777u) | (mode & 07777u);
+    if (nxfs_set_inode_metadata(&vol, ino, &inode, mode, inode.uid, inode.gid) != 0) {
+        fprintf(stderr, "nxfs_host: chmod failed: %s\n", path);
+        close_disk_local();
+        exit(1);
+    }
+    close_disk_local();
+}
+
+static void setcap_local(const char *image, const char *caps_text, const char *path) {
+    struct nxfs_volume vol;
+    struct nxfs_inode inode;
+    uint32_t ino;
+    uint32_t caps;
+
+    if (!cap_policy_parse_cap_local(caps_text, &caps)) {
+        caps = parse_u32_or_die(caps_text, "caps");
+    }
+    mount_image_local(image, &vol);
+    if (nxfs_lookup_path(&vol, path, &ino, &inode) != 0) {
+        fprintf(stderr, "nxfs_host: not found: %s\n", path);
+        close_disk_local();
+        exit(1);
+    }
+    setcap_inode_local(&vol, ino, &inode, caps, path);
+    close_disk_local();
+}
+
+static void apply_caps_local(const char *image, const char *policy_path) {
+    static char policy[NXFS_HOST_CAP_POLICY_MAX];
+    struct nxfs_volume vol;
+    struct nxfs_inode dir;
+    uint32_t dir_ino;
+
+    if (!cap_policy_load_file_local(policy_path, policy, sizeof(policy))) {
+        fprintf(stderr, "nxfs_host: cannot read policy: %s\n", policy_path);
+        exit(1);
+    }
+    mount_image_local(image, &vol);
+    if (nxfs_lookup_path(&vol, "/cmd", &dir_ino, &dir) != 0 ||
+        dir.type != NXFS_TYPE_DIR) {
+        fprintf(stderr, "nxfs_host: /cmd not found\n");
+        close_disk_local();
+        exit(1);
+    }
+    for (uint32_t i = 0;; i++) {
+        struct nxfs_dir_entry entry;
+        struct nxfs_inode inode;
+        char path[64];
+        uint32_t ino;
+        uint32_t caps;
+
+        if (nxfs_get_dir_entry(&vol, dir_ino, &dir, i, &entry) != 0) {
+            break;
+        }
+        if (snprintf(path, sizeof(path), "/cmd/%s", entry.name) <= 0) {
+            continue;
+        }
+        if (nxfs_lookup_path(&vol, path, &ino, &inode) != 0 ||
+            inode.type != NXFS_TYPE_FILE ||
+            !cap_policy_match_image_local(policy, path, &caps)) {
+            continue;
+        }
+        setcap_inode_local(&vol, ino, &inode, caps, path);
+    }
+    close_disk_local();
+}
+
+static void chown_local(const char *image,
+                        const char *uid_text,
+                        const char *gid_text,
+                        const char *path) {
+    struct nxfs_volume vol;
+    struct nxfs_inode inode;
+    uint32_t ino;
+    uint32_t uid = parse_u32_or_die(uid_text, "uid");
+    uint32_t gid = parse_u32_or_die(gid_text, "gid");
+
+    mount_image_local(image, &vol);
+    if (nxfs_lookup_path(&vol, path, &ino, &inode) != 0) {
+        fprintf(stderr, "nxfs_host: not found: %s\n", path);
+        close_disk_local();
+        exit(1);
+    }
+    if (nxfs_set_inode_metadata(&vol, ino, &inode, inode.mode, uid, gid) != 0) {
+        fprintf(stderr, "nxfs_host: chown failed: %s\n", path);
+        close_disk_local();
+        exit(1);
+    }
     close_disk_local();
 }
 
@@ -518,6 +973,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "       %s exists <image> <path>\n", argv[0]);
         fprintf(stderr, "       %s ls <image> <path>\n", argv[0]);
         fprintf(stderr, "       %s info <image> <path>\n", argv[0]);
+        fprintf(stderr, "       %s chmod <image> <mode> <path>\n", argv[0]);
+        fprintf(stderr, "       %s chown <image> <uid> <gid> <path>\n", argv[0]);
+        fprintf(stderr, "       %s setcap <image> <caps> <path>\n", argv[0]);
+        fprintf(stderr, "       %s apply-caps <image> <policy>\n", argv[0]);
         fprintf(stderr, "       %s uuid <image>\n", argv[0]);
         return 1;
     }
@@ -543,6 +1002,22 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "info") == 0 && argc == 4) {
         info_local(argv[2], argv[3]);
+        return 0;
+    }
+    if (strcmp(argv[1], "chmod") == 0 && argc == 5) {
+        chmod_local(argv[2], argv[3], argv[4]);
+        return 0;
+    }
+    if (strcmp(argv[1], "chown") == 0 && argc == 6) {
+        chown_local(argv[2], argv[3], argv[4], argv[5]);
+        return 0;
+    }
+    if (strcmp(argv[1], "setcap") == 0 && argc == 5) {
+        setcap_local(argv[2], argv[3], argv[4]);
+        return 0;
+    }
+    if (strcmp(argv[1], "apply-caps") == 0 && argc == 4) {
+        apply_caps_local(argv[2], argv[3]);
         return 0;
     }
     if (strcmp(argv[1], "uuid") == 0 && argc == 3) {

@@ -6,37 +6,20 @@
 
 enum {
     USER_PAGE_SIZE = NOS_PAGE_SIZE,
-#if defined(__i386__)
-    USER_DYNAMIC_PAGE_LIMIT = 64,
-#else
-    USER_DYNAMIC_PAGE_LIMIT = 2048,
-#endif
+    USER_DYNAMIC_PAGE_LIMIT = HAL_USER_DYNAMIC_PAGE_LIMIT,
     USER_PROCESS_LIMIT = NOS_PROCESS_SLOT_MAX,
     USER_ELF_ARG_MAX = 8,
     USER_ELF_ENV_MAX = 16,
-#if defined(__i386__)
-    USER_ELF_BASE = 0x08000000ull,
-    USER_ELF_LIMIT = 0x50000000ull,
-    USER_ELF_STACK_TOP = 0xc0000000ull,
-    USER_ELF_STACK_SIZE = 0x10000ull,
+    USER_ELF_BASE = HAL_USER_ELF_BASE,
+    USER_ELF_LIMIT = HAL_USER_ELF_LIMIT,
+    USER_ELF_STACK_TOP = HAL_USER_ELF_STACK_TOP,
+    USER_ELF_STACK_SIZE = HAL_USER_ELF_STACK_SIZE,
     USER_ELF_STACK_BOTTOM = USER_ELF_STACK_TOP - USER_ELF_STACK_SIZE,
-    USER_ELF_STACK_INIT = USER_ELF_STACK_TOP - 4ull,
-    USER_MMAP_BASE = 0x50000000ull,
-    USER_MMAP_END = 0x70000000ull,
-    USER_ALLOC_BASE = 0x50000000ull,
-    USER_ALLOC_END = 0x70000000ull,
-#else
-    USER_ELF_BASE = 0x0000008000000000ull,
-    USER_ELF_LIMIT = 0x0000008000400000ull,
-    USER_ELF_STACK_TOP = 0x0000008000800000ull,
-    USER_ELF_STACK_SIZE = 0x10000ull,
-    USER_ELF_STACK_BOTTOM = USER_ELF_STACK_TOP - USER_ELF_STACK_SIZE,
-    USER_ELF_STACK_INIT = USER_ELF_STACK_TOP - 8ull,
-    USER_MMAP_BASE = 0x0000008000500000ull,
-    USER_MMAP_END = 0x0000008000700000ull,
-    USER_ALLOC_BASE = 0x0000008000800000ull,
-    USER_ALLOC_END = 0x0000008001000000ull,
-#endif
+    USER_ELF_STACK_INIT = USER_ELF_STACK_TOP - HAL_USER_ELF_STACK_INIT_OFFSET,
+    USER_MMAP_BASE = HAL_USER_MMAP_BASE,
+    USER_MMAP_END = HAL_USER_MMAP_END,
+    USER_ALLOC_BASE = HAL_USER_ALLOC_BASE,
+    USER_ALLOC_END = HAL_USER_ALLOC_END,
     ELF_ET_EXEC = 2,
     ELF_EM_X86_64 = 62,
     ELF_CLASS_64 = 2,
@@ -157,14 +140,16 @@ extern struct process_session *g_bound_session;
 extern struct user_page_mapping *g_bound_mappings;
 
 enum {
-    USER_CPU_COUNT = 1
+    USER_CPU_COUNT = 1,
+    /* The root user session can be active in addition to every job slot. */
+    USER_NESTED_KERNEL_STACK_LIMIT = USER_PROCESS_LIMIT + 1u
 };
 
 struct cpu_user_state {
-    uint8_t nested_kernel_stacks[USER_PROCESS_LIMIT][NOS_KERNEL_STACK_SIZE] __attribute__((aligned(16)));
+    uint8_t nested_kernel_stacks[USER_NESTED_KERNEL_STACK_LIMIT][NOS_KERNEL_STACK_SIZE] __attribute__((aligned(16)));
     uint32_t nested_kernel_stack_depth;
-    struct process_session *active_sessions[USER_PROCESS_LIMIT];
-    struct user_page_mapping *active_mappings[USER_PROCESS_LIMIT];
+    struct process_session *active_sessions[USER_NESTED_KERNEL_STACK_LIMIT];
+    struct user_page_mapping *active_mappings[USER_NESTED_KERNEL_STACK_LIMIT];
     uint8_t kernel_fpu_state[HAL_FPU_STATE_SIZE] __attribute__((aligned(16)));
 };
 
@@ -187,7 +172,7 @@ extern uint32_t g_process_exec_read_file_size;
 extern uint32_t g_process_exec_read_bytes;
 extern uint32_t g_process_exec_read_result;
 extern struct process g_last_exited_process;
-extern struct job_runtime g_bg_runtimes[USER_PROCESS_LIMIT];
+extern struct job_runtime g_job_runtimes[USER_PROCESS_LIMIT];
 extern uint32_t g_scheduler_next_slot;
 
 void process_bind_session(struct process_session *session,

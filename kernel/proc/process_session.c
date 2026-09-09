@@ -1,12 +1,14 @@
 #include "kernel/internal/proc/process_session_internal.h"
+#include "hal/hal.h"
 #include "kernel/public/mem/vmm.h"
 #include "kernel/public/core/tty.h"
+#include "kernel/public/core/kprint.h"
 #include "kernel/public/input/input_focus.h"
 #include "kernel/public/proc/scheduler.h"
 
 static void session_restore_kernel_root(struct address_space *address_space) {
-    if (address_space != 0 && address_space->user_cr3 != 0 && address_space->kernel_cr3 != 0) {
-        (void)vmm_switch_root_or_fail(address_space->kernel_cr3);
+    if (address_space != 0 && address_space->user_root != 0 && address_space->kernel_root != 0) {
+        (void)vmm_switch_root_or_fail(address_space->kernel_root);
     }
 }
 
@@ -54,44 +56,44 @@ static int session_user_frame_mapped(const struct process *proc,
                                      const struct address_space *address_space,
                                      uint64_t entry,
                                      uint64_t stack_top) {
-    uint64_t rip;
-    uint64_t rsp;
+    uint64_t ip;
+    uint64_t sp;
     uint64_t phys;
     uint64_t flags;
 
-    if (proc == 0 || address_space == 0 || address_space->user_cr3 == 0) {
+    if (proc == 0 || address_space == 0 || address_space->user_root == 0) {
         return 0;
     }
     if (proc->has_saved_frame) {
-        rip = proc->saved_frame.rip;
-        rsp = proc->saved_frame.rsp;
+        ip = hal_syscall_frame_ip(&proc->saved_frame);
+        sp = hal_syscall_frame_sp(&proc->saved_frame);
     } else {
-        rip = entry;
-        rsp = stack_top >= 8u ? stack_top - 8u : 0;
+        ip = entry;
+        sp = stack_top >= 8u ? stack_top - 8u : 0;
     }
-    if (rip == 0 || rsp == 0) {
+    if (ip == 0 || sp == 0) {
         return 0;
     }
-    if (!vmm_query_mapping_in_context(address_space->user_cr3, rip, &phys, &flags)) {
+    if (!hal_paging_get_mapping_info_in_root(address_space->user_root, ip, &phys, &flags)) {
         return 0;
     }
-    if (!vmm_query_mapping_in_context(address_space->user_cr3, rsp, &phys, &flags)) {
+    if (!hal_paging_get_mapping_info_in_root(address_space->user_root, sp, &phys, &flags)) {
         return 0;
     }
     return 1;
 }
 
-static int session_user_stack_pointer_mapped(uint64_t user_cr3, uint64_t rsp) {
+static int session_user_stack_pointer_mapped(uint64_t user_root, uint64_t sp) {
     uint64_t phys;
     uint64_t flags;
 
-    if (rsp == 0u) {
+    if (sp == 0u) {
         return 0;
     }
-    if (vmm_query_mapping_in_context(user_cr3, rsp, &phys, &flags)) {
+    if (hal_paging_get_mapping_info_in_root(user_root, sp, &phys, &flags)) {
         return 1;
     }
-    return rsp >= 8u && vmm_query_mapping_in_context(user_cr3, rsp - 8u, &phys, &flags);
+    return sp >= 8u && hal_paging_get_mapping_info_in_root(user_root, sp - 8u, &phys, &flags);
 }
 
 int session_bind_user_context(struct process_session *session,
@@ -105,14 +107,14 @@ int session_bind_user_context(struct process_session *session,
     proc = &session->process;
     if (proc->image_kind == PROCESS_IMAGE_NONE ||
         proc->address_space == 0 ||
-        proc->address_space->user_cr3 == 0) {
-        if (session->address_space.kernel_cr3 != 0 &&
-            !vmm_root_is_current(session->address_space.kernel_cr3)) {
-            return vmm_switch_root_or_fail(session->address_space.kernel_cr3);
+        proc->address_space->user_root == 0) {
+        if (session->address_space.kernel_root != 0 &&
+            !vmm_root_is_current(session->address_space.kernel_root)) {
+            return vmm_switch_root_or_fail(session->address_space.kernel_root);
         }
         return 1;
     }
-    return vmm_switch_root_or_fail(proc->address_space->user_cr3);
+    return vmm_switch_root_or_fail(proc->address_space->user_root);
 }
 
 void session_prepare_user_return_context(struct process_session *session,
@@ -133,22 +135,26 @@ int session_prepare_user_frame_return(struct process_session *session,
                                       struct user_page_mapping *mappings,
                                       const struct syscall_frame *frame) {
     const struct process *proc;
+    uint64_t frame_ip;
+    uint64_t frame_sp;
     uint64_t phys;
     uint64_t flags;
 
-    if (session == 0 || mappings == 0 || frame == 0 || (frame->cs & 0x3u) != 0x3u) {
+    if (session == 0 || mappings == 0 || !hal_syscall_frame_is_user(frame)) {
         return 0;
     }
     proc = &session->process;
     if (proc->image_kind == PROCESS_IMAGE_NONE ||
         proc->address_space == 0 ||
-        proc->address_space->user_cr3 == 0) {
+        proc->address_space->user_root == 0) {
         return 0;
     }
-    if (!vmm_query_mapping_in_context(proc->address_space->user_cr3, frame->rip, &phys, &flags)) {
+    frame_ip = hal_syscall_frame_ip(frame);
+    frame_sp = hal_syscall_frame_sp(frame);
+    if (!hal_paging_get_mapping_info_in_root(proc->address_space->user_root, frame_ip, &phys, &flags)) {
         return 0;
     }
-    if (frame->rsp != 0 && !session_user_stack_pointer_mapped(proc->address_space->user_cr3, frame->rsp)) {
+    if (frame_sp != 0 && !session_user_stack_pointer_mapped(proc->address_space->user_root, frame_sp)) {
         return 0;
     }
     if (!session_bind_user_context(session, mappings)) {
@@ -192,12 +198,13 @@ static int session_prepare_active_slice(struct process_session *session,
     g_current_user_raw_entry = entry;
     proc->entry = entry;
     proc->stack_top = stack_top;
-    if (address_space != 0 && address_space->user_cr3 != 0 &&
-        !vmm_switch_root_or_fail(address_space->user_cr3)) {
+    if (address_space != 0 && address_space->user_root != 0 &&
+        !vmm_switch_root_or_fail(address_space->user_root)) {
         return 0;
     }
     *saved_kernel_rsp0_out = hal_kernel_stack_top();
-    if (current_cpu_user_state()->nested_kernel_stack_depth >= USER_PROCESS_LIMIT) {
+    if (current_cpu_user_state()->nested_kernel_stack_depth >=
+        USER_NESTED_KERNEL_STACK_LIMIT) {
         session_restore_kernel_root(address_space);
         return 0;
     }
@@ -237,7 +244,7 @@ static int session_process_runnable(const struct process *proc) {
 
 void session_finish(struct process_session *session, struct user_page_mapping *mappings) {
     struct process *proc;
-    uint64_t user_cr3;
+    uint64_t user_root;
 
     if (session == 0) {
         return;
@@ -249,20 +256,21 @@ void session_finish(struct process_session *session, struct user_page_mapping *m
      * Close process-owned file descriptors at exit time, not at wait/reap time.
      * Pipes depend on this: when a reader exits, writers must observe
      * readers == 0 and get BROKEN_PIPE instead of blocking on a full pipe.
+     * wait(pid) only copies the exit snapshot and releases the process slot.
      */
     process_discard_files(proc);
 
-    if (session->address_space.user_cr3 != 0) {
-        user_cr3 = session->address_space.user_cr3;
-        if (!vmm_switch_root_or_fail(user_cr3)) {
+    if (session->address_space.user_root != 0) {
+        user_root = session->address_space.user_root;
+        if (!vmm_switch_root_or_fail(user_root)) {
             return;
         }
         addrspace_release_dynamic_pages();
-        if (!vmm_switch_root_or_fail(session->address_space.kernel_cr3)) {
+        if (!vmm_switch_root_or_fail(session->address_space.kernel_root)) {
             return;
         }
-        session->address_space.user_cr3 = 0;
-        vmm_destroy_user_root(user_cr3);
+        session->address_space.user_root = 0;
+        vmm_destroy_user_root(user_root);
     } else {
         addrspace_release_dynamic_pages();
     }
@@ -316,7 +324,8 @@ int session_enter_ring3(struct process_session *session,
             }
             continue;
         }
-        if (proc->state == PROCESS_STATE_STOPPED) {
+        if (proc->state == PROCESS_STATE_STOPPED ||
+            proc->state == PROCESS_STATE_WAITING) {
             break;
         }
         session_finish(session, mappings);

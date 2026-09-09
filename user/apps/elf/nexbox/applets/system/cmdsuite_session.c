@@ -962,6 +962,7 @@ static const struct config_schema_entry g_config_schema[] = {
     {"shell.history_size", "int", "interactive shell history slots"},
     {"proc.max_jobs", "int", "background job limit"},
     {"service.autostart", "bool", "start enabled services at boot"},
+    {"security.root_token", "string", "root capability request token"},
     {"log.level", "enum", "debug|info|warn|error"}
 };
 

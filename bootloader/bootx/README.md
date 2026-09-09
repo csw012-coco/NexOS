@@ -59,30 +59,30 @@ make run32
 
 Default config format:
 
-```ini
-LABEL=Demo Kernel
-KERNEL=BOOT/KERNEL.ELF
-CMDLINE=console=text root=bootx-demo
+```sh
+menuentry "Demo Kernel" {
+    kernel BOOT/KERNEL.ELF console=text root=bootx-demo
+}
 ```
 
 Framebuffer entries can also request a specific VBE mode from the command line:
 
-```ini
-CMDLINE=console=framebuffer video=1024x768x32
-CMDLINE=console=framebuffer video=vesa:800x600
+```sh
+kernel BOOT/KERNEL.ELF console=framebuffer video=1024x768x32
+kernel BOOT/KERNEL.ELF console=framebuffer video=vesa:800x600
 ```
 
-Multiple entries are supported by separating blocks with a blank line.
+Multiple entries are supported with `menuentry` blocks.
 FAT32 subdirectories such as `BOOT/` and `MOD/` are supported.
 
 Optional module lines:
 
-```ini
-LABEL=With Module
-KERNEL=BOOT/KERNEL.ELF
-CMDLINE=demo=1
-MODULE=MOD/INITRD.BIN
-MODULE=MOD/EXTRA.BIN
+```sh
+menuentry "With Module" {
+    kernel BOOT/KERNEL.ELF demo=1
+    module MOD/INITRD.BIN
+    module MOD/EXTRA.BIN
+}
 ```
 
 This repository ships a sample module at:
@@ -91,8 +91,8 @@ This repository ships a sample module at:
 
 The default 64-bit demo entry already loads it with:
 
-```ini
-MODULE=MOD/INITRD.BIN
+```sh
+module MOD/INITRD.BIN
 ```
 
 Kernel-side usage of the boot protocol is documented in:

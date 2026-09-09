@@ -21,34 +21,57 @@ I386_COMMON_C_SRCS = \
 	kernel/core/graphics_service.c \
 	kernel/core/profile.c \
 	kernel/core/system_query.c \
-	kernel/core/i386_shared_services.c \
-	kernel/core/i386_smoke_services.c \
-	kernel/core/i386_tty_selftest.c \
-	kernel/sys/syscall_compat32.c \
+	kernel/core/system_power.c \
+	arch/x86/i386/services/boot_flags.c \
+	arch/x86/i386/services/boot_user.c \
+	arch/x86/i386/services/shared.c \
+	arch/x86/i386/services/command.c \
+	arch/x86/i386/services/driver.c \
+	arch/x86/i386/services/input.c \
+	arch/x86/i386/services/console_loop.c \
+	arch/x86/i386/services/smoke.c \
+	arch/x86/i386/services/tty_selftest.c \
+	arch/x86/i386/syscall/compat32.c \
+	arch/x86/i386/syscall/compat32_copy_ops.c \
 	kernel/sys/syscall_common_request_core.c \
-	kernel/sys/syscall_i386_request_adapter.c \
-	kernel/sys/syscall_i386_vm_adapter.c \
-	kernel/sys/syscall_i386_job_adapter.c \
-	kernel/sys/syscall_i386_mem_ipc_adapter.c \
-	kernel/sys/syscall_i386_device_ui_adapter.c \
-	kernel/sys/syscall_compat32_query.c \
-	kernel/sys/syscall_compat32_fs.c \
-	kernel/sys/syscall_compat32_proc.c \
+	arch/x86/i386/syscall/compat32_request_adapter.c \
+	arch/x86/i386/syscall/compat32_file_ops.c \
+	arch/x86/i386/syscall/compat32_io_adapter.c \
+	arch/x86/i386/syscall/compat32_fs_adapter.c \
+	arch/x86/i386/syscall/compat32_mount_adapter.c \
+	arch/x86/i386/syscall/compat32_proc_adapter.c \
+	arch/x86/i386/syscall/compat32_vm_adapter.c \
+	arch/x86/i386/syscall/compat32_vm_page_ops.c \
+	arch/x86/i386/syscall/compat32_job_adapter.c \
+	arch/x86/i386/syscall/compat32_mem_adapter.c \
+	arch/x86/i386/syscall/compat32_ipc_adapter.c \
+	arch/x86/i386/syscall/compat32_query_adapter.c \
+	arch/x86/i386/syscall/compat32_gfx_adapter.c \
+	arch/x86/i386/syscall/compat32_audio_adapter.c \
+	arch/x86/i386/syscall/compat32_audio_fd_adapter.c \
+	arch/x86/i386/syscall/compat32_block_adapter.c \
+	arch/x86/i386/syscall/compat32_net_adapter.c \
+	arch/x86/i386/syscall/compat32_ui_adapter.c \
+	arch/x86/i386/syscall/compat32_misc_adapter.c \
+	arch/x86/i386/syscall/compat32_proc.c \
 	kernel/proc/boot_user_init.c \
 	kernel/proc/process_context.c \
 	kernel/proc/process_command.c \
 	kernel/proc/process_model.c \
+	kernel/proc/process_mm_query.c \
 	kernel/proc/process_program_registry.c \
 	kernel/proc/process_user_backend.c \
 	kernel/proc/process_mm_ops.c \
-	kernel/proc/process_file_ops.c \
 	kernel/mem/address_space_core.c \
 	kernel/sched/process_scheduler_ops.c \
-	kernel/sched/sched_policy.c \
+	arch/x86/i386/scheduler/policy.c \
 	kernel/sched/runqueue.c \
 	kernel/driver/driver.c \
-	kernel/driver/driver_i386_services.c \
-	kernel/driver/driver_i386_legacy.c \
+	arch/x86/i386/driver/services.c \
+	arch/x86/i386/driver/elf_loader.c \
+	kernel/fs/fs_service_root_query.c \
+	kernel/fs/fs_service_path.c \
+	kernel/fs/fs_service_fd.c \
 	kernel/fs/path_resolve.c \
 	kernel/fs/file.c \
 	kernel/fs/file_backend.c \
@@ -56,6 +79,7 @@ I386_COMMON_C_SRCS = \
 	kernel/fs/file_pipe_backend.c \
 	$(I386_DRIVER_C_SRCS) \
 	$(I386_FS_C_SRCS) \
+	lib/parse.c \
 	lib/string.c \
 	user/libc32/std/div64.c
 I386_ARCH_C_SRCS := \
@@ -64,13 +88,13 @@ I386_ARCH_C_SRCS := \
 	arch/x86/i386/keyboard.c \
 	arch/x86/common/pic.c \
 	arch/x86/common/arch_ops.c \
-	arch/x86/i386/paging.c \
-	arch/x86/i386/pmm.c \
-	arch/x86/i386/vmm.c \
+	arch/x86/i386/mm/paging.c \
+	arch/x86/i386/mm/pmm.c \
+	arch/x86/i386/mm/vmm.c \
 	arch/x86/i386/context.c \
-	arch/x86/i386/scheduler.c \
-	arch/x86/i386/process32.c \
-	arch/x86/i386/process32_address_space.c \
+	arch/x86/i386/scheduler/scheduler.c \
+	arch/x86/i386/process/process.c \
+	arch/x86/i386/process/address_space.c \
 	arch/x86/i386/user.c \
 	arch/x86/i386/ops.c \
 	hal/i386/platform.c \

@@ -897,7 +897,7 @@ static int command_df(int argc, char **argv) {
         return 2;
     }
     puts("target        type   blksz total free");
-    for (uint32_t index = 0u; mount_query(index, &info) > 0; index++) {
+    for (uint32_t index = 0u; mount_query_space(index, &info) > 0; index++) {
         char full_target[NEXBOX_PATH_SIZE];
 
         snprintf(full_target, sizeof(full_target), "/%s", info.target);

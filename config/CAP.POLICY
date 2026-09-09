@@ -1,0 +1,67 @@
+# NexOS process capability policy.
+#
+# Format:
+#   <exec-path-or-basename> <cap|all|none|mask> ...
+#
+# A matching rule limits the process to the listed capabilities. It never
+# grants capabilities the parent process does not already have.
+#
+# Examples:
+#   /cmd/mplay audio
+#   doom32 display audio input
+#   dbg debug
+#   * none
+
+# First tightening pass:
+# - unknown executables start with no global process capabilities
+# - interactive shell and the multicall toolbox keep authority for now
+# - standalone media/UI/test binaries get only their broad device class caps
+#
+# Note: most /cmd applet names are small scripts that exec /cmd/ush, which
+# then runs /cmd/nexbox. Per-applet policy needs argv/action-aware policy later.
+
+/cmd/ush all
+ush all
+/BOOT/USH32.ELF all
+USH.ELF all
+USH32.ELF all
+
+/cmd/nexbox all
+nexbox all
+/cmd/nexbox32s all
+nexbox32s all
+/BOOT/NEXBOX32.ELF all
+/BOOT/NEXBOX32S.ELF all
+NEXBOX.ELF all
+NEXBOX32.ELF all
+NEXBOX32S.ELF all
+
+/cmd/su all
+su all
+/cmd/sudo all
+sudo all
+
+# These multicall aliases control the machine and must retain root power caps.
+/cmd/reboot all
+reboot all
+/cmd/poweroff all
+poweroff all
+
+/cmd/doom display audio input
+doom display audio input
+/cmd/doom32 display audio input
+doom32 display audio input
+/BOOT/DOOM32.ELF display audio input
+DOOM32.ELF display audio input
+
+/cmd/imgview display input
+imgview display input
+/cmd/guidemo display input
+guidemo display input
+
+/cmd/test32 all
+test32 all
+/BOOT/TEST32.ELF all
+TEST32.ELF all
+
+* none

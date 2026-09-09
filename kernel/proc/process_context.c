@@ -1,4 +1,5 @@
 #include "kernel/public/proc/context.h"
+#include "hal/hal.h"
 
 void process_context_reset(struct process_context *context) {
     if (context == 0) {
@@ -13,6 +14,21 @@ void process_context_reset(struct process_context *context) {
     context->code_selector = 0u;
     context->stack_selector = 0u;
     context->user_mode = 0u;
+}
+
+int process_context_init_user(struct process_context *context,
+                              uint64_t entry,
+                              uint64_t stack,
+                              uint64_t first_argument,
+                              int user_mode) {
+    if (context == 0 || entry == 0 || stack == 0) {
+        return 0;
+    }
+    return hal_process_context_init_user(context,
+                                         entry,
+                                         stack,
+                                         first_argument,
+                                         user_mode);
 }
 
 void process_context_set_return_value(struct process_context *context,

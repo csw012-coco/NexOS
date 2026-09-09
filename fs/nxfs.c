@@ -16,11 +16,17 @@ enum {
     } \
 } while (0)
 #endif
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
+#define NXFS_FAIL_TRACE(...) ((void)0)
+#else
+#define NXFS_FAIL_TRACE(...) kprint(__VA_ARGS__)
+#endif
 #include "kernel/public/sys/system_limits.h"
 #include "lib/string.h"
 
 enum {
-    NXFS_ROOT_INODE = 0
+    NXFS_ROOT_INODE = 0,
+    NXFS_DIR_GROW_BLOCKS = 8u
 };
 
 static uint32_t nxfs_inode_block_count(const struct nxfs_inode *inode) {
@@ -282,6 +288,99 @@ static int nxfs_free_all_extents(struct nxfs_volume *vol, const struct nxfs_inod
     return 0;
 }
 
+static int nxfs_range_is_free(struct nxfs_volume *vol,
+                              uint32_t start,
+                              uint32_t len) {
+    uint32_t bits_per_block;
+
+    if (vol == 0 || !vol->mounted || len == 0u) {
+        return 0;
+    }
+    if (start < vol->super.data_start ||
+        start >= vol->super.total_blocks ||
+        len > vol->super.total_blocks - start) {
+        return 0;
+    }
+
+    bits_per_block = NXFS_BLOCK_SIZE * 8u;
+
+    for (uint32_t block = start; block < start + len; ) {
+        uint32_t bitmap_index = block / bits_per_block;
+        uint32_t bitmap_block = vol->super.bitmap_start + bitmap_index;
+        uint32_t first_bit = block % bits_per_block;
+        uint32_t limit = bits_per_block;
+
+        if (bitmap_index == (vol->super.total_blocks - 1u) / bits_per_block) {
+            uint32_t remaining_bits =
+                vol->super.total_blocks - bitmap_index * bits_per_block;
+            if (remaining_bits < limit) {
+                limit = remaining_bits;
+            }
+        }
+
+        if (nxfs_read_block(vol, bitmap_block, vol->sector_buffer) != 0) {
+            return 0;
+        }
+
+        for (uint32_t bit = first_bit;
+             bit < limit && block < start + len;
+             bit++, block++) {
+            if (nxfs_bitmap_bit_get(vol->sector_buffer, bit)) {
+                return 0;
+            }
+        }
+    }
+
+    return 1;
+}
+
+static int nxfs_try_extend_last_extent(struct nxfs_volume *vol,
+                                       struct nxfs_inode *inode,
+                                       uint32_t len) {
+    int32_t last = -1;
+    uint32_t start;
+
+    if (vol == 0 || inode == 0 || len == 0u) {
+        return -1;
+    }
+
+    /* 마지막 사용 중인 extent 찾기 */
+    for (uint32_t i = 0; i < NXFS_EXTENTS; i++) {
+        if (inode->extents[i].len != 0u) {
+            last = (int32_t)i;
+        }
+    }
+
+    if (last < 0) {
+        return -1;
+    }
+
+    start = inode->extents[last].start +
+            inode->extents[last].len;
+
+    if (start >= vol->super.total_blocks ||
+        len > vol->super.total_blocks - start) {
+        return -1;
+    }
+
+    /*
+     * start부터 len개가 전부 비어 있는지 확인.
+     *
+     * 여기에는 현재 NXFS의 bitmap 조회 함수를 쓰면 됨.
+     * 전부 free라면 그 범위를 사용 중으로 표시한다.
+     */
+    if (!nxfs_range_is_free(vol, start, len)) {
+        return -1;
+    }
+
+    if (nxfs_bitmap_set_range(vol, start, len, 1) != 0) {
+        return -1;
+    }
+
+    inode->extents[last].len += len;
+    return 0;
+}
+
 static int nxfs_ensure_blocks(struct nxfs_volume *vol, struct nxfs_inode *inode, uint32_t need_blocks) {
     struct nxfs_inode tmp;
     uint32_t have;
@@ -296,22 +395,73 @@ static int nxfs_ensure_blocks(struct nxfs_volume *vol, struct nxfs_inode *inode,
         uint32_t chunk = remaining;
         int start = -1;
 
-        while (chunk > 0) {
+        /*
+        * 먼저 마지막 extent 바로 뒤쪽으로 확장을 시도한다.
+        */
+        while (chunk > 0u) {
+            if (nxfs_try_extend_last_extent(vol, &tmp, chunk) == 0) {
+                nxfs_mem_set(vol->sector_buffer,
+                            0,
+                            sizeof(vol->sector_buffer));
+
+                for (uint32_t i = 0; i < chunk; i++) {
+                    uint32_t logical = have + i;
+                    int phys = nxfs_logical_to_physical(&tmp, logical);
+
+                    if (phys < 0 ||
+                        nxfs_write_block(vol,
+                                        (uint32_t)phys,
+                                        vol->sector_buffer) != 0) {
+                        return -1;
+                    }
+                }
+
+                have += chunk;
+                break;
+            }
+
+            chunk--;
+        }
+
+        if (have >= need_blocks) {
+            continue;
+        }
+
+        /*
+        * 바로 뒤에 공간이 없으면 기존 일반 allocator 사용.
+        */
+        remaining = need_blocks - have;
+        chunk = remaining;
+
+        while (chunk > 0u) {
             start = nxfs_alloc_extent(vol, chunk);
             if (start >= 0) {
                 break;
             }
+
             chunk--;
         }
-        if (start < 0 || nxfs_append_extent(&tmp, (uint32_t)start, chunk) != 0) {
+
+        if (start < 0) {
             return -1;
         }
+
+        if (nxfs_append_extent(&tmp, (uint32_t)start, chunk) != 0) {
+            nxfs_free_extent(vol, (uint32_t)start, chunk);
+            return -1;
+        }
+
         nxfs_mem_set(vol->sector_buffer, 0, sizeof(vol->sector_buffer));
+
         for (uint32_t i = 0; i < chunk; i++) {
-            if (nxfs_write_block(vol, (uint32_t)start + i, vol->sector_buffer) != 0) {
+            if (nxfs_write_block(vol,
+                                (uint32_t)start + i,
+                                vol->sector_buffer) != 0) {
+                nxfs_free_extent(vol, (uint32_t)start, chunk);
                 return -1;
             }
         }
+
         have += chunk;
     }
     *inode = tmp;
@@ -445,12 +595,17 @@ static int nxfs_dir_find_free_slot(struct nxfs_volume *vol,
                                    uint32_t *found_slot) {
     uint32_t blocks = nxfs_inode_block_count(dir);
 
-    if (nxfs_find_dir_entry_slot(vol, dir, 0, 1, 0, found_block, found_slot) == 0) {
+    if (nxfs_find_dir_entry_slot(vol, dir, 0, 1, 0,
+                                 found_block, found_slot) == 0) {
         return 0;
     }
-    if (nxfs_ensure_blocks(vol, dir, blocks + 1u) != 0) {
+
+    if (nxfs_ensure_blocks(vol,
+                           dir,
+                           blocks + NXFS_DIR_GROW_BLOCKS) != 0) {
         return -1;
     }
+
     *found_block = blocks;
     *found_slot = 0;
     return 0;
@@ -839,6 +994,7 @@ int nxfs_create_path(struct nxfs_volume *vol, const char *path, uint32_t *inode_
     nxfs_mem_set(&inode, 0, sizeof(inode));
     inode.used = 1;
     inode.type = NXFS_TYPE_FILE;
+    inode.mode = 0644u;
     inode.nlink = 1;
     if (nxfs_write_inode(vol, (uint32_t)ino, &inode) != 0) {
         return -1;
@@ -891,6 +1047,7 @@ int nxfs_mkdir_path(struct nxfs_volume *vol, const char *path, uint32_t *inode_i
     nxfs_mem_set(&dir, 0, sizeof(dir));
     dir.used = 1;
     dir.type = NXFS_TYPE_DIR;
+    dir.mode = 0755u;
     dir.nlink = 2;
     dir.size = NXFS_BLOCK_SIZE;
     if (nxfs_ensure_blocks(vol, &dir, 1) != 0 ||
@@ -1030,6 +1187,10 @@ int nxfs_write_file_range(struct nxfs_volume *vol,
     }
     need_blocks = (end + NXFS_BLOCK_SIZE - 1u) / NXFS_BLOCK_SIZE;
     if (nxfs_ensure_blocks(vol, inode, need_blocks) != 0) {
+        NXFS_FAIL_TRACE("nxfs: ensure blocks failed inode=%u need=%u size=%u\n",
+                        inode_index,
+                        need_blocks,
+                        buffer_size);
         return -1;
     }
 
@@ -1041,6 +1202,9 @@ int nxfs_write_file_range(struct nxfs_volume *vol,
         uint32_t chunk;
 
         if (nxfs_read_inode_block(vol, inode, block_idx, block) != 0) {
+            NXFS_FAIL_TRACE("nxfs: data read before write failed inode=%u block=%u\n",
+                            inode_index,
+                            block_idx);
             return -1;
         }
         if (!nxfs_calc_block_window(block_start,
@@ -1054,6 +1218,11 @@ int nxfs_write_file_range(struct nxfs_volume *vol,
         }
         nxfs_mem_copy(block + (copy_start - block_start), in + done, chunk);
         if (nxfs_write_inode_block(vol, inode, block_idx, block) != 0) {
+            NXFS_FAIL_TRACE("nxfs: data write failed inode=%u block=%u off=%u size=%u\n",
+                            inode_index,
+                            block_idx,
+                            offset,
+                            buffer_size);
             return -1;
         }
         done += chunk;
@@ -1062,9 +1231,34 @@ int nxfs_write_file_range(struct nxfs_volume *vol,
         inode->size = end;
     }
     if (nxfs_write_inode(vol, inode_index, inode) != 0) {
+        NXFS_FAIL_TRACE("nxfs: inode write failed inode=%u new_size=%u\n",
+                        inode_index,
+                        inode->size);
         return -1;
     }
     *bytes_written = done;
+    return 0;
+}
+
+int nxfs_set_inode_metadata(struct nxfs_volume *vol,
+                            uint32_t inode_index,
+                            struct nxfs_inode *inode,
+                            uint32_t mode,
+                            uint32_t uid,
+                            uint32_t gid) {
+    struct nxfs_inode current;
+
+    if (vol == 0 || !vol->mounted || inode == 0) {
+        return -1;
+    }
+    current = *inode;
+    current.mode = mode;
+    current.uid = uid;
+    current.gid = gid;
+    if (nxfs_write_inode(vol, inode_index, &current) != 0) {
+        return -1;
+    }
+    *inode = current;
     return 0;
 }
 

@@ -12,10 +12,33 @@ enum {
     NOS_NAME_MAX = 255u,
     NOS_NAME_BUFFER_SIZE = NOS_NAME_MAX + 1u,
     NOS_MOUNT_SLOT_MAX = 4u,
-    NOS_PROCESS_SLOT_MAX = 8u,
+    NOS_PROCESS_SLOT_MAX = 32u,
     NOS_PROCESS_FILE_MAX = 16u,
     NOS_ELF_FILE_BUFFER_SIZE = 1048576u,
     NOS_USER_STACK_SIZE = 0x10000u
+};
+
+enum nexos_errno {
+    NEX_OK = 0,
+    NEX_ERR_PERM = 1,
+    NEX_ERR_NOENT = 2,
+    NEX_ERR_SRCH = 3,
+    NEX_ERR_IO = 5,
+    NEX_ERR_NOEXEC = 8,
+    NEX_ERR_CHILD = 10,
+    NEX_ERR_AGAIN = 11,
+    NEX_ERR_NOMEM = 12,
+    NEX_ERR_ACCES = 13,
+    NEX_ERR_EXIST = 17,
+    NEX_ERR_NOTDIR = 20,
+    NEX_ERR_ISDIR = 21,
+    NEX_ERR_INVAL = 22,
+    NEX_ERR_FBIG = 27,
+    NEX_ERR_NOSPC = 28,
+    NEX_ERR_PIPE = 32,
+    NEX_ERR_NOSYS = 38,
+    NEX_ERR_EXEC = 80,
+    NEX_ERR_BAD_ELF = 81
 };
 
 enum syscall_number {
@@ -85,10 +108,17 @@ enum syscall_number {
     SYS_RTL8139_TX_SEND = 64,
     SYS_REBOOT = 65,
     SYS_CAPABILITY_EVENT = 66,
+    SYS_CAPABILITY = 72,
+    SYS_IDENTITY = 73,
+    SYS_CHMOD = 74,
+    SYS_CHOWN = 75,
+    SYS_TTY_CLAIM = 76,
+    SYS_POWEROFF = 77,
+    SYS_SETCAP = 78,
     SYS_GFX = 67,
     SYS_GUI_EVENT = 68,
     SYS_CLIPBOARD = 69,
-    SYS_MAX = 72
+    SYS_MAX = 79
 };
 
 enum syscall_mmap_prot {
@@ -218,7 +248,8 @@ enum syscall_capability_decision {
 enum syscall_capability_reason {
     SYS_CAP_REASON_MASK = 1,
     SYS_CAP_REASON_ALLOW_ACTION = 2,
-    SYS_CAP_REASON_DENY_ACTION = 3
+    SYS_CAP_REASON_DENY_ACTION = 3,
+    SYS_CAP_REASON_EXEC_POLICY = 4
 };
 
 struct syscall_capability_event {
@@ -232,6 +263,55 @@ struct syscall_capability_event {
     uint32_t reason;
 };
 
+enum syscall_capability_op {
+    SYS_CAP_OP_GET = 0,
+    SYS_CAP_OP_DROP = 1,
+    SYS_CAP_OP_GRANT = 2,
+    SYS_CAP_OP_SPAWN_SET = 3,
+    SYS_CAP_OP_SPAWN_CLEAR = 4,
+    SYS_CAP_OP_SPAWN_GET = 5,
+    SYS_CAP_OP_AUTH_GRANT = 6
+};
+
+enum syscall_identity_op {
+    SYS_IDENTITY_OP_GET = 0,
+    SYS_IDENTITY_OP_DROP_USER = 1,
+    SYS_IDENTITY_OP_AUTH_ROOT = 2,
+    SYS_IDENTITY_OP_PUSH = 3,
+    SYS_IDENTITY_OP_POP = 4
+};
+
+struct syscall_identity_info {
+    uint32_t uid;
+    uint32_t gid;
+};
+
+enum syscall_process_capability {
+    SYS_PROC_CAP_POWER = 1u << 0,
+    SYS_PROC_CAP_RAW_BLOCK = 1u << 1,
+    SYS_PROC_CAP_MOUNT = 1u << 2,
+    SYS_PROC_CAP_SIGNAL = 1u << 3,
+    SYS_PROC_CAP_GRANT = 1u << 4,
+    SYS_PROC_CAP_AUDIO = 1u << 5,
+    SYS_PROC_CAP_NET_RAW = 1u << 6,
+    SYS_PROC_CAP_DISPLAY = 1u << 7,
+    SYS_PROC_CAP_INPUT = 1u << 8,
+    SYS_PROC_CAP_CLIPBOARD = 1u << 9,
+    SYS_PROC_CAP_DEBUG = 1u << 10,
+    SYS_PROC_CAP_ALL =
+        SYS_PROC_CAP_POWER |
+        SYS_PROC_CAP_RAW_BLOCK |
+        SYS_PROC_CAP_MOUNT |
+        SYS_PROC_CAP_SIGNAL |
+        SYS_PROC_CAP_GRANT |
+        SYS_PROC_CAP_AUDIO |
+        SYS_PROC_CAP_NET_RAW |
+        SYS_PROC_CAP_DISPLAY |
+        SYS_PROC_CAP_INPUT |
+        SYS_PROC_CAP_CLIPBOARD |
+        SYS_PROC_CAP_DEBUG
+};
+
 enum syscall_spawn_mode {
     SYS_SPAWN_AUTO = 0,
     SYS_SPAWN_ELF = 1
@@ -240,6 +320,23 @@ enum syscall_spawn_mode {
 enum syscall_spawn_flags {
     SYS_SPAWN_BACKGROUND = 1u
 };
+
+/*
+ * Process syscall return contract:
+ *   SYS_SPAWN: child pid (>0) or -NEX_ERR_*; it never waits for completion.
+ *   SYS_FG:    1 after the pid leaves/stops the foreground, or -NEX_ERR_*.
+ *   SYS_BG:    1 after moving the pid out of foreground control, or -NEX_ERR_*.
+ *   SYS_TTY_CLAIM: 1 after making the caller the foreground owner of its tty,
+ *              or -NEX_ERR_*.
+ *   SYS_WAIT:  with an info buffer, 1 after reaping an exited child/job,
+ *              or -NEX_ERR_CHILD. Legacy waitpid-style callers pass no info
+ *              buffer and receive the raw child exit code, or -NEX_ERR_*.
+ *   SYS_KILL:  1 after marking the pid exited, or -NEX_ERR_*.
+ *
+ * Foreground command runners should use: spawn(command, mode, 0), fg(pid),
+ * then wait(pid, info). Background runners should use SYS_SPAWN_BACKGROUND
+ * and later wait(pid, info) when they choose to reap it.
+ */
 
 enum syscall_proc_query_kind {
     SYS_PROC_QUERY_ALL = 0,
@@ -272,6 +369,10 @@ enum syscall_query_kind {
     SYS_QUERY_FD = 21,
     SYS_QUERY_FB = 22,
     SYS_QUERY_VM = 23
+};
+
+enum syscall_query_flags {
+    SYS_QUERY_FLAG_NO_SPACE = 1u
 };
 
 enum {
@@ -552,6 +653,9 @@ struct syscall_process_info {
     int32_t exit_code;
     uint32_t wake_tick;
     uint32_t image_kind;
+    uint32_t caps;
+    uint32_t uid;
+    uint32_t gid;
     char name[NOS_NAME_BUFFER_SIZE];
 };
 

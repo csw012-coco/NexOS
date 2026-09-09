@@ -10,7 +10,7 @@ static int test32_fs_find_mount(const char *target,
     }
     for (uint32_t attempt = 0u; attempt < 4u; attempt++) {
         for (uint32_t i = 0u; i < NOS_MOUNT_SLOT_MAX + 2u; i++) {
-            if (mount_query(i, &candidate) > 0 &&
+            if (mount_query_space(i, &candidate) > 0 &&
                 candidate.kind == kind &&
                 strcmp(candidate.target, target) == 0) {
                 *out = candidate;
@@ -28,20 +28,36 @@ int test32_fs_open_read_close_case(void) {
     int fd;
 
     fd = open("/cmd/test32", O_RDONLY);
-    if (fd < 3 ||
-        fd_query((uint32_t)fd, &fd_info) <= 0 ||
-        fd_info.kind != SYS_FD_KIND_VFS ||
+    if (fd < 3) {
+        return 25;
+    }
+    if (fd_query((uint32_t)fd, &fd_info) <= 0) {
+        return 27;
+    }
+    if (fd_info.kind != SYS_FD_KIND_VFS ||
         fd_info.readable != 1u ||
         fd_info.writable != 0u ||
-        strcmp(fd_info.path, "/cmd/test32") != 0 ||
-        read(fd, file_header, sizeof(file_header)) !=
-            (ssize_t)sizeof(file_header) ||
-        memcmp(file_header, "\x7f" "ELF", sizeof(file_header)) != 0 ||
-        fd_query((uint32_t)fd, &fd_info) <= 0 ||
-        fd_info.offset != sizeof(file_header) ||
-        close(fd) != 0 ||
-        close(fd) == 0) {
-        return 25;
+        strcmp(fd_info.path, "/cmd/test32") != 0) {
+        return 28;
+    }
+    if (read(fd, file_header, sizeof(file_header)) !=
+        (ssize_t)sizeof(file_header)) {
+        return 29;
+    }
+    if (memcmp(file_header, "\x7f" "ELF", sizeof(file_header)) != 0) {
+        return 30;
+    }
+    if (fd_query((uint32_t)fd, &fd_info) <= 0) {
+        return 31;
+    }
+    if (fd_info.offset != sizeof(file_header)) {
+        return 32;
+    }
+    if (close(fd) != 0) {
+        return 33;
+    }
+    if (close(fd) == 0) {
+        return 34;
     }
     if (puts("[test32] libc32 open/read/close VFS OK") == EOF) {
         return 26;
@@ -69,6 +85,50 @@ int test32_fs_create_truncate_case(void) {
     }
     if (puts("[test32] libc32 create/truncate default-write open OK") == EOF) {
         return 114;
+    }
+    return 0;
+}
+
+int test32_fs_fd_capability_case(void) {
+    char ch;
+    struct syscall_fd_info fd_info;
+    int fd;
+
+    fd = open("/cmd/test32", O_RDONLY);
+    if (fd < 3) {
+        return 115;
+    }
+    if (fd_query((uint32_t)fd, &fd_info) <= 0 ||
+        fd_info.readable != 1u ||
+        fd_info.writable != 0u) {
+        return 116;
+    }
+    if (write(fd, "x", 1u) != -NEX_ERR_ACCES) {
+        return 117;
+    }
+    if (close(fd) != 0) {
+        return 118;
+    }
+
+    fd = open("/FDCAP32.TXT", O_CREAT | O_TRUNC);
+    if (fd < 3) {
+        return 119;
+    }
+    if (fd_query((uint32_t)fd, &fd_info) <= 0 ||
+        fd_info.readable != 0u ||
+        fd_info.writable != 1u) {
+        return 120;
+    }
+    if (read(fd, &ch, 1u) != -NEX_ERR_ACCES) {
+        return 121;
+    }
+    if (write(fd, "z", 1u) != 1 ||
+        close(fd) != 0 ||
+        remove("/FDCAP32.TXT") != 0) {
+        return 122;
+    }
+    if (puts("[test32] fd capability read/write enforcement OK") == EOF) {
+        return 123;
     }
     return 0;
 }

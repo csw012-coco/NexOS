@@ -117,7 +117,6 @@ run-uefi: $(BUILD)/bootx.img $(OVMF_VARS_IMAGE) $(OVMF_CODE)
 	qemu-system-x86_64  -enable-kvm \
 	-machine q35 \
 	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
-	-drive if=pflash,format=raw,file=OVMF_VARS.fd \
 	-vga std -drive if=ide,index=0,media=disk,format=raw,file=$(BUILD)/bootx.img 
 
 dev: $(BUILD)/bootx.img

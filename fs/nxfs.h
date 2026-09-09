@@ -38,12 +38,16 @@ struct nxfs_volume {
     uint32_t partition_lba;
     struct nxfs_super super;
     uint8_t mounted;
+    uint8_t dirty;
+    uint8_t write_error;
     uint8_t sector_buffer[NXFS_BLOCK_SIZE];
     struct nxfs_cache_entry cache[NXFS_CACHE_BLOCKS];
     uint32_t cache_next;
 };
 
 int nxfs_mount(struct nxfs_volume *vol, struct block_device *bdev, uint32_t partition_lba);
+int nxfs_flush(struct nxfs_volume *vol);
+void nxfs_mark_write_failed(struct nxfs_volume *vol);
 int nxfs_uuid_is_zero(const uint8_t uuid[16]);
 int nxfs_get_uuid(struct nxfs_volume *vol, uint8_t uuid_out[16]);
 int nxfs_read_inode(struct nxfs_volume *vol, uint32_t inode_index, struct nxfs_inode *out);
@@ -72,6 +76,12 @@ int nxfs_read_file(struct nxfs_volume *vol,
 int nxfs_create_root(struct nxfs_volume *vol, const char *name, uint32_t *inode_index, struct nxfs_inode *out);
 int nxfs_create_path(struct nxfs_volume *vol, const char *path, uint32_t *inode_index, struct nxfs_inode *out);
 int nxfs_mkdir_path(struct nxfs_volume *vol, const char *path, uint32_t *inode_index, struct nxfs_inode *out);
+int nxfs_set_inode_metadata(struct nxfs_volume *vol,
+                            uint32_t inode_index,
+                            struct nxfs_inode *inode,
+                            uint32_t mode,
+                            uint32_t uid,
+                            uint32_t gid);
 int nxfs_truncate_inode(struct nxfs_volume *vol, uint32_t inode_index, struct nxfs_inode *inode);
 int nxfs_truncate_path(struct nxfs_volume *vol, const char *path);
 int nxfs_write_file_range(struct nxfs_volume *vol,

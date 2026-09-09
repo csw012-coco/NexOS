@@ -1,6 +1,5 @@
 #include "kernel/internal/proc/process_elf_internal.h"
 #include "kernel/internal/proc/process_lifecycle_internal.h"
-#include "kernel/internal/proc/process_program_registry_internal.h"
 #include "fs/vfs.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/mem/vmm.h"
@@ -42,6 +41,36 @@ static int process_exec_args_valid(struct vfs *vfs, const char *image_name) {
 
 static uint32_t process_exec_node_file_size(const struct vfs_node *node) {
     return vfs_node_file_size(node);
+}
+
+static int process_exec_node_setuid_local(const struct vfs_node *node,
+                                          uint32_t *uid_out,
+                                          uint32_t *gid_out) {
+    if (node == 0 || uid_out == 0 || gid_out == 0 ||
+        node->kind != VFS_NODE_FILE ||
+        node->mount_kind != VFS_MOUNT_NXFS ||
+        (node->handle.nxfs_inode.mode & 04000u) == 0u) {
+        return 0;
+    }
+    *uid_out = node->handle.nxfs_inode.uid;
+    *gid_out = node->handle.nxfs_inode.gid;
+    return 1;
+}
+
+static uint32_t process_exec_apply_identity_local(struct process *proc,
+                                                  const struct vfs_node *node,
+                                                  uint32_t base_caps) {
+    uint32_t uid = 0u;
+    uint32_t gid = 0u;
+
+    if (proc != 0 && process_exec_node_setuid_local(node, &uid, &gid)) {
+        (void)process_identity_push(proc);
+        process_set_identity(proc, uid, gid);
+        if (uid == 0u) {
+            return PROCESS_CAP_SYS_ADMIN;
+        }
+    }
+    return base_caps;
 }
 
 static int process_open_exec_file(struct vfs *vfs,
@@ -137,8 +166,8 @@ static int process_read_exec_file(struct vfs *vfs,
 }
 
 static int process_map_exec_stack(void) {
-    if (g_bound_session->address_space.user_cr3 == 0 ||
-        !vmm_root_is_current(g_bound_session->address_space.user_cr3)) {
+    if (g_bound_session->address_space.user_root == 0 ||
+        !vmm_root_is_current(g_bound_session->address_space.user_root)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
     }
@@ -391,6 +420,34 @@ static int process_build_shebang_command(const char *script_path,
     return 1;
 }
 
+static int process_name_is_simple_command_local(const char *name) {
+    uint32_t i = 0u;
+
+    if (name == 0 || name[0] == '\0' || name[0] == '.') {
+        return 0;
+    }
+    while (name[i] != '\0') {
+        if (name[i] == '/') {
+            return 0;
+        }
+        i++;
+    }
+    return 1;
+}
+
+static int process_build_cmd_path_local(const char *name,
+                                        char *out,
+                                        uint32_t out_size) {
+    uint32_t out_len = 0u;
+
+    if (!process_name_is_simple_command_local(name) || out == 0 || out_size == 0u) {
+        return 0;
+    }
+    out[0] = '\0';
+    return process_append_text_local(out, out_size, &out_len, "/cmd/") &&
+           process_append_text_local(out, out_size, &out_len, name);
+}
+
 static int process_resolve_exec_target_depth(struct vfs *vfs,
                                              const char *image_name,
                                              const char *command_line,
@@ -418,7 +475,19 @@ static int process_resolve_exec_target_depth(struct vfs *vfs,
                                  probe,
                                  sizeof(probe),
                                  &probe_bytes)) {
-        return 0;
+        char cmd_path[NOS_PATH_MAX + 1u];
+
+        if (!process_build_cmd_path_local(image_name, cmd_path, sizeof(cmd_path)) ||
+            !process_probe_exec_file(vfs,
+                                     cmd_path,
+                                     0,
+                                     0,
+                                     probe,
+                                     sizeof(probe),
+                                     &probe_bytes)) {
+            return 0;
+        }
+        image_name = cmd_path;
     }
     if (process_probe_has_shebang(probe, probe_bytes)) {
         PROCESS_EXEC_TRACE("exec: shebang detected\n");
@@ -437,7 +506,7 @@ static int process_resolve_exec_target_depth(struct vfs *vfs,
             return 0;
         }
         return process_resolve_exec_target_depth(vfs,
-                                                 process_resolve_image_name(redirected_name),
+                                                 redirected_name,
                                                  redirected_command,
                                                  resolved_image_name_out,
                                                  resolved_image_name_size,
@@ -468,16 +537,22 @@ int process_resolve_exec_target(struct vfs *vfs,
                                 uint32_t resolved_command_line_size,
                                 struct vfs_node *node_out,
                                 uint32_t *bytes_read_out) {
-    return process_resolve_exec_target_depth(vfs,
-                                             image_name,
-                                             command_line,
-                                             resolved_image_name_out,
-                                             resolved_image_name_size,
-                                             resolved_command_line_out,
-                                             resolved_command_line_size,
-                                             node_out,
-                                             bytes_read_out,
-                                             0u);
+    if (process_resolve_exec_target_depth(vfs,
+                                          image_name,
+                                          command_line,
+                                          resolved_image_name_out,
+                                          resolved_image_name_size,
+                                          resolved_command_line_out,
+                                          resolved_command_line_size,
+                                          node_out,
+                                          bytes_read_out,
+                                          0u)) {
+        return 1;
+    }
+    if (g_process_exec_last_error == PROCESS_EXEC_OK) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_FILE_NOT_FOUND;
+    }
+    return 0;
 }
 
 static uint32_t process_find_last_slash_local(const char *text) {
@@ -673,18 +748,18 @@ static int process_map_spawn_mode_local(uint32_t syscall_mode, enum process_exec
     }
 }
 
-static int process_run_foreground_command(struct vfs *vfs,
-                                          struct process *proc,
-                                          char *command_line,
-                                          const char *const *envp,
-                                          enum process_exec_mode mode) {
+static int process_spawn_and_wait_foreground_command(struct vfs *vfs,
+                                                     struct process *proc,
+                                                     char *command_line,
+                                                     const char *const *envp,
+                                                     enum process_exec_mode mode) {
     if (proc != 0) {
         uint32_t pid = 0;
         enum process_state parent_state;
         int foreground_ok;
         struct process_snapshot exited;
 
-        if (!job_run_background_with_pid(vfs, command_line, envp, mode, &pid)) {
+        if (!job_spawn_process(vfs, command_line, envp, mode, &pid)) {
             return 0;
         }
 
@@ -695,8 +770,10 @@ static int process_run_foreground_command(struct vfs *vfs,
             proc->state = parent_state;
         }
 
-        if (!foreground_ok &&
+        if (foreground_ok <= 0 &&
             (!process_get_last_exit(&exited) || exited.pid != pid)) {
+            (void)job_kill_pid(pid);
+            (void)process_wait_pid(pid, &exited);
             return 0;
         }
         (void)process_wait_pid(pid, &exited);
@@ -706,9 +783,7 @@ static int process_run_foreground_command(struct vfs *vfs,
 }
 
 static int process_dispatch_exec_request(const struct process_exec_request *req) {
-    const struct process_program *program;
     char command_name[NOS_TTY_LINE_BUFFER_SIZE];
-    const char *image_name;
 
     if (req == NULL || req->name == NULL) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
@@ -720,14 +795,11 @@ static int process_dispatch_exec_request(const struct process_exec_request *req)
         return 0;
     }
 
-    program = process_find_program_internal(command_name);
-    image_name = program != NULL ? program->image_name : command_name;
-
     switch (req->mode) {
         case PROCESS_EXEC_DIRECT:
         case PROCESS_EXEC_ELF:
         case PROCESS_EXEC_AUTO:
-            return process_exec_elf(req->vfs, image_name, req->name, req->envp);
+            return process_exec_elf(req->vfs, command_name, req->name, req->envp);
         default:
             g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
             return 0;
@@ -777,7 +849,10 @@ int process_exec_elf(struct vfs *vfs,
     if (!process_begin_elf_session()) {
         return 0;
     }
-    process_set_name(&g_bound_session->process, resolved_image_name);
+    (void)process_exec_apply_identity_local(&g_bound_session->process,
+                                            &node,
+                                            process_capabilities(&g_bound_session->process));
+    process_set_name(&g_bound_session->process, resolved_command_line);
     g_process_exec_last_stage = 4;
     if (!process_load_elf_image(g_elf_file_buffer, bytes_read, &entry)) {
         session_finish(&g_user_session, g_user_page_mappings);
@@ -813,8 +888,8 @@ int process_run_ring3_smoke_test(void) {
         return 0;
     }
     process_set_name(&g_bound_session->process, "ring3-smoke");
-    if (g_bound_session->address_space.user_cr3 == 0 ||
-        !vmm_root_is_current(g_bound_session->address_space.user_cr3)) {
+    if (g_bound_session->address_space.user_root == 0 ||
+        !vmm_root_is_current(g_bound_session->address_space.user_root)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         session_finish(&g_user_session, g_user_page_mappings);
         return 0;
@@ -868,7 +943,7 @@ int process_exec_from_user(struct vfs *vfs,
         g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
         return 0;
     }
-    return process_run_foreground_command(vfs, proc, command_line, envp, PROCESS_EXEC_AUTO);
+    return process_spawn_and_wait_foreground_command(vfs, proc, command_line, envp, PROCESS_EXEC_AUTO);
 }
 
 /*
@@ -880,7 +955,7 @@ static int process_prepare_exec_replace_session_local(struct process_session *se
                                                       struct user_page_mapping *mappings,
                                                       const struct process *proc) {
     struct process preserved;
-    uint64_t old_user_cr3;
+    uint64_t old_user_root;
 
     if (session == 0 || mappings == 0 || proc == 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
@@ -889,30 +964,30 @@ static int process_prepare_exec_replace_session_local(struct process_session *se
 
     preserved = *proc;
     process_bind_session(session, mappings);
-    if (session->address_space.user_cr3 != 0 &&
-        !vmm_root_is_current(session->address_space.user_cr3) &&
-        !vmm_switch_root_or_fail(session->address_space.user_cr3)) {
+    if (session->address_space.user_root != 0 &&
+        !vmm_root_is_current(session->address_space.user_root) &&
+        !vmm_switch_root_or_fail(session->address_space.user_root)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
     }
-    old_user_cr3 = session->address_space.user_cr3;
+    old_user_root = session->address_space.user_root;
     addrspace_release_dynamic_pages();
-    if (session->address_space.kernel_cr3 != 0 &&
-        !vmm_switch_root_or_fail(session->address_space.kernel_cr3)) {
+    if (session->address_space.kernel_root != 0 &&
+        !vmm_switch_root_or_fail(session->address_space.kernel_root)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
     }
-    if (old_user_cr3 != 0) {
-        session->address_space.user_cr3 = 0;
-        vmm_destroy_user_root(old_user_cr3);
+    if (old_user_root != 0) {
+        session->address_space.user_root = 0;
+        vmm_destroy_user_root(old_user_root);
     }
-    session->address_space.kernel_cr3 = vmm_current_root();
-    session->address_space.user_cr3 = vmm_create_user_root();
-    if (session->address_space.user_cr3 == 0) {
+    session->address_space.kernel_root = vmm_current_root();
+    session->address_space.user_root = vmm_create_user_root();
+    if (session->address_space.user_root == 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
     }
-    if (!vmm_switch_root_or_fail(session->address_space.user_cr3)) {
+    if (!vmm_switch_root_or_fail(session->address_space.user_root)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
     }
@@ -943,9 +1018,15 @@ int process_exec_replace_from_user(struct vfs *vfs,
     char command_name[NOS_TTY_LINE_BUFFER_SIZE];
     char resolved_image_name[NOS_TTY_LINE_BUFFER_SIZE];
     char resolved_command_line[NOS_TTY_LINE_BUFFER_SIZE];
+    struct vfs_node node;
     uint32_t bytes_read = 0;
     uint64_t entry = 0;
     uint64_t stack_top = 0;
+    uint32_t exec_caps = 0u;
+    uint32_t base_caps = 0u;
+    uint32_t setuid_uid = 0u;
+    uint32_t setuid_gid = 0u;
+    int setuid_exec = 0;
 
     g_process_exec_last_error = PROCESS_EXEC_OK;
     g_process_exec_last_stage = 1;
@@ -966,23 +1047,35 @@ int process_exec_replace_from_user(struct vfs *vfs,
     }
     g_process_exec_last_stage = 2;
     if (!process_resolve_exec_target(vfs,
-                                     process_resolve_image_name(command_name),
+                                     command_name,
                                      command_line,
                                      resolved_image_name,
                                      sizeof(resolved_image_name),
                                      resolved_command_line,
                                      sizeof(resolved_command_line),
-                                     0,
+                                     &node,
                                      &bytes_read)) {
         return 0;
     }
+    base_caps = process_capabilities(proc);
+    setuid_exec = process_exec_node_setuid_local(&node, &setuid_uid, &setuid_gid);
+    if (setuid_exec && setuid_uid == 0u) {
+        base_caps = PROCESS_CAP_SYS_ADMIN;
+    }
+    exec_caps = process_exec_policy_capabilities(
+        vfs, &node, resolved_image_name, base_caps);
     g_process_exec_last_stage = 3;
     if (!process_prepare_exec_replace_session_local(session, mappings, proc)) {
         session_finish(session, mappings);
         return 0;
     }
+    if (setuid_exec) {
+        (void)process_identity_push(&session->process);
+        process_set_identity(&session->process, setuid_uid, setuid_gid);
+    }
+    process_set_capabilities(&session->process, exec_caps);
     process_discard_non_stdio_files(&session->process);
-    process_set_name(&session->process, resolved_image_name);
+    process_set_name(&session->process, resolved_command_line);
     g_process_exec_last_stage = 4;
     if (!process_load_elf_image(g_elf_file_buffer, bytes_read, &entry)) {
         session_finish(session, mappings);
@@ -1017,8 +1110,11 @@ int process_spawn_from_user(struct vfs *vfs,
                             uint32_t flags,
                             uint32_t *pid_out) {
     enum process_exec_mode mode;
+    uint32_t child_pid = 0u;
 
-    if (proc == 0 || command_line == 0 || !process_map_spawn_mode_local(syscall_mode, &mode)) {
+    if (proc == 0 || command_line == 0 ||
+        !process_map_spawn_mode_local(syscall_mode, &mode) ||
+        (flags & ~SYS_SPAWN_BACKGROUND) != 0u) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
         return 0;
     }
@@ -1026,17 +1122,24 @@ int process_spawn_from_user(struct vfs *vfs,
         g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
         return 0;
     }
-    if ((flags & SYS_SPAWN_BACKGROUND) != 0) {
-        if (mode != PROCESS_EXEC_ELF && mode != PROCESS_EXEC_AUTO) {
-            g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
-            return 0;
-        }
-        return job_run_background_with_pid(vfs, command_line, envp, mode, pid_out);
+    if (mode != PROCESS_EXEC_ELF && mode != PROCESS_EXEC_AUTO) {
+        g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
+        return 0;
     }
     if (pid_out != 0) {
         *pid_out = 0u;
     }
-    return process_run_foreground_command(vfs, proc, command_line, envp, mode);
+    if (!job_spawn_process(vfs, command_line, envp, mode, &child_pid) ||
+        child_pid == 0u) {
+        if (g_process_exec_last_error == PROCESS_EXEC_OK) {
+            g_process_exec_last_error = PROCESS_EXEC_ERR_ENTER;
+        }
+        return 0;
+    }
+    if (pid_out != 0) {
+        *pid_out = child_pid;
+    }
+    return 1;
 }
 
 const struct process *process_current(void) {

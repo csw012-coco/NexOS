@@ -1,6 +1,20 @@
 #include "kernel/internal/proc/process_reap_internal.h"
+#include "kernel/public/mem/vmm.h"
+#include "kernel/public/proc/process.h"
 
-static void userprog_release_process_slot(uint32_t slot) {
+static void process_reap_clear_last_exit_record(void);
+
+static void process_reap_release_slot(uint32_t slot) {
+    if (slot < USER_PROCESS_LIMIT) {
+        process_discard_files(&g_process_slots[slot]);
+        if (g_job_runtimes[slot].used) {
+            if (g_job_runtimes[slot].session.address_space.user_root != 0) {
+                vmm_destroy_user_root(g_job_runtimes[slot].session.address_space.user_root);
+                g_job_runtimes[slot].session.address_space.user_root = 0;
+            }
+            job_reset_runtime(&g_job_runtimes[slot]);
+        }
+    }
     g_process_slot_used[slot] = 0;
     g_process_slots[slot].pid = 0;
     g_process_slots[slot].state = PROCESS_STATE_FREE;
@@ -13,7 +27,18 @@ static void userprog_release_process_slot(uint32_t slot) {
     g_process_slots[slot].address_space = 0;
 }
 
-static void userprog_clear_last_exited_process(void) {
+void process_reap_orphan_zombies(void) {
+    for (uint32_t i = 0; i < USER_PROCESS_LIMIT; i++) {
+        if (g_process_slot_used[i] && g_process_slots[i].state == PROCESS_STATE_EXITED) {
+            process_reap_release_slot(i);
+            if (g_last_exited_process.slot == i) {
+                process_reap_clear_last_exit_record();
+            }
+        }
+    }
+}
+
+static void process_reap_clear_last_exit_record(void) {
     g_last_exited_process.pid = 0;
     g_last_exited_process.slot = 0;
     g_last_exited_process.state = PROCESS_STATE_FREE;
@@ -33,6 +58,10 @@ uint32_t process_capacity(void) {
 int process_get(uint32_t slot, struct process_snapshot *out) {
     if (slot >= USER_PROCESS_LIMIT || !g_process_slot_used[slot]) {
         return 0;
+    }
+    if (g_job_runtimes[slot].used) {
+        process_snapshot_fill(out, &g_job_runtimes[slot].session.process);
+        return 1;
     }
     process_snapshot_fill(out, &g_process_slots[slot]);
     return 1;
@@ -58,9 +87,8 @@ int process_wait_last(struct process_snapshot *out) {
     slot = g_last_exited_process.slot;
     process_snapshot_fill(out, &g_process_slots[slot]);
 
-    process_discard_files(&g_process_slots[slot]);
-    userprog_release_process_slot(slot);
-    userprog_clear_last_exited_process();
+    process_reap_release_slot(slot);
+    process_reap_clear_last_exit_record();
     return 1;
 }
 
@@ -73,10 +101,9 @@ int process_wait_pid(uint32_t pid, struct process_snapshot *out) {
             continue;
         }
         process_snapshot_fill(out, &g_process_slots[i]);
-        process_discard_files(&g_process_slots[i]);
-        userprog_release_process_slot(i);
+        process_reap_release_slot(i);
         if (g_last_exited_process.state == PROCESS_STATE_EXITED && g_last_exited_process.pid == pid) {
-            process_refresh_name_ptr(&g_last_exited_process);
+            process_reap_clear_last_exit_record();
         }
         return 1;
     }
@@ -105,19 +132,19 @@ void job_reset_runtime(struct job_runtime *runtime) {
 }
 
 struct job_runtime *job_get_runtime(uint32_t slot) {
-    if (slot >= USER_PROCESS_LIMIT || !g_bg_runtimes[slot].used) {
+    if (slot >= USER_PROCESS_LIMIT || !g_job_runtimes[slot].used) {
         return 0;
     }
-    return &g_bg_runtimes[slot];
+    return &g_job_runtimes[slot];
 }
 
 struct job_runtime *job_find_runtime_by_pid(uint32_t pid) {
     for (uint32_t i = 0; i < USER_PROCESS_LIMIT; i++) {
-        if (!g_bg_runtimes[i].used) {
+        if (!g_job_runtimes[i].used) {
             continue;
         }
-        if (g_bg_runtimes[i].session.process.pid == pid) {
-            return &g_bg_runtimes[i];
+        if (g_job_runtimes[i].session.process.pid == pid) {
+            return &g_job_runtimes[i];
         }
     }
     return 0;

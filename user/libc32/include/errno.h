@@ -1,15 +1,26 @@
 #pragma once
 
+#include "abi/syscall_abi.h"
+
 extern int errno;
 
-#define EPERM 1
-#define ENOENT 2
-#define EIO 5
-#define ENOMEM 12
-#define EACCES 13
-#define EEXIST 17
-#define ENOTDIR 20
-#define EISDIR 21
-#define EINVAL 22
-#define ENOSPC 28
-#define ENOSYS 38
+#define EPERM NEX_ERR_PERM
+#define ENOENT NEX_ERR_NOENT
+#define ESRCH NEX_ERR_SRCH
+#define EIO NEX_ERR_IO
+#define ENOEXEC NEX_ERR_NOEXEC
+#define ECHILD NEX_ERR_CHILD
+#define EAGAIN NEX_ERR_AGAIN
+#define ENOMEM NEX_ERR_NOMEM
+#define EACCES NEX_ERR_ACCES
+#define EEXIST NEX_ERR_EXIST
+#define ENOTDIR NEX_ERR_NOTDIR
+#define EISDIR NEX_ERR_ISDIR
+#define EINVAL NEX_ERR_INVAL
+#define EFBIG NEX_ERR_FBIG
+#define ENOSPC NEX_ERR_NOSPC
+#define EPIPE NEX_ERR_PIPE
+#define ENOSYS NEX_ERR_NOSYS
+
+#define ENEXEXEC NEX_ERR_EXEC
+#define ENEXBADELF NEX_ERR_BAD_ELF

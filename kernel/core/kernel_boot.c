@@ -3,6 +3,9 @@
 #include "block/blockdev.h"
 #include "drivers/audio/ac97.h"
 #include "drivers/audio/hda.h"
+#include "drivers/bus/acpi.h"
+#include "drivers/bus/lapic.h"
+#include "drivers/bus/ioapic.h"
 #include "drivers/bus/pci.h"
 #include "drivers/net/rtl8139.h"
 #include "drivers/storage/ata.h"
@@ -75,7 +78,7 @@ void kernel_log_boot_info(const struct bootx_boot_info *boot_info) {
         return;
     }
 
-    kernel_boot_log_system("x86_64");
+    kernel_boot_log_system(hal_arch_name());
     kprint("bootx: magic=%x version=%u size=%u\n",
            boot_info->hdr.magic,
            (uint32_t)boot_info->hdr.version,
@@ -291,7 +294,7 @@ void kernel_log_block_devices(void) {
         }
         kprint("block[%u]: name=%s block_size=%u block_count=%lx writable=%u\n",
                i,
-               info.name != 0 ? info.name : "(null)",
+               info.name,
                info.block_size,
                info.block_count,
                (uint32_t)info.writable);
@@ -312,6 +315,10 @@ void kernel_init_storage_devices(const struct bootx_boot_info *boot_info) {
     kernel_register_builtin_drivers_local();
     (void)driver_init_all();
     kernel_log_pci_info();
+    (void)acpi_init();
+    (void)lapic_init_from_acpi();
+    (void)lapic_enable();
+    (void)ioapic_init_from_acpi();
     kernel_log_ac97_info();
     kernel_log_hda_info();
     kernel_log_rtl8139_info();

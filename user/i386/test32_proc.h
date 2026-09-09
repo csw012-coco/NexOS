@@ -8,6 +8,7 @@ int test32_exec_target_case(int argc, char **argv);
 
 int test32_proc_query_case(pid_t pid);
 int test32_proc_getpid_write_puts_case(pid_t pid, const void *ptr);
+int test32_proc_errno_case(void);
 int test32_proc_kill_wait_case(void);
 int test32_proc_spawn_background_case(void);
 int test32_proc_fork_surface_case(void);

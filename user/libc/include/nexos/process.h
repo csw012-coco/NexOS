@@ -22,11 +22,21 @@
 #define NEX_WAIT_LAST_PID SYS_WAIT_LAST_PID
 
 int exec(const char *name);
-/* Returns a child PID for background spawn, 0 for foreground, or a negative error. */
+/*
+ * spawn() returns a child pid (>0) or -NEX_ERR_* and never waits.
+ * Foreground commands must run as spawn(..., 0), fg(pid), wait(pid, info).
+ * Background commands use NEX_SPAWN_BACKGROUND and should be reaped later
+ * with wait(pid, info).
+ */
 int spawn(const char *name, uint32_t mode, uint32_t flags);
 int exec_replace(const char *name);
 int proc_query(uint32_t kind, uint32_t index, struct syscall_process_info *info);
+/* Reaps an exited child/job. Returns 1 on success or -NEX_ERR_*. */
 int wait(uint32_t pid, struct syscall_process_info *info);
 int kill(uint32_t pid);
+/* Returns 1 on success or -NEX_ERR_*. */
 int fg(uint32_t pid);
+/* Returns 1 on success or -NEX_ERR_*. */
 int bg(uint32_t pid);
+/* Returns 1 after making the current process foreground owner of its tty. */
+int tty_claim(void);

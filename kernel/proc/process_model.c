@@ -17,6 +17,17 @@ void process_model_reset(struct process *proc,
     proc->parent.pid = 0u;
     proc->wait.pid = 0u;
     proc->wait.info_user = 0u;
+    proc->caps = 0u;
+    proc->next_spawn_caps = 0u;
+    proc->next_spawn_caps_set = 0u;
+    proc->uid = 0u;
+    proc->gid = 0u;
+    proc->identity_depth = 0u;
+    for (uint32_t i = 0u; i < PROCESS_IDENTITY_STACK_MAX; i++) {
+        proc->identity_stack[i].uid = 0u;
+        proc->identity_stack[i].gid = 0u;
+        proc->identity_stack[i].caps = 0u;
+    }
     proc->name = 0;
     proc->name_storage[0] = '\0';
     proc->cwd_storage[0] = '/';
@@ -35,6 +46,105 @@ void process_model_reset(struct process *proc,
         proc->files[i].opened_path[0] = '\0';
         proc->files[i].private_data = 0;
         proc->files[i].ops = 0;
+    }
+}
+
+uint32_t process_capabilities(const struct process *proc) {
+    return proc != 0 ? proc->caps : 0u;
+}
+
+void process_set_capabilities(struct process *proc, uint32_t caps) {
+    if (proc != 0) {
+        proc->caps = caps & PROCESS_CAP_SYS_ADMIN;
+    }
+}
+
+int process_has_capability(const struct process *proc, uint32_t cap) {
+    return proc != 0 && cap != 0u && (proc->caps & cap) == cap;
+}
+
+uint32_t process_uid(const struct process *proc) {
+    return proc != 0 ? proc->uid : 0u;
+}
+
+uint32_t process_gid(const struct process *proc) {
+    return proc != 0 ? proc->gid : 0u;
+}
+
+void process_set_identity(struct process *proc,
+                          uint32_t uid,
+                          uint32_t gid) {
+    if (proc == 0) {
+        return;
+    }
+    proc->uid = uid;
+    proc->gid = gid;
+}
+
+int process_identity_push(struct process *proc) {
+    struct process_identity_context *saved;
+
+    if (proc == 0 || proc->identity_depth >= PROCESS_IDENTITY_STACK_MAX) {
+        return 0;
+    }
+    saved = &proc->identity_stack[proc->identity_depth++];
+    saved->uid = proc->uid;
+    saved->gid = proc->gid;
+    saved->caps = proc->caps;
+    return 1;
+}
+
+int process_identity_pop(struct process *proc) {
+    struct process_identity_context *saved;
+
+    if (proc == 0 || proc->identity_depth == 0u) {
+        return 0;
+    }
+    saved = &proc->identity_stack[--proc->identity_depth];
+    proc->uid = saved->uid;
+    proc->gid = saved->gid;
+    proc->caps = saved->caps;
+    saved->uid = 0u;
+    saved->gid = 0u;
+    saved->caps = 0u;
+    return 1;
+}
+
+void process_inherit_identity(struct process *proc, const struct process *parent) {
+    if (proc == 0) {
+        return;
+    }
+    if (parent == 0) {
+        process_set_identity(proc, 0u, 0u);
+        return;
+    }
+    process_set_identity(proc,
+                         process_uid(parent),
+                         process_gid(parent));
+}
+
+uint32_t process_next_spawn_capabilities(const struct process *proc,
+                                         uint32_t fallback) {
+    return proc != 0 && proc->next_spawn_caps_set ?
+           proc->next_spawn_caps :
+           fallback;
+}
+
+int process_next_spawn_capabilities_enabled(const struct process *proc) {
+    return proc != 0 && proc->next_spawn_caps_set;
+}
+
+void process_set_next_spawn_capabilities(struct process *proc, uint32_t caps) {
+    if (proc != 0) {
+        proc->next_spawn_caps = caps & PROCESS_CAP_SYS_ADMIN;
+        proc->next_spawn_caps_set = 1u;
+    }
+}
+
+void process_clear_next_spawn_capabilities(struct process *proc) {
+    if (proc != 0) {
+        proc->next_spawn_caps = 0u;
+        proc->next_spawn_caps_set = 0u;
     }
 }
 
@@ -77,6 +187,9 @@ void process_snapshot_fill(struct process_snapshot *out,
     out->exit_code = 0;
     out->wake_tick = 0u;
     out->image_kind = PROCESS_IMAGE_NONE;
+    out->caps = 0u;
+    out->uid = 0u;
+    out->gid = 0u;
     for (i = 0u; i < sizeof(out->name); i++) {
         out->name[i] = '\0';
     }
@@ -89,6 +202,9 @@ void process_snapshot_fill(struct process_snapshot *out,
     out->exit_code = proc->exit_code;
     out->wake_tick = proc->wake_tick;
     out->image_kind = (uint32_t)proc->image_kind;
+    out->caps = process_capabilities(proc);
+    out->uid = process_uid(proc);
+    out->gid = process_gid(proc);
     for (i = 0u;
          i + 1u < sizeof(out->name) && proc->name_storage[i] != '\0';
          i++) {
@@ -214,6 +330,46 @@ int process_lifecycle_find_wait_child(struct process *const *slots,
     return 0;
 }
 
+int process_lifecycle_find_pid_slot(struct process *const *slots,
+                                    uint32_t capacity,
+                                    uint32_t pid,
+                                    uint32_t *slot_out) {
+    if (slot_out != 0) {
+        *slot_out = 0u;
+    }
+    if (slots == 0 || pid == 0u) {
+        return 0;
+    }
+    for (uint32_t slot = 0u; slot < capacity; slot++) {
+        const struct process *proc = slots[slot];
+
+        if (proc != 0 &&
+            proc->pid == pid &&
+            proc->state != PROCESS_STATE_FREE) {
+            if (slot_out != 0) {
+                *slot_out = slot;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int process_lifecycle_collect_exited_child(struct process *child,
+                                           int32_t *status,
+                                           struct process_snapshot *snapshot) {
+    if (child == 0 ||
+        child->state != PROCESS_STATE_EXITED ||
+        status == 0) {
+        return 0;
+    }
+    *status = child->exit_code;
+    if (snapshot != 0) {
+        process_snapshot_fill(snapshot, child);
+    }
+    return 1;
+}
+
 uint32_t process_lifecycle_wake_exit_waiters(
     struct process **slots,
     uint32_t capacity,
@@ -265,6 +421,31 @@ void process_lifecycle_mark_exited_for_scheduler(struct process *proc,
     proc->exit_code = exit_code;
     proc->state = PROCESS_STATE_EXITED;
     proc->wake_tick = 0u;
+}
+
+uint32_t process_lifecycle_mark_exited_and_wake(
+    struct process *proc,
+    int32_t exit_code,
+    int clear_wait_state,
+    struct process **slots,
+    uint32_t capacity,
+    void (*copy_wait_info)(uint32_t slot,
+                           const struct process *exited,
+                           void *context),
+    void *copy_context) {
+    if (proc == 0) {
+        return 0u;
+    }
+    process_lifecycle_mark_exited_for_scheduler(proc, exit_code);
+    if (clear_wait_state) {
+        process_lifecycle_clear_wait(proc);
+    }
+    return process_lifecycle_wake_exit_waiters(slots,
+                                               capacity,
+                                               proc->pid,
+                                               exit_code,
+                                               copy_wait_info,
+                                               copy_context);
 }
 
 void process_forget_file_array(struct file files[PROCESS_FILE_MAX]) {

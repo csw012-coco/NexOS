@@ -66,6 +66,9 @@ static const char *vfs_capability_reason_name(uint32_t reason) {
     if (reason == SYS_CAP_REASON_MASK) {
         return "mask";
     }
+    if (reason == SYS_CAP_REASON_EXEC_POLICY) {
+        return "exec-policy";
+    }
     return "unknown";
 }
 

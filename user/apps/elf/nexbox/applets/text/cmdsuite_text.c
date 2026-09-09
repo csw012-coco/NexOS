@@ -125,7 +125,7 @@ static void pager_run_fd(uint32_t content_fd, uint32_t tty_fd) {
 
 
 int cmd_help(void) {
-    write_str("cmd commands: help actions action mapper echo yes clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg\n");
+    write_str("cmd commands: help actions action mapper echo yes clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps id whoami su sudo login getty session service jobs wait alarm timeout kill fg bg reboot poweroff switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg\n");
     write_str("shell-only builtins: cd exit [code] exec set export alias functions history source .\n");
     write_str("multicall: nexbox <applet> [args]\n");
     write_str("set lists shell-local vars; env/export list exported environment\n");

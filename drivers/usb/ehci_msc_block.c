@@ -1,5 +1,19 @@
 #include "drivers/usb/ehci_internal.h"
 
+int ehci_msc_reset_block_device(struct block_device *bdev) {
+    struct ehci_msc_device *dev = bdev != 0
+        ? (struct ehci_msc_device *)bdev->driver_data
+        : 0;
+
+    if (dev == 0) {
+        return -1;
+    }
+    if (ehci_msc_reset_recovery(dev)) {
+        return 0;
+    }
+    return ehci_msc_hard_reset_recovery(dev) ? 0 : -1;
+}
+
 int ehci_msc_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count, void *buffer) {
     struct ehci_msc_device *dev = (struct ehci_msc_device *)bdev->driver_data;
     uint8_t *out = (uint8_t *)buffer;

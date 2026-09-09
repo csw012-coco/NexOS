@@ -1,5 +1,6 @@
 #include "kernel/internal/core/tty_internal.h"
 #include "hal/hal.h"
+#include "kernel/public/core/kprint.h"
 
 static struct tty g_virtual_ttys[TTY_VIRTUAL_COUNT];
 static uint32_t g_active_tty_index;

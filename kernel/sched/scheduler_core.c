@@ -1,4 +1,5 @@
 #include "kernel/internal/sched/scheduler_internal.h"
+#include "hal/hal.h"
 #include "kernel/public/proc/scheduler.h"
 #include "kernel/public/proc/sched_policy.h"
 
@@ -56,7 +57,7 @@ void sched_trace_snapshot(const struct sched_trace_event **events_out,
     }
 }
 
-void job_bind_foreground_session(void) {
+void job_bind_root_session(void) {
     (void)session_bind_user_context(&g_user_session, g_user_page_mappings);
 }
 
@@ -73,7 +74,7 @@ static void sched_restore_caller_session(void) {
             return;
         }
     }
-    job_bind_foreground_session();
+    job_bind_root_session();
 }
 
 void sched_prepare_user_return(void) {
@@ -94,7 +95,7 @@ void sched_prepare_user_return(void) {
 uint64_t sched_prepare_user_frame_return(const struct syscall_frame *frame) {
     struct cpu_user_state *cpu_state;
 
-    if (frame != 0 && (frame->cs & 0x3u) == 0x3u) {
+    if (hal_syscall_frame_is_user(frame)) {
         cpu_state = current_cpu_user_state();
         if (cpu_state->nested_kernel_stack_depth != 0) {
             uint32_t index = cpu_state->nested_kernel_stack_depth - 1u;
@@ -132,10 +133,10 @@ void sched_tick(void) {
         return;
     }
 
-    /* MECHANISM: Execute foreground session (special case, slot = -1) */
+    /* MECHANISM: Execute root user session (special case, slot = -1). */
     if (next_slot == -1) {
         if (g_user_session.process.state == PROCESS_STATE_READY) {
-            sched_trace_record(process_current(), &g_user_session.process, "foreground");
+            sched_trace_record(process_current(), &g_user_session.process, "root");
             process_bind_session(&g_user_session, g_user_page_mappings);
             if (!session_run_active_slice(&g_user_session, g_user_page_mappings,
                                          g_user_session.process.entry,
@@ -149,7 +150,7 @@ void sched_tick(void) {
         return;
     }
 
-    /* MECHANISM: Execute background job at slot */
+    /* MECHANISM: Execute spawned job runtime at slot. */
     struct job_runtime *runtime = job_get_runtime((uint32_t)next_slot);
 
     if (runtime == 0) {
@@ -157,7 +158,7 @@ void sched_tick(void) {
         return;
     }
 
-    sched_trace_record(process_current(), &runtime->session.process, "background");
+    sched_trace_record(process_current(), &runtime->session.process, "job");
     process_bind_session(&runtime->session, runtime->mappings);
     if (!session_run_active_slice(&runtime->session, runtime->mappings,
                                  runtime->entry, runtime->stack_top, 0)) {

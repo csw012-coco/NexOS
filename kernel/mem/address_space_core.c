@@ -1,5 +1,6 @@
 #include "kernel/internal/mem/address_space_internal.h"
 #include "abi/syscall_abi.h"
+#include "kernel/public/proc/process.h"
 #include "kernel/public/mem/vmm.h"
 #include "kernel/public/mem/pmm.h"
 #include "hal/hal.h"
@@ -8,7 +9,8 @@
 enum {
     ADDRSPACE_SHM_MAX = 16,
     ADDRSPACE_SHM_NAME_MAX = 31,
-    ADDRSPACE_SHM_PAGE_MAX = 256
+    ADDRSPACE_SHM_PAGE_MAX = 256,
+    ADDRSPACE_SHM_PID_REF_MAX = 16
 };
 
 struct addrspace_shm_object {
@@ -18,11 +20,97 @@ struct addrspace_shm_object {
     uint32_t page_count;
     char name[ADDRSPACE_SHM_NAME_MAX + 1];
     uint64_t pages[ADDRSPACE_SHM_PAGE_MAX];
+    uint32_t ref_pids[ADDRSPACE_SHM_PID_REF_MAX];
+    uint16_t ref_counts[ADDRSPACE_SHM_PID_REF_MAX];
 };
 
 static struct addrspace_shm_object g_shm_objects[ADDRSPACE_SHM_MAX];
 
 static void addrspace_shm_destroy(struct addrspace_shm_object *object);
+
+static uint32_t addrspace_current_pid(void) {
+    const struct process *proc = process_current();
+
+    return proc != 0 ? proc->pid : 0u;
+}
+
+static void addrspace_shm_note_pid_ref(struct addrspace_shm_object *object,
+                                       uint32_t pid) {
+    uint32_t free_slot = ADDRSPACE_SHM_PID_REF_MAX;
+
+    if (object == 0 || pid == 0u) {
+        return;
+    }
+    for (uint32_t i = 0u; i < ADDRSPACE_SHM_PID_REF_MAX; i++) {
+        if (object->ref_pids[i] == pid) {
+            if (object->ref_counts[i] != 0xffffu) {
+                object->ref_counts[i]++;
+            }
+            return;
+        }
+        if (object->ref_pids[i] == 0u && free_slot == ADDRSPACE_SHM_PID_REF_MAX) {
+            free_slot = i;
+        }
+    }
+    if (free_slot < ADDRSPACE_SHM_PID_REF_MAX) {
+        object->ref_pids[free_slot] = pid;
+        object->ref_counts[free_slot] = 1u;
+    }
+}
+
+static void addrspace_shm_drop_pid_ref(struct addrspace_shm_object *object,
+                                       uint32_t pid) {
+    if (object == 0 || pid == 0u) {
+        return;
+    }
+    for (uint32_t i = 0u; i < ADDRSPACE_SHM_PID_REF_MAX; i++) {
+        if (object->ref_pids[i] != pid) {
+            continue;
+        }
+        if (object->ref_counts[i] > 1u) {
+            object->ref_counts[i]--;
+        } else {
+            object->ref_pids[i] = 0u;
+            object->ref_counts[i] = 0u;
+        }
+        return;
+    }
+}
+
+static void addrspace_shm_release_pid_refs(uint32_t pid) {
+    if (pid == 0u) {
+        return;
+    }
+    for (uint32_t i = 0u; i < ADDRSPACE_SHM_MAX; i++) {
+        struct addrspace_shm_object *object = &g_shm_objects[i];
+
+        if (!object->used) {
+            continue;
+        }
+        for (uint32_t j = 0u; j < ADDRSPACE_SHM_PID_REF_MAX; j++) {
+            uint16_t refs;
+
+            if (object->ref_pids[j] != pid) {
+                continue;
+            }
+            refs = object->ref_counts[j];
+            object->ref_pids[j] = 0u;
+            object->ref_counts[j] = 0u;
+            if (refs > object->mapping_refs) {
+                object->mapping_refs = 0u;
+            } else {
+                object->mapping_refs -= refs;
+            }
+        }
+        if (!object->linked && object->mapping_refs == 0u) {
+            addrspace_shm_destroy(object);
+        }
+    }
+}
+
+void addrspace_release_shm_refs_for_pid(uint32_t pid) {
+    addrspace_shm_release_pid_refs(pid);
+}
 
 static uint64_t align_down(uint64_t value, uint64_t align) {
     return value & ~(align - 1);
@@ -75,7 +163,39 @@ static int addrspace_try_alloc_phys_page(uint64_t *phys_addr_out, int *reserved_
     return *phys_addr_out != 0;
 }
 
+static void addrspace_release_mapping_for_pid(struct user_page_mapping *mapping,
+                                              uint32_t pid);
+
 static void addrspace_release_mapping(struct user_page_mapping *mapping) {
+    addrspace_release_mapping_for_pid(mapping, addrspace_current_pid());
+}
+
+static void addrspace_release_shared_ref_for_pid(struct user_page_mapping *mapping,
+                                                 uint32_t pid) {
+    struct addrspace_shm_object *object;
+
+    if (mapping == 0 ||
+        !mapping->shared ||
+        mapping->shm_slot >= ADDRSPACE_SHM_MAX) {
+        return;
+    }
+    object = &g_shm_objects[mapping->shm_slot];
+    if (!object->used || object->mapping_refs == 0u) {
+        return;
+    }
+    object->mapping_refs--;
+    addrspace_shm_drop_pid_ref(object, pid);
+    if (!object->linked && object->mapping_refs == 0u) {
+        addrspace_shm_destroy(object);
+    }
+}
+
+static void addrspace_release_shared_ref(struct user_page_mapping *mapping) {
+    addrspace_release_shared_ref_for_pid(mapping, addrspace_current_pid());
+}
+
+static void addrspace_release_mapping_for_pid(struct user_page_mapping *mapping,
+                                              uint32_t pid) {
     uint64_t phys_addr;
     struct addrspace_shm_object *object = 0;
 
@@ -89,33 +209,9 @@ static void addrspace_release_mapping(struct user_page_mapping *mapping) {
         pmm_free_page(phys_addr);
     }
     if (object != 0 && object->used && object->mapping_refs != 0) {
-        object->mapping_refs--;
-        if (!object->linked && object->mapping_refs == 0) {
-            for (uint32_t i = 0; i < object->page_count; i++) {
-                pmm_release_page(object->pages[i]);
-            }
-            memset(object, 0, sizeof(*object));
-        }
+        addrspace_release_shared_ref_for_pid(mapping, pid);
     }
     addrspace_clear_mapping(mapping);
-}
-
-static void addrspace_release_shared_ref(struct user_page_mapping *mapping) {
-    struct addrspace_shm_object *object;
-
-    if (mapping == 0 ||
-        !mapping->shared ||
-        mapping->shm_slot >= ADDRSPACE_SHM_MAX) {
-        return;
-    }
-    object = &g_shm_objects[mapping->shm_slot];
-    if (!object->used || object->mapping_refs == 0u) {
-        return;
-    }
-    object->mapping_refs--;
-    if (!object->linked && object->mapping_refs == 0u) {
-        addrspace_shm_destroy(object);
-    }
 }
 
 int addrspace_release_page_with_backend(
@@ -154,11 +250,10 @@ int addrspace_release_page_for_pid_with_backend(
         return 0;
     }
     if (mapping->shared) {
-        if (shared_page_unmap_pid == 0 ||
-            shared_page_unmap_pid(pid, page) != 0) {
-            return 0;
+        if (shared_page_unmap_pid != 0) {
+            (void)shared_page_unmap_pid(pid, page);
         }
-        addrspace_release_shared_ref(mapping);
+        addrspace_release_shared_ref_for_pid(mapping, pid);
     } else {
         if (page_free_pid == 0 || page_free_pid(pid, page) != 0) {
             return 0;
@@ -314,6 +409,7 @@ void addrspace_release_dynamic_pages_for_pid_with_backend(
     }
     g_next_user_alloc = USER_ALLOC_BASE;
     g_bound_session->address_space.reserved_phys_next = g_bound_session->address_space.reserved_phys_base;
+    addrspace_shm_release_pid_refs(pid);
 }
 
 uint64_t addrspace_alloc_page(void) {
@@ -567,39 +663,12 @@ uint64_t addrspace_shm_size(uint32_t handle) {
     return object->used ? object->page_count * USER_PAGE_SIZE : 0;
 }
 
-int addrspace_shm_note_mapping(uint32_t handle) {
-    struct addrspace_shm_object *object;
-
-    if (handle == 0u || handle > ADDRSPACE_SHM_MAX) {
-        return 0;
-    }
-    object = &g_shm_objects[handle - 1u];
-    if (!object->used || object->mapping_refs == 0xffffu) {
-        return 0;
-    }
-    object->mapping_refs++;
-    return 1;
-}
-
-void addrspace_shm_note_unmapping(uint32_t handle) {
-    struct addrspace_shm_object *object;
-
-    if (handle == 0u || handle > ADDRSPACE_SHM_MAX) {
-        return;
-    }
-    object = &g_shm_objects[handle - 1u];
-    if (!object->used || object->mapping_refs == 0u) {
-        return;
-    }
-    object->mapping_refs--;
-    if (!object->linked && object->mapping_refs == 0u) {
-        addrspace_shm_destroy(object);
-    }
-}
-
 static int addrspace_range_free(uint64_t start, uint64_t end) {
     for (uint64_t page = start; page < end; page += USER_PAGE_SIZE) {
-        if (addrspace_find_mapping(page) != 0) {
+        uint64_t phys = 0;
+
+        if (addrspace_find_mapping(page) != 0 ||
+            vmm_query(page, &phys)) {
             return 0;
         }
     }
@@ -708,6 +777,7 @@ uint64_t addrspace_mmap(uint64_t requested_addr,
                                 : (uint16_t)0xffffu;
         if (object != 0) {
             object->mapping_refs++;
+            addrspace_shm_note_pid_ref(object, addrspace_current_pid());
         } else {
             (void)vmm_zero_range(mapped_end, USER_PAGE_SIZE);
         }

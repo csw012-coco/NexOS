@@ -4,6 +4,7 @@
 
 USER_ELF_C_SRCS := \
 	user/apps/elf/hello.c \
+	user/apps/elf/sectest.c \
 	user/apps/elf/keydemo.c \
 	user/apps/elf/yielddemo.c \
 	user/apps/elf/badptr.c \
@@ -18,16 +19,33 @@ USER_ELF_C_SRCS := \
 	user/apps/elf/wdemo.c \
 	user/apps/elf/guidemo.c \
 	user/apps/elf/forth.c \
-	user/apps/elf/ush.c \
-	user/apps/elf/ush_editor.c \
-	user/apps/elf/ush_vars.c \
-	user/apps/elf/ush_exec.c \
-	user/apps/elf/ush_exec_dispatch.c \
-	user/apps/elf/ush_exec_external.c \
-	user/apps/elf/ush_exec_pipeline.c \
-	user/apps/elf/ush_exec_redir.c \
-	user/apps/elf/ush_exec_stdio.c \
-	user/apps/elf/ush_parse.c \
+	user/apps/elf/ush/ush.c \
+	user/apps/elf/ush/ush_editor.c \
+	user/apps/elf/ush/ush_script_runner.c \
+	user/apps/elf/ush/ush_startup.c \
+	user/apps/elf/ush/ush_vars.c \
+	user/apps/elf/ush/ush_vars_alias.c \
+	user/apps/elf/ush/ush_vars_expand.c \
+	user/apps/elf/ush/ush_vars_function.c \
+	user/apps/elf/ush/ush_vars_script.c \
+	user/apps/elf/ush/ush_vars_store.c \
+	user/apps/elf/ush/ush_vars_util.c \
+	user/apps/elf/ush/ush_exec.c \
+	user/apps/elf/ush/ush_exec_applets.c \
+	user/apps/elf/ush/ush_exec_builtin.c \
+	user/apps/elf/ush/ush_exec_dispatch.c \
+	user/apps/elf/ush/ush_exec_external.c \
+	user/apps/elf/ush/ush_exec_fs.c \
+	user/apps/elf/ush/ush_exec_media.c \
+	user/apps/elf/ush/ush_exec_parse.c \
+	user/apps/elf/ush/ush_exec_pipeline.c \
+	user/apps/elf/ush/ush_exec_redir.c \
+	user/apps/elf/ush/ush_exec_resolve.c \
+	user/apps/elf/ush/ush_exec_script.c \
+	user/apps/elf/ush/ush_exec_spawn.c \
+	user/apps/elf/ush/ush_exec_stdio.c \
+	user/apps/elf/ush/ush_exec_util.c \
+	user/apps/elf/ush/ush_parse.c \
 	user/apps/elf/nexbox/core/cmdsuite.c \
 	user/apps/elf/nexbox/core/cmdsuite_dispatch.c \
 	user/apps/elf/nexbox/core/cmdsuite_action.c \
@@ -61,9 +79,10 @@ USER_ELF_C_SRCS := \
 
 USER_ELF_C_OBJS := $(addprefix $(BUILD)/,$(USER_ELF_C_SRCS:.c=.o))
 
-USER_ELF_BINS := $(BUILD)/DOOM.ELF $(BUILD)/IPCDEMO.ELF $(BUILD)/IMGVIEW.ELF $(BUILD)/NCC.ELF $(BUILD)/HELLO.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/GUIDEMO.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
+USER_ELF_BINS := $(BUILD)/DOOM.ELF $(BUILD)/IPCDEMO.ELF $(BUILD)/IMGVIEW.ELF $(BUILD)/NCC.ELF $(BUILD)/HELLO.ELF $(BUILD)/SECTEST.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/GUIDEMO.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
 
 HELLO_ELF_OBJS := $(BUILD)/user/apps/elf/hello.o
+SECTEST_ELF_OBJS := $(BUILD)/user/apps/elf/sectest.o
 KEYDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/keydemo.o
 YIELDDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/yielddemo.o
 BADPTR_ELF_OBJS := $(BUILD)/user/apps/elf/badptr.o
@@ -77,7 +96,7 @@ LSDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/ls.o $(BUILD)/user/apps/elf/nexbox/app
 WDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/wdemo.o
 GUIDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/guidemo.o
 FORTH_ELF_OBJS := $(BUILD)/user/apps/elf/forth.o
-USH_ELF_OBJS := $(BUILD)/user/apps/elf/ush.o $(BUILD)/user/apps/elf/ush_editor.o $(BUILD)/user/apps/elf/ush_vars.o $(BUILD)/user/apps/elf/ush_exec.o $(BUILD)/user/apps/elf/ush_exec_dispatch.o $(BUILD)/user/apps/elf/ush_exec_external.o $(BUILD)/user/apps/elf/ush_exec_pipeline.o $(BUILD)/user/apps/elf/ush_exec_redir.o $(BUILD)/user/apps/elf/ush_exec_stdio.o $(BUILD)/user/apps/elf/ush_parse.o
+USH_ELF_OBJS := $(BUILD)/user/apps/elf/ush/ush.o $(BUILD)/user/apps/elf/ush/ush_editor.o $(BUILD)/user/apps/elf/ush/ush_script_runner.o $(BUILD)/user/apps/elf/ush/ush_startup.o $(BUILD)/user/apps/elf/ush/ush_vars.o $(BUILD)/user/apps/elf/ush/ush_vars_alias.o $(BUILD)/user/apps/elf/ush/ush_vars_expand.o $(BUILD)/user/apps/elf/ush/ush_vars_function.o $(BUILD)/user/apps/elf/ush/ush_vars_script.o $(BUILD)/user/apps/elf/ush/ush_vars_store.o $(BUILD)/user/apps/elf/ush/ush_vars_util.o $(BUILD)/user/apps/elf/ush/ush_exec.o $(BUILD)/user/apps/elf/ush/ush_exec_applets.o $(BUILD)/user/apps/elf/ush/ush_exec_builtin.o $(BUILD)/user/apps/elf/ush/ush_exec_dispatch.o $(BUILD)/user/apps/elf/ush/ush_exec_external.o $(BUILD)/user/apps/elf/ush/ush_exec_fs.o $(BUILD)/user/apps/elf/ush/ush_exec_media.o $(BUILD)/user/apps/elf/ush/ush_exec_parse.o $(BUILD)/user/apps/elf/ush/ush_exec_pipeline.o $(BUILD)/user/apps/elf/ush/ush_exec_redir.o $(BUILD)/user/apps/elf/ush/ush_exec_resolve.o $(BUILD)/user/apps/elf/ush/ush_exec_script.o $(BUILD)/user/apps/elf/ush/ush_exec_spawn.o $(BUILD)/user/apps/elf/ush/ush_exec_stdio.o $(BUILD)/user/apps/elf/ush/ush_exec_util.o $(BUILD)/user/apps/elf/ush/ush_parse.o
 NEXBOX_ELF_OBJS := $(BUILD)/user/apps/elf/nexbox/core/cmdsuite.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_dispatch.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_action.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_basic.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text_events.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text_table.o $(BUILD)/user/apps/elf/nexbox/applets/audio/cmdsuite_audio.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_arp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_dns.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_dhcp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_tcp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_http.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_rtl8139.o $(BUILD)/user/apps/elf/nexbox/applets/editor/cmdsuite_editor.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_fdisk.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_tools.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_block.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_cpio.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_session.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_service.o $(BUILD)/user/apps/elf/nexbox/applets/system/service_policy.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.o $(BUILD)/user/apps/elf/nexbox/applets/proc/cmdsuite_proc.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug_doctor.o $(BUILD)/user/apps/elf/nexbox/applets/asm/cmdsuite_asm.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
 I386_NEXBOX_FULL_SRCS := $(patsubst $(BUILD)/%.o,%.c,$(NEXBOX_ELF_OBJS))
 I386_NEXBOX_FULL_OBJS := $(patsubst %.c,$(I386_BUILD)/full/%.o,$(I386_NEXBOX_FULL_SRCS))
@@ -88,6 +107,7 @@ test-service-policy:
 	$(Q)$(BUILD)/service_policy_test
 
 $(eval $(call define_user_elf,HELLO.ELF,$(HELLO_ELF_OBJS)))
+$(eval $(call define_user_elf,SECTEST.ELF,$(SECTEST_ELF_OBJS)))
 $(eval $(call define_user_elf,KEYDEMO.ELF,$(KEYDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,YIELDDEMO.ELF,$(YIELDDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,BADPTR.ELF,$(BADPTR_ELF_OBJS)))

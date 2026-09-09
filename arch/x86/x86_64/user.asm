@@ -6,19 +6,21 @@ global usermode_resume_from_syscall
 
 %define USER_CS 0x1b
 %define USER_DS 0x23
-%define USERMODE_KERNEL_CONTEXT_SLOTS 8
+; Keep this in sync with USER_NESTED_KERNEL_STACK_LIMIT:
+; root session plus every user-process slot may be active.
+%define USERMODE_KERNEL_CONTEXT_SLOTS 33
 
 section .bss
 saved_kernel_depth: resq 1
 saved_kernel_resume_index: resq 1
-saved_kernel_rsp: resq 8
-saved_kernel_rip: resq 8
-saved_kernel_rbx: resq 8
-saved_kernel_rbp: resq 8
-saved_kernel_r12: resq 8
-saved_kernel_r13: resq 8
-saved_kernel_r14: resq 8
-saved_kernel_r15: resq 8
+saved_kernel_rsp: resq USERMODE_KERNEL_CONTEXT_SLOTS
+saved_kernel_rip: resq USERMODE_KERNEL_CONTEXT_SLOTS
+saved_kernel_rbx: resq USERMODE_KERNEL_CONTEXT_SLOTS
+saved_kernel_rbp: resq USERMODE_KERNEL_CONTEXT_SLOTS
+saved_kernel_r12: resq USERMODE_KERNEL_CONTEXT_SLOTS
+saved_kernel_r13: resq USERMODE_KERNEL_CONTEXT_SLOTS
+saved_kernel_r14: resq USERMODE_KERNEL_CONTEXT_SLOTS
+saved_kernel_r15: resq USERMODE_KERNEL_CONTEXT_SLOTS
 
 section .text
 

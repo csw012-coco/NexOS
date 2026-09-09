@@ -32,6 +32,9 @@
 
 int chdir(const char *path);
 int getcwd(char *buffer, uint32_t size);
+int chmod(const char *path, uint32_t mode);
+int chown(const char *path, uint32_t uid, uint32_t gid);
+int setcap(const char *path, uint32_t caps);
 int mount(const char *source, const char *target, uint32_t kind);
 int umount(const char *target);
 int switch_root(const char *target);
@@ -41,6 +44,7 @@ int block_write(uint32_t disk_index, uint64_t lba, struct syscall_block_write_in
 int block_flush(uint32_t disk_index);
 int part_query(uint32_t disk_index, uint32_t slot, struct syscall_partition_info *info);
 int mount_query(uint32_t index, struct syscall_mount_info *info);
+int mount_query_space(uint32_t index, struct syscall_mount_info *info);
 int boot_info_query(struct syscall_boot_info *info);
 int memmap_query(uint32_t index, struct syscall_memmap_info *info);
 int pmm_query(struct syscall_pmm_info *info);

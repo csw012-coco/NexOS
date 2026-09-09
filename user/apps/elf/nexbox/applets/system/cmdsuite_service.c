@@ -173,7 +173,15 @@ static int redirect_open(const char *path, int target, int *saved) {
     if (path[0] == '\0') return 1;
     fd = open(path, O_CREAT | O_APPEND);
     if (fd < 0) return 0;
-    if (dup2(target, save_fd) < 0 || dup2(fd, target) < 0) { close(fd); return 0; }
+    if (dup2(target, save_fd) < 0) {
+        close(fd);
+        return 0;
+    }
+    if (dup2(fd, target) < 0) {
+        close(fd);
+        close(save_fd);
+        return 0;
+    }
     *saved = save_fd;
     close(fd);
     return 1;
@@ -208,12 +216,26 @@ static int start_recursive(const char *name, int quiet, uint32_t depth) {
     if (depth >= SVC_DEPTH_MAX || !load_def(name, &def)) return 1;
     if (load_run(name, &run) && run.pid && process_info(run.pid, &info) && info.state != NEX_PROC_STATE_EXITED) return 0;
     if (!start_list(def.requires, 1, depth) || !start_list(def.after, 0, depth)) return 1;
-    if (!redirect_open(def.stdout_path, STDOUT_FILENO, &out_saved) ||
-        !redirect_open(def.stderr_path, STDERR_FILENO, &err_saved)) return 1;
-    rc = spawn(def.command, SYS_SPAWN_ELF, SYS_SPAWN_BACKGROUND);
+    if (!redirect_open(def.stdout_path, STDOUT_FILENO, &out_saved)) {
+        return 1;
+    }
+    if (!redirect_open(def.stderr_path, STDERR_FILENO, &err_saved)) {
+        redirect_restore(STDOUT_FILENO, out_saved);
+        return 1;
+    }
+    rc = spawn(def.command, SYS_SPAWN_AUTO, SYS_SPAWN_BACKGROUND);
     redirect_restore(STDERR_FILENO, err_saved);
     redirect_restore(STDOUT_FILENO, out_saved);
-    if (rc < 0) return 1;
+    if (rc < 0) {
+        if (!quiet) {
+            dprintf(STDERR_FILENO,
+                    "service: start %s failed rc=%d command=%s\n",
+                    name,
+                    rc,
+                    def.command);
+        }
+        return 1;
+    }
     if (!load_run(name, &run)) memset(&run, 0, sizeof(run));
     run.pid = (uint32_t)rc;
     run.start_tick = ticks();

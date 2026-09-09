@@ -18,8 +18,8 @@ $(I386_BUILD)/isr.o: $(ROOT)/arch/x86/i386/isr.asm | $(I386_BUILD)
 
 $(I386_BUILD)/platform_boot.o: $(ROOT)/arch/x86/i386/platform_boot.c $(ROOT)/arch/x86/i386/gdt.h \
 		$(ROOT)/arch/x86/i386/idt.h $(ROOT)/arch/x86/i386/keyboard.h \
-		$(ROOT)/arch/x86/i386/paging.h $(ROOT)/arch/x86/common/pic.h \
-		$(ROOT)/arch/x86/i386/pmm.h $(ROOT)/arch/x86/i386/scheduler.h \
+		$(ROOT)/arch/x86/i386/mm/paging.h $(ROOT)/arch/x86/common/pic.h \
+		$(ROOT)/arch/x86/i386/mm/pmm.h $(ROOT)/arch/x86/i386/scheduler/scheduler.h \
 		$(ROOT)/kernel/public/core/early_boot.h \
 		$(BOOTX_DIR)/include/bootx.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
@@ -50,129 +50,121 @@ $(I386_BUILD)/arch_ops.o: $(ROOT)/arch/x86/common/arch_ops.c \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/paging.o: $(ROOT)/arch/x86/i386/paging.c \
-		$(ROOT)/arch/x86/i386/paging.h $(ROOT)/arch/x86/i386/pmm.h | $(I386_BUILD)
+$(I386_BUILD)/paging.o: $(ROOT)/arch/x86/i386/mm/paging.c \
+		$(ROOT)/arch/x86/i386/mm/paging.h $(ROOT)/arch/x86/i386/mm/pmm.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/pmm.o: $(ROOT)/arch/x86/i386/pmm.c \
-		$(ROOT)/arch/x86/i386/pmm.h $(ROOT)/arch/x86/i386/paging.h \
+$(I386_BUILD)/pmm.o: $(ROOT)/arch/x86/i386/mm/pmm.c \
+		$(ROOT)/arch/x86/i386/mm/pmm.h $(ROOT)/arch/x86/i386/mm/paging.h \
 		$(BOOTX_DIR)/include/bootx.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 \
 		-I$(BOOTX_DIR)/include -c $< -o $@
 
-$(I386_BUILD)/vmm_i386.o: $(ROOT)/arch/x86/i386/vmm.c \
-		$(ROOT)/arch/x86/i386/paging.h $(ROOT)/kernel/public/mem/vmm.h | $(I386_BUILD)
+$(I386_BUILD)/vmm_i386.o: $(ROOT)/arch/x86/i386/mm/vmm.c \
+		$(ROOT)/arch/x86/i386/mm/paging.h $(ROOT)/kernel/public/mem/vmm.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/scheduler.o: $(ROOT)/arch/x86/i386/scheduler.c \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h $(ROOT)/arch/x86/i386/idt.h \
-		$(ROOT)/arch/x86/i386/gdt.h $(ROOT)/arch/x86/i386/paging.h \
+$(I386_BUILD)/scheduler.o: $(ROOT)/arch/x86/i386/scheduler/scheduler.c \
+		$(ROOT)/arch/x86/i386/scheduler/internal.h $(ROOT)/arch/x86/i386/idt.h \
+		$(ROOT)/arch/x86/i386/gdt.h $(ROOT)/arch/x86/i386/mm/paging.h \
 		$(ROOT)/kernel/internal/proc/process_types_internal.h \
 		$(ROOT)/kernel/internal/proc/process_internal_base.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/scheduler_fpu.o: $(ROOT)/arch/x86/i386/scheduler_fpu.c \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h | $(I386_BUILD)
+$(I386_BUILD)/scheduler_fpu.o: $(ROOT)/arch/x86/i386/scheduler/fpu.c \
+		$(ROOT)/arch/x86/i386/scheduler/internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/scheduler_backend.o: $(ROOT)/arch/x86/i386/scheduler_backend.c \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h \
+$(I386_BUILD)/scheduler_backend.o: $(ROOT)/arch/x86/i386/scheduler/backend.c \
+		$(ROOT)/arch/x86/i386/scheduler/internal.h \
 		$(ROOT)/arch/x86/i386/context.h \
-		$(ROOT)/arch/x86/i386/paging.h | $(I386_BUILD)
+		$(ROOT)/arch/x86/i386/mm/paging.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/scheduler_file_ops.o: $(ROOT)/arch/x86/i386/scheduler_file_ops.c \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h \
-		$(ROOT)/kernel/public/proc/process_file_ops.h \
-		$(ROOT)/kernel/internal/fs/file_internal.h \
-		$(ROOT)/kernel/internal/fs/path_resolve_internal.h | $(I386_BUILD)
-	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
-
-$(I386_BUILD)/scheduler_mm_ops.o: $(ROOT)/arch/x86/i386/scheduler_mm_ops.c \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h \
-		$(ROOT)/arch/x86/i386/paging.h \
-		$(ROOT)/arch/x86/i386/pmm.h \
+$(I386_BUILD)/scheduler_mm_ops.o: $(ROOT)/arch/x86/i386/scheduler/mm_ops.c \
+		$(ROOT)/arch/x86/i386/scheduler/internal.h \
+		$(ROOT)/arch/x86/i386/mm/paging.h \
+		$(ROOT)/arch/x86/i386/mm/pmm.h \
 		$(ROOT)/kernel/public/proc/process_mm_ops.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/scheduler_process_ops.o: $(ROOT)/arch/x86/i386/scheduler_process_ops.c \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h \
-		$(ROOT)/arch/x86/i386/paging.h \
-		$(ROOT)/arch/x86/i386/pmm.h \
+$(I386_BUILD)/scheduler_process_ops.o: $(ROOT)/arch/x86/i386/scheduler/process_ops.c \
+		$(ROOT)/arch/x86/i386/scheduler/internal.h \
+		$(ROOT)/arch/x86/i386/mm/paging.h \
+		$(ROOT)/arch/x86/i386/mm/pmm.h \
 		$(ROOT)/kernel/public/proc/process_scheduler_ops.h \
 		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/scheduler_run_ops.o: $(ROOT)/arch/x86/i386/scheduler_run_ops.c \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h \
-		$(ROOT)/arch/x86/i386/paging.h \
+$(I386_BUILD)/scheduler_run_ops.o: $(ROOT)/arch/x86/i386/scheduler/run_ops.c \
+		$(ROOT)/arch/x86/i386/scheduler/internal.h \
+		$(ROOT)/arch/x86/i386/mm/paging.h \
 		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h \
 		$(ROOT)/kernel/internal/fs/file_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/scheduler_fault_ops.o: $(ROOT)/arch/x86/i386/scheduler_fault_ops.c \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h \
-		$(ROOT)/arch/x86/i386/paging.h \
-		$(ROOT)/arch/x86/i386/pmm.h \
+$(I386_BUILD)/scheduler_fault_ops.o: $(ROOT)/arch/x86/i386/scheduler/fault_ops.c \
+		$(ROOT)/arch/x86/i386/scheduler/internal.h \
+		$(ROOT)/arch/x86/i386/mm/paging.h \
+		$(ROOT)/arch/x86/i386/mm/pmm.h \
 		$(ROOT)/arch/x86/i386/user.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/scheduler_stats_i386.o: $(ROOT)/arch/x86/i386/scheduler_stats_i386.c \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h \
+$(I386_BUILD)/scheduler_stats_i386.o: $(ROOT)/arch/x86/i386/scheduler/stats.c \
+		$(ROOT)/arch/x86/i386/scheduler/internal.h \
 		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h \
 		$(ROOT)/kernel/public/proc/sched_policy.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/process32.o: $(ROOT)/arch/x86/i386/process32.c \
-		$(ROOT)/arch/x86/i386/process32.h \
+$(I386_BUILD)/process32.o: $(ROOT)/arch/x86/i386/process/process.c \
+		$(ROOT)/arch/x86/i386/process/process.h \
 		$(ROOT)/kernel/public/proc/process_user_backend.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/process32_user_backend.o: $(ROOT)/arch/x86/i386/process32_user_backend.c \
-		$(ROOT)/arch/x86/i386/process32.h \
-		$(ROOT)/arch/x86/i386/process32_internal.h \
-		$(ROOT)/arch/x86/i386/paging.h \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h \
+$(I386_BUILD)/process32_user_backend.o: $(ROOT)/arch/x86/i386/process/user_backend.c \
+		$(ROOT)/arch/x86/i386/process/process.h \
+		$(ROOT)/arch/x86/i386/process/internal.h \
+		$(ROOT)/arch/x86/i386/mm/paging.h \
+		$(ROOT)/arch/x86/i386/scheduler/internal.h \
 		$(ROOT)/kernel/public/proc/process_scheduler_ops.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/process32_exec.o: $(ROOT)/arch/x86/i386/process32_exec.c \
-		$(ROOT)/arch/x86/i386/process32_internal.h \
+$(I386_BUILD)/process32_exec.o: $(ROOT)/arch/x86/i386/process/exec.c \
+		$(ROOT)/arch/x86/i386/process/internal.h \
 		$(ROOT)/kernel/internal/proc/process_program_registry_internal.h \
 		$(ROOT)/kernel/public/proc/process.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/process32_elf_backend.o: $(ROOT)/arch/x86/i386/process32_elf_backend.c \
-		$(ROOT)/arch/x86/i386/process32_internal.h \
-		$(ROOT)/arch/x86/i386/paging.h \
+$(I386_BUILD)/process32_elf_backend.o: $(ROOT)/arch/x86/i386/process/elf_backend.c \
+		$(ROOT)/arch/x86/i386/process/internal.h \
+		$(ROOT)/arch/x86/i386/mm/paging.h \
 		$(ROOT)/arch/x86/i386/user.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
-$(I386_BUILD)/process32_address_space.o: $(ROOT)/arch/x86/i386/process32_address_space.c \
+$(I386_BUILD)/process32_address_space.o: $(ROOT)/arch/x86/i386/process/address_space.c \
 		$(ROOT)/kernel/internal/proc/process_internal_base.h \
 		$(ROOT)/kernel/internal/mem/address_space_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/process_current_i386.o: $(ROOT)/arch/x86/i386/process_current_i386.c \
-		$(ROOT)/arch/x86/i386/process32.h \
-		$(ROOT)/arch/x86/i386/scheduler_internal.h \
+$(I386_BUILD)/process_current_i386.o: $(ROOT)/arch/x86/i386/process/current.c \
+		$(ROOT)/arch/x86/i386/process/process.h \
+		$(ROOT)/arch/x86/i386/scheduler/internal.h \
 		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
@@ -183,18 +175,18 @@ $(I386_BUILD)/context.o: $(ROOT)/arch/x86/i386/context.c \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/process_hooks.o: $(ROOT)/arch/x86/i386/process_hooks.c | $(I386_BUILD)
+$(I386_BUILD)/process_hooks.o: $(ROOT)/arch/x86/i386/process/hooks.c | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
 $(I386_BUILD)/user.o: $(ROOT)/arch/x86/i386/user.c \
-		$(ROOT)/arch/x86/i386/user.h $(ROOT)/arch/x86/i386/paging.h \
-		$(ROOT)/arch/x86/i386/pmm.h $(ROOT)/fs/early_vfs.h | $(I386_BUILD)
+		$(ROOT)/arch/x86/i386/user.h $(ROOT)/arch/x86/i386/mm/paging.h \
+		$(ROOT)/arch/x86/i386/mm/pmm.h $(ROOT)/fs/early_vfs.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/i386_ops.o: $(ROOT)/arch/x86/i386/ops.c \
-		$(ROOT)/arch/x86/i386/idt.h $(ROOT)/arch/x86/i386/paging.h \
+		$(ROOT)/arch/x86/i386/idt.h $(ROOT)/arch/x86/i386/mm/paging.h \
 		$(ROOT)/kernel/public/arch/arch_ops.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
@@ -322,30 +314,90 @@ $(I386_BUILD)/system_query.o: $(ROOT)/kernel/core/system_query.c \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/i386_shared_services.o: $(ROOT)/kernel/core/i386_shared_services.c \
-		$(ROOT)/kernel/internal/core/tty_internal.h $(ROOT)/fs/vfs_internal.h \
-		$(ROOT)/fs/fat32.h $(ROOT)/block/blockdev.h \
-		$(ROOT)/drivers/input/keyboard.h $(ROOT)/arch/x86/i386/keyboard.h | $(I386_BUILD)
+$(I386_BUILD)/system_power.o: $(ROOT)/kernel/core/system_power.c \
+		$(ROOT)/kernel/internal/core/system_power_internal.h \
+		$(ROOT)/drivers/bus/acpi.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/i386_smoke_services.o: $(ROOT)/kernel/core/i386_smoke_services.c \
-		$(ROOT)/kernel/internal/core/i386_shared_services_internal.h \
+$(I386_BUILD)/shared_services.o: $(ROOT)/arch/x86/i386/services/shared.c \
+		$(ROOT)/kernel/internal/core/tty_internal.h $(ROOT)/fs/vfs_internal.h \
+		$(ROOT)/fs/fat32.h $(ROOT)/block/blockdev.h \
+		$(ROOT)/drivers/input/keyboard.h $(ROOT)/kernel/public/mem/pmm.h \
+		$(ROOT)/kernel/public/proc/process_scheduler_ops.h \
+		$(ROOT)/kernel/public/proc/process_user_backend.h \
+		$(ROOT)/arch/x86/i386/services/shared_services.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/boot_flags.o: $(ROOT)/arch/x86/i386/services/boot_flags.c \
+		$(ROOT)/arch/x86/i386/services/shared_services.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/boot_user_services.o: $(ROOT)/arch/x86/i386/services/boot_user.c \
+		$(ROOT)/arch/x86/i386/services/shared_services.h \
+		$(ROOT)/kernel/public/proc/boot_user_init.h \
+		$(ROOT)/kernel/public/proc/process.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/command_services.o: $(ROOT)/arch/x86/i386/services/command.c \
+		$(ROOT)/arch/x86/i386/services/shared_services.h \
+		$(ROOT)/kernel/public/proc/boot_user_init.h \
+		$(ROOT)/kernel/public/proc/process_scheduler_ops.h \
+		$(ROOT)/fs/vfs_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/driver_services.o: $(ROOT)/arch/x86/i386/services/driver.c \
+		$(ROOT)/arch/x86/i386/services/shared_services.h \
+		$(ROOT)/kernel/public/driver/driver.h \
+		$(ROOT)/fs/vfs.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/input_services.o: $(ROOT)/arch/x86/i386/services/input.c \
+		$(ROOT)/arch/x86/i386/services/shared_services.h \
+		$(ROOT)/kernel/public/core/tty.h \
+		$(ROOT)/kernel/public/proc/process_scheduler_ops.h \
+		$(ROOT)/drivers/input/keyboard.h \
+		$(ROOT)/hal/hal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/console_loop.o: $(ROOT)/arch/x86/i386/services/console_loop.c \
+		$(ROOT)/arch/x86/i386/services/shared_services.h \
+		$(ROOT)/kernel/internal/core/tty_internal.h \
+		$(ROOT)/kernel/public/core/tty.h \
+		$(ROOT)/drivers/input/keyboard.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/smoke_services.o: $(ROOT)/arch/x86/i386/services/smoke.c \
+		$(ROOT)/arch/x86/i386/services/shared_services.h \
 		$(ROOT)/kernel/public/proc/boot_user_init.h \
 		$(ROOT)/block/blockdev.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/i386_tty_selftest.o: $(ROOT)/kernel/core/i386_tty_selftest.c \
-		$(ROOT)/kernel/internal/core/i386_shared_services_internal.h \
+$(I386_BUILD)/tty_selftest.o: $(ROOT)/arch/x86/i386/services/tty_selftest.c \
+		$(ROOT)/arch/x86/i386/services/shared_services.h \
 		$(ROOT)/kernel/public/core/tty.h \
-		$(ROOT)/arch/x86/i386/keyboard.h | $(I386_BUILD)
+		$(ROOT)/hal/hal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/syscall_compat32.o: $(ROOT)/kernel/sys/syscall_compat32.c \
-		$(ROOT)/kernel/public/sys/syscall_compat32.h \
+$(I386_BUILD)/compat32_core.o: $(ROOT)/arch/x86/i386/syscall/compat32.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32.h \
 		$(ROOT)/kernel/public/arch/arch_ops.h $(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_copy_ops.o: $(ROOT)/arch/x86/i386/syscall/compat32_copy_ops.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/arch/arch_ops.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
@@ -357,61 +409,161 @@ $(I386_BUILD)/syscall_common_request_core.o: $(ROOT)/kernel/sys/syscall_common_r
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/syscall_i386_request_adapter.o: $(ROOT)/kernel/sys/syscall_i386_request_adapter.c \
-		$(ROOT)/kernel/public/sys/syscall_compat32.h \
-		$(ROOT)/kernel/public/sys/syscall_i386.h \
+$(I386_BUILD)/compat32_request_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_request_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32.h \
 		$(ROOT)/kernel/public/sys/syscall_request.h \
 		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/syscall_i386_vm_adapter.o: $(ROOT)/kernel/sys/syscall_i386_vm_adapter.c \
-		$(ROOT)/kernel/internal/sys/syscall_compat32_internal.h \
-		$(ROOT)/kernel/public/sys/syscall_i386.h \
-		$(ROOT)/kernel/public/sys/syscall_request.h \
-		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
-	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
-
-$(I386_BUILD)/syscall_i386_job_adapter.o: $(ROOT)/kernel/sys/syscall_i386_job_adapter.c \
-		$(ROOT)/kernel/internal/sys/syscall_compat32_internal.h \
-		$(ROOT)/kernel/public/sys/syscall_i386.h \
-		$(ROOT)/kernel/public/sys/syscall_request.h \
-		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
-	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
-
-$(I386_BUILD)/syscall_i386_mem_ipc_adapter.o: $(ROOT)/kernel/sys/syscall_i386_mem_ipc_adapter.c \
-		$(ROOT)/kernel/internal/sys/syscall_compat32_internal.h \
-		$(ROOT)/kernel/public/sys/syscall_i386.h \
-		$(ROOT)/kernel/public/sys/syscall_request.h \
-		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
-	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
-
-$(I386_BUILD)/syscall_i386_device_ui_adapter.o: $(ROOT)/kernel/sys/syscall_i386_device_ui_adapter.c \
-		$(ROOT)/kernel/internal/sys/syscall_compat32_internal.h \
+$(I386_BUILD)/compat32_file_ops.o: $(ROOT)/arch/x86/i386/syscall/compat32_file_ops.c \
+		$(ROOT)/kernel/internal/core/tty_internal.h \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
 		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
-		$(ROOT)/kernel/public/sys/syscall_i386.h \
+		$(ROOT)/kernel/public/arch/arch_ops.h \
 		$(ROOT)/kernel/public/sys/syscall_request.h \
 		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/syscall_compat32_query.o: $(ROOT)/kernel/sys/syscall_compat32_query.c \
-		$(ROOT)/kernel/public/sys/syscall_compat32.h \
-		$(ROOT)/kernel/public/arch/arch_ops.h $(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+$(I386_BUILD)/compat32_io_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_io_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/syscall_compat32_fs.o: $(ROOT)/kernel/sys/syscall_compat32_fs.c \
-		$(ROOT)/kernel/public/sys/syscall_compat32.h \
-		$(ROOT)/kernel/public/arch/arch_ops.h $(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+$(I386_BUILD)/compat32_fs_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_fs_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/syscall_compat32_proc.o: $(ROOT)/kernel/sys/syscall_compat32_proc.c \
-		$(ROOT)/kernel/public/sys/syscall_compat32.h \
+$(I386_BUILD)/compat32_mount_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_mount_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_proc_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_proc_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/kernel/public/proc/process_user_backend.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_vm_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_vm_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_vm_page_ops.o: $(ROOT)/arch/x86/i386/syscall/compat32_vm_page_ops.c \
+		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_job_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_job_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_mem_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_mem_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_ipc_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_ipc_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_query_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_query_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_gfx_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_gfx_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_audio_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_audio_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_audio_fd_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_audio_fd_adapter.c \
+		$(ROOT)/kernel/internal/proc/process_types_internal.h \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/proc/process.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/drivers/audio/audio.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_block_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_block_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_net_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_net_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_ui_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_ui_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_misc_adapter.o: $(ROOT)/arch/x86/i386/syscall/compat32_misc_adapter.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32_internal.h \
+		$(ROOT)/kernel/internal/sys/syscall_common_request_core.h \
+		$(ROOT)/kernel/public/sys/syscall_request.h \
+		$(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/compat32_proc.o: $(ROOT)/arch/x86/i386/syscall/compat32_proc.c \
+		$(ROOT)/arch/x86/i386/syscall/compat32.h \
 		$(ROOT)/kernel/public/arch/arch_ops.h \
 		$(ROOT)/kernel/public/proc/process.h $(ROOT)/abi/syscall_abi.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
@@ -427,6 +579,18 @@ $(I386_BUILD)/boot_user_init.o: $(ROOT)/kernel/proc/boot_user_init.c \
 $(I386_BUILD)/process_model.o: $(ROOT)/kernel/proc/process_model.c \
 		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h \
 		$(ROOT)/kernel/internal/proc/process_types_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/process_cap_policy.o: $(ROOT)/kernel/proc/process_cap_policy.c \
+		$(ROOT)/kernel/public/proc/process.h \
+		$(ROOT)/fs/vfs_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/process_mm_query.o: $(ROOT)/kernel/proc/process_mm_query.c \
+		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h \
+		$(ROOT)/kernel/internal/mem/address_space_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
@@ -453,11 +617,6 @@ $(I386_BUILD)/process_mm_ops.o: $(ROOT)/kernel/proc/process_mm_ops.c \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/process_file_ops.o: $(ROOT)/kernel/proc/process_file_ops.c \
-		$(ROOT)/kernel/public/proc/process_file_ops.h | $(I386_BUILD)
-	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
-
 $(I386_BUILD)/address_space_core.o: $(ROOT)/kernel/mem/address_space_core.c \
 		$(ROOT)/kernel/internal/mem/address_space_internal.h \
 		$(ROOT)/kernel/public/mem/vmm.h $(ROOT)/kernel/public/mem/pmm.h | $(I386_BUILD)
@@ -480,8 +639,10 @@ $(I386_BUILD)/process_scheduler_ops.o: $(ROOT)/kernel/sched/process_scheduler_op
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/sched_policy.o: $(ROOT)/kernel/sched/sched_policy.c \
-		$(ROOT)/kernel/public/proc/sched_policy.h | $(I386_BUILD)
+$(I386_BUILD)/sched_policy.o: $(ROOT)/arch/x86/i386/scheduler/policy.c \
+		$(ROOT)/kernel/public/proc/sched_policy.h \
+		$(ROOT)/kernel/internal/proc/process_types_internal.h \
+		$(ROOT)/kernel/public/proc/runqueue.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
@@ -502,16 +663,19 @@ $(I386_BUILD)/driver.o: $(ROOT)/kernel/driver/driver.c \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/driver_i386_services.o: $(ROOT)/kernel/driver/driver_i386_services.c \
+$(I386_BUILD)/driver_elf32_services.o: $(ROOT)/arch/x86/i386/driver/services.c \
 		$(ROOT)/kernel/public/driver/driver.h \
 		$(ROOT)/kernel/public/driver/driver_module.h \
-		$(ROOT)/kernel/internal/driver/driver_i386_legacy_internal.h \
+		$(ROOT)/arch/x86/i386/driver/internal.h \
 		$(ROOT)/kernel/internal/driver/driver_loader_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/driver_i386_legacy.o: $(ROOT)/kernel/driver/driver_i386_legacy.c \
+$(I386_BUILD)/driver_elf32_loader.o: $(ROOT)/arch/x86/i386/driver/elf_loader.c \
+		$(ROOT)/fs/vfs.h \
 		$(ROOT)/kernel/public/driver/driver.h \
+		$(ROOT)/kernel/public/driver/driver_module.h \
+		$(ROOT)/arch/x86/i386/driver/internal.h \
 		$(ROOT)/kernel/internal/driver/driver_loader_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
@@ -519,6 +683,31 @@ $(I386_BUILD)/driver_i386_legacy.o: $(ROOT)/kernel/driver/driver_i386_legacy.c \
 $(I386_BUILD)/path_resolve.o: $(ROOT)/kernel/fs/path_resolve.c \
 		$(ROOT)/kernel/internal/fs/path_resolve_internal.h \
 		$(ROOT)/kernel/public/proc/process.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/fs_service_root_query.o: \
+		$(ROOT)/kernel/fs/fs_service_root_query.c \
+		$(ROOT)/kernel/internal/fs/fs_service_root_query_internal.h \
+		$(ROOT)/fs/vfs.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/fs_service_path.o: $(ROOT)/kernel/fs/fs_service_path.c \
+		$(ROOT)/kernel/internal/fs/fs_service_path_internal.h \
+		$(ROOT)/kernel/internal/fs/file_internal.h \
+		$(ROOT)/kernel/internal/fs/file_pipe_backend.h \
+		$(ROOT)/kernel/internal/proc/process_types_internal.h \
+		$(ROOT)/fs/vfs.h $(ROOT)/fs/vfs_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/fs_service_fd.o: $(ROOT)/kernel/fs/fs_service_fd.c \
+		$(ROOT)/kernel/internal/fs/fs_service_fd_internal.h \
+		$(ROOT)/kernel/internal/fs/file_internal.h \
+		$(ROOT)/kernel/internal/fs/file_pipe_backend.h \
+		$(ROOT)/kernel/internal/proc/process_types_internal.h \
+		$(ROOT)/fs/vfs.h $(ROOT)/fs/vfs_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
@@ -598,6 +787,24 @@ $(I386_BUILD)/pci.o: $(ROOT)/drivers/bus/pci.c $(ROOT)/drivers/bus/pci.h \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
 
+$(I386_BUILD)/acpi.o: $(ROOT)/drivers/bus/acpi.c $(ROOT)/drivers/bus/acpi.h \
+		$(ROOT)/hal/hal.h $(ROOT)/kernel/public/core/kprint.h \
+		$(ROOT)/lib/string.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+
+$(I386_BUILD)/lapic.o: $(ROOT)/drivers/bus/lapic.c $(ROOT)/drivers/bus/lapic.h \
+		$(ROOT)/drivers/bus/acpi.h $(ROOT)/hal/hal.h \
+		$(ROOT)/kernel/public/core/kprint.h $(ROOT)/lib/string.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+
+$(I386_BUILD)/ioapic.o: $(ROOT)/drivers/bus/ioapic.c $(ROOT)/drivers/bus/ioapic.h \
+		$(ROOT)/drivers/bus/acpi.h $(ROOT)/hal/hal.h \
+		$(ROOT)/kernel/public/core/kprint.h $(ROOT)/lib/string.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+
 $(I386_BUILD)/cmos.o: $(ROOT)/drivers/rtc/cmos.c $(ROOT)/drivers/rtc/cmos.h \
 		$(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
@@ -643,7 +850,7 @@ $(I386_BUILD)/ata.o: $(ROOT)/drivers/storage/ata.c $(ROOT)/drivers/storage/ata.h
 
 $(I386_BUILD)/ahci.o: $(ROOT)/drivers/storage/ahci.c $(ROOT)/drivers/storage/ahci.h \
 		$(ROOT)/drivers/bus/pci.h $(ROOT)/block/blockdev.h $(ROOT)/hal/hal.h \
-		$(ROOT)/arch/x86/i386/paging.h $(ROOT)/arch/x86/i386/pmm.h | $(I386_BUILD)
+		$(ROOT)/kernel/public/mem/pmm.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
 
@@ -729,12 +936,16 @@ $(I386_BUILD)/vfs_proc_actions.o: $(ROOT)/fs/vfs_proc_actions.c \
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
 $(I386_BUILD)/hal_i386.o: $(ROOT)/hal/i386/platform.c $(ROOT)/hal/hal.h \
-		$(ROOT)/arch/x86/i386/paging.h $(ROOT)/arch/x86/common/pic.h \
+		$(ROOT)/arch/x86/i386/mm/paging.h $(ROOT)/arch/x86/common/pic.h \
 		$(ROOT)/arch/x86/i386/keyboard.h $(ROOT)/arch/x86/i386/gdt.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
 $(I386_BUILD)/io.o: $(ROOT)/arch/x86/common/io.c $(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+
+$(I386_BUILD)/parse.o: $(ROOT)/lib/parse.c $(ROOT)/lib/parse.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
 
@@ -858,14 +1069,22 @@ $(I386_BUILD)/user_test32_libc.o: $(ROOT)/user/i386/test32_libc.c \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
+$(I386_BUILD)/user_test32_helpers.o: $(ROOT)/user/i386/test32_helpers.c \
+		$(ROOT)/user/i386/test32_helpers.h \
+		$(ROOT)/user/libc32/include/nlibc.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
 $(I386_BUILD)/user_test32_mm.o: $(ROOT)/user/i386/test32_mm.c \
 		$(ROOT)/user/i386/test32_mm.h \
+		$(ROOT)/user/i386/test32_helpers.h \
 		$(ROOT)/user/libc32/include/nlibc.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
 $(I386_BUILD)/user_test32_proc.o: $(ROOT)/user/i386/test32_proc.c \
 		$(ROOT)/user/i386/test32_proc.h \
+		$(ROOT)/user/i386/test32_helpers.h \
 		$(ROOT)/user/libc32/include/nlibc.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
@@ -888,15 +1107,23 @@ $(I386_BUILD)/user_test32_sys.o: $(ROOT)/user/i386/test32_sys.c \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
+$(I386_BUILD)/user_test32_sec.o: $(ROOT)/user/i386/test32_sec.c \
+		$(ROOT)/user/i386/test32_sec.h \
+		$(ROOT)/user/libc32/include/nlibc.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
 $(I386_TEST_USER): $(I386_CRT0) $(I386_BUILD)/user_test32.o \
 		$(I386_BUILD)/user_test32_fs.o \
 		$(I386_BUILD)/user_test32_ipc.o \
 		$(I386_BUILD)/user_test32_libc.o \
+		$(I386_BUILD)/user_test32_helpers.o \
 		$(I386_BUILD)/user_test32_mm.o \
 		$(I386_BUILD)/user_test32_proc.o \
 		$(I386_BUILD)/user_test32_pseudo.o \
 		$(I386_BUILD)/user_test32_query.o \
 		$(I386_BUILD)/user_test32_sys.o \
+		$(I386_BUILD)/user_test32_sec.o \
 		$(I386_NLIBC) $(ROOT)/user/i386/test32.ld
 	$(call log_cmd,LD32,$@)
 	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
@@ -904,11 +1131,13 @@ $(I386_TEST_USER): $(I386_CRT0) $(I386_BUILD)/user_test32.o \
 		$(I386_BUILD)/user_test32_fs.o \
 		$(I386_BUILD)/user_test32_ipc.o \
 		$(I386_BUILD)/user_test32_libc.o \
+		$(I386_BUILD)/user_test32_helpers.o \
 		$(I386_BUILD)/user_test32_mm.o \
 		$(I386_BUILD)/user_test32_proc.o \
 		$(I386_BUILD)/user_test32_pseudo.o \
 		$(I386_BUILD)/user_test32_query.o \
-		$(I386_BUILD)/user_test32_sys.o $(I386_NLIBC)
+		$(I386_BUILD)/user_test32_sys.o \
+		$(I386_BUILD)/user_test32_sec.o $(I386_NLIBC)
 
 $(I386_BUILD)/user_app32.o: $(ROOT)/user/i386/app32.c \
 		$(ROOT)/user/libc32/include/nlibc.h | $(I386_BUILD)
@@ -926,59 +1155,160 @@ $(I386_BUILD)/user_nexbox_lite.o: $(ROOT)/user/i386/nexbox_lite.c \
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/ush32_main.o: $(ROOT)/user/apps/elf/ush.c \
-		$(ROOT)/user/apps/elf/ush_shared.h | $(I386_BUILD)
+$(I386_BUILD)/ush32_main.o: $(ROOT)/user/apps/elf/ush/ush.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/ush32_editor.o: $(ROOT)/user/apps/elf/ush_editor.c \
-		$(ROOT)/user/apps/elf/ush_shared.h | $(I386_BUILD)
+$(I386_BUILD)/ush32_editor.o: $(ROOT)/user/apps/elf/ush/ush_editor.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/ush32_vars.o: $(ROOT)/user/apps/elf/ush_vars.c \
-		$(ROOT)/user/apps/elf/ush_shared.h | $(I386_BUILD)
+$(I386_BUILD)/ush32_script_runner.o: $(ROOT)/user/apps/elf/ush/ush_script_runner.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/ush32_exec.o: $(ROOT)/user/apps/elf/ush_exec.c \
-		$(ROOT)/user/apps/elf/ush_shared.h \
-		$(ROOT)/user/apps/elf/ush_exec_internal.h | $(I386_BUILD)
+$(I386_BUILD)/ush32_startup.o: $(ROOT)/user/apps/elf/ush/ush_startup.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/ush32_exec_stdio.o: $(ROOT)/user/apps/elf/ush_exec_stdio.c \
-		$(ROOT)/user/apps/elf/ush_shared.h \
-		$(ROOT)/user/apps/elf/ush_exec_internal.h | $(I386_BUILD)
+$(I386_BUILD)/ush32_vars.o: $(ROOT)/user/apps/elf/ush/ush_vars.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_vars_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/ush32_exec_dispatch.o: $(ROOT)/user/apps/elf/ush_exec_dispatch.c \
-		$(ROOT)/user/apps/elf/ush_shared.h \
-		$(ROOT)/user/apps/elf/ush_exec_internal.h | $(I386_BUILD)
+$(I386_BUILD)/ush32_vars_alias.o: $(ROOT)/user/apps/elf/ush/ush_vars_alias.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_vars_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/ush32_exec_external.o: $(ROOT)/user/apps/elf/ush_exec_external.c \
-		$(ROOT)/user/apps/elf/ush_shared.h \
-		$(ROOT)/user/apps/elf/ush_exec_internal.h | $(I386_BUILD)
+$(I386_BUILD)/ush32_vars_expand.o: $(ROOT)/user/apps/elf/ush/ush_vars_expand.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_vars_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/ush32_exec_pipeline.o: $(ROOT)/user/apps/elf/ush_exec_pipeline.c \
-		$(ROOT)/user/apps/elf/ush_shared.h \
-		$(ROOT)/user/apps/elf/ush_exec_internal.h | $(I386_BUILD)
+$(I386_BUILD)/ush32_vars_function.o: $(ROOT)/user/apps/elf/ush/ush_vars_function.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_vars_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/ush32_exec_redir.o: $(ROOT)/user/apps/elf/ush_exec_redir.c \
-		$(ROOT)/user/apps/elf/ush_shared.h \
-		$(ROOT)/user/apps/elf/ush_exec_internal.h | $(I386_BUILD)
+$(I386_BUILD)/ush32_vars_script.o: $(ROOT)/user/apps/elf/ush/ush_vars_script.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_vars_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
-$(I386_BUILD)/ush32_parse.o: $(ROOT)/user/apps/elf/ush_parse.c \
-		$(ROOT)/user/apps/elf/ush_shared.h | $(I386_BUILD)
+$(I386_BUILD)/ush32_vars_store.o: $(ROOT)/user/apps/elf/ush/ush_vars_store.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_vars_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_vars_util.o: $(ROOT)/user/apps/elf/ush/ush_vars_util.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_vars_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec.o: $(ROOT)/user/apps/elf/ush/ush_exec.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_applets.o: $(ROOT)/user/apps/elf/ush/ush_exec_applets.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_builtin.o: $(ROOT)/user/apps/elf/ush/ush_exec_builtin.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_stdio.o: $(ROOT)/user/apps/elf/ush/ush_exec_stdio.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_util.o: $(ROOT)/user/apps/elf/ush/ush_exec_util.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_dispatch.o: $(ROOT)/user/apps/elf/ush/ush_exec_dispatch.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_external.o: $(ROOT)/user/apps/elf/ush/ush_exec_external.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_fs.o: $(ROOT)/user/apps/elf/ush/ush_exec_fs.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_media.o: $(ROOT)/user/apps/elf/ush/ush_exec_media.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_parse.o: $(ROOT)/user/apps/elf/ush/ush_exec_parse.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_pipeline.o: $(ROOT)/user/apps/elf/ush/ush_exec_pipeline.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_redir.o: $(ROOT)/user/apps/elf/ush/ush_exec_redir.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_resolve.o: $(ROOT)/user/apps/elf/ush/ush_exec_resolve.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_script.o: $(ROOT)/user/apps/elf/ush/ush_exec_script.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_exec_spawn.o: $(ROOT)/user/apps/elf/ush/ush_exec_spawn.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h \
+		$(ROOT)/user/apps/elf/ush/ush_exec_internal.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_BUILD)/ush32_parse.o: $(ROOT)/user/apps/elf/ush/ush_parse.c \
+		$(ROOT)/user/apps/elf/ush/ush_shared.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
 
@@ -1034,13 +1364,30 @@ I386_NEXBOX_SUBSET_OBJS := \
 I386_USH_OBJS := \
 	$(I386_BUILD)/ush32_main.o \
 	$(I386_BUILD)/ush32_editor.o \
+	$(I386_BUILD)/ush32_script_runner.o \
+	$(I386_BUILD)/ush32_startup.o \
 	$(I386_BUILD)/ush32_vars.o \
+	$(I386_BUILD)/ush32_vars_alias.o \
+	$(I386_BUILD)/ush32_vars_expand.o \
+	$(I386_BUILD)/ush32_vars_function.o \
+	$(I386_BUILD)/ush32_vars_script.o \
+	$(I386_BUILD)/ush32_vars_store.o \
+	$(I386_BUILD)/ush32_vars_util.o \
 	$(I386_BUILD)/ush32_exec.o \
+	$(I386_BUILD)/ush32_exec_applets.o \
+	$(I386_BUILD)/ush32_exec_builtin.o \
 	$(I386_BUILD)/ush32_exec_dispatch.o \
 	$(I386_BUILD)/ush32_exec_external.o \
+	$(I386_BUILD)/ush32_exec_fs.o \
+	$(I386_BUILD)/ush32_exec_media.o \
+	$(I386_BUILD)/ush32_exec_parse.o \
 	$(I386_BUILD)/ush32_exec_pipeline.o \
 	$(I386_BUILD)/ush32_exec_redir.o \
+	$(I386_BUILD)/ush32_exec_resolve.o \
+	$(I386_BUILD)/ush32_exec_script.o \
+	$(I386_BUILD)/ush32_exec_spawn.o \
 	$(I386_BUILD)/ush32_exec_stdio.o \
+	$(I386_BUILD)/ush32_exec_util.o \
 	$(I386_BUILD)/ush32_parse.o
 
 $(I386_NEXBOX_SUBSET_USER): $(I386_CRT0) $(I386_NEXBOX_SUBSET_OBJS) \

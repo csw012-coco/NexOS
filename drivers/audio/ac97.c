@@ -140,6 +140,11 @@ static int ac97_prepare_bdl_page(void) {
         return 0;
     }
     g_ac97_bdl = (struct ac97_bdl_entry *)hal_phys_direct_map(g_ac97_bdl_phys);
+    if (g_ac97_bdl == 0) {
+        (void)pmm_free_page(g_ac97_bdl_phys);
+        g_ac97_bdl_phys = 0u;
+        return 0;
+    }
     return g_ac97_bdl != 0;
 }
 
@@ -156,6 +161,7 @@ static int ac97_prepare_buffer_pages(uint32_t page_count) {
         }
         buffer = (uint8_t *)hal_phys_direct_map(phys);
         if (buffer == 0) {
+            (void)pmm_free_page(phys);
             return 0;
         }
         g_ac97_buffer_phys[g_ac97_buffer_count] = phys;

@@ -1,4 +1,5 @@
 #include "fs/vfs_internal.h"
+#include "kernel/public/core/kprint.h"
 
 static int64_t vfs_emit_dir_entry(struct vfs_dirent *entry,
                                   uint32_t *index_io,
@@ -147,9 +148,15 @@ int64_t vfs_write_to_nxfs(struct vfs *vfs,
                               buffer,
                               size,
                               &bytes_written) != 0) {
+        kprint("vfs: nxfs file write failed inode=%u off=%u size=%u\n",
+               node->aux_index,
+               *offset_io,
+               size);
         return -1;
     }
-    if (blockdev_flush(nxfs->bdev) != 0) {
+    if (nxfs_flush(nxfs) != 0) {
+        kprint("vfs: nxfs flush failed dev=%s\n",
+               nxfs->bdev != 0 && nxfs->bdev->name != 0 ? nxfs->bdev->name : "(null)");
         return -1;
     }
     *offset_io += bytes_written;

@@ -8,13 +8,13 @@
 #include "kernel/internal/core/device_poll_internal.h"
 #include "kernel/internal/core/kernel_init_internal.h"
 #include "kernel/internal/proc/process_internal_base.h"
+#include "kernel/internal/sys/syscall_common_request_core.h"
 #include "kernel/public/core/console.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/core/tty.h"
 #include "kernel/public/proc/process.h"
 #include "kernel/public/proc/job_control.h"
 #include "kernel/public/proc/sched_policy.h"
-#include "kernel/public/mem/vmm.h"
 
 extern void irq0_stub(void);
 extern void irq1_stub(void);
@@ -105,6 +105,29 @@ static void kernel_boot_trace_error_code(struct tty *shell_tty,
     if (*boot_trace_row + 1u < rows) {
         (*boot_trace_row)++;
     }
+}
+
+struct kernel_boot_trace_ctx {
+    struct tty *shell_tty;
+    uint16_t *boot_trace_row;
+};
+
+static void kernel_boot_trace_op_text(void *ctx, const char *text) {
+    struct kernel_boot_trace_ctx *trace_ctx = (struct kernel_boot_trace_ctx *)ctx;
+
+    if (trace_ctx == 0) {
+        return;
+    }
+    kernel_boot_trace(trace_ctx->shell_tty, trace_ctx->boot_trace_row, text);
+}
+
+static void kernel_boot_trace_op_hex64(void *ctx, const char *label, uint64_t value) {
+    struct kernel_boot_trace_ctx *trace_ctx = (struct kernel_boot_trace_ctx *)ctx;
+
+    if (trace_ctx == 0) {
+        return;
+    }
+    kernel_boot_trace_hex64(trace_ctx->shell_tty, trace_ctx->boot_trace_row, label, value);
 }
 
 static void kernel_copy_path_local(char *dst, const char *src, uint32_t dst_size) {
@@ -248,6 +271,7 @@ int kernel_try_run_init(struct vfs *vfs,
             kernel_copy_path_local(init_path, config.init_path, sizeof(init_path));
         }
     }
+    syscall_common_request_core_set_root_token(config.security_root_token);
     device_poll_set_mouse_cursor_enabled(config.mouse_cursor);
 
     if (config.ring3_smoke) {
@@ -305,96 +329,40 @@ int kernel_try_run_init(struct vfs *vfs,
     tty_set_cursor(shell_tty,
                    *boot_trace_row < console_rows() ? *boot_trace_row : (uint16_t)(console_rows() - 1u),
                    0);
-    kernel_boot_trace(shell_tty, boot_trace_row, "kernel: virtual tty shells");
-    kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty2 shell");
-    if (!job_run_background_with_pid(vfs, "/cmd/ush --tty /dev/tty2", 0, PROCESS_EXEC_AUTO, 0)) {
-        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty2 shell fail");
+    if (config.virtual_tty_shells) {
+        kernel_boot_trace(shell_tty,
+                          boot_trace_row,
+                          "kernel: virtual tty shells managed by service");
     } else {
-        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty2 shell ok");
-    }
-    kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty3 shell");
-    if (!job_run_background_with_pid(vfs, "/cmd/ush --tty /dev/tty3", 0, PROCESS_EXEC_AUTO, 0)) {
-        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty3 shell fail");
-    } else {
-        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: tty3 shell ok");
+        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: virtual tty shells skip");
     }
     if (config.serial_shell) {
-        kernel_boot_trace(shell_tty, boot_trace_row, "kernel: serial shell");
-        uart_set_console_input_enabled(0);
-        if (!job_run_background_with_pid(vfs, "/cmd/ush --tty /dev/ttyS0", 0, PROCESS_EXEC_AUTO, 0)) {
-            kernel_boot_trace(shell_tty, boot_trace_row, "kernel: serial shell fail");
-        }
+        kernel_boot_trace(shell_tty,
+                          boot_trace_row,
+                          "kernel: serial shell managed by service");
     }
+    kernel_boot_trace(shell_tty, boot_trace_row, "kernel: init starting");
+    kernel_boot_trace(shell_tty, boot_trace_row, init_path);
     started = process_exec(vfs, init_path, 0, PROCESS_EXEC_AUTO);
+    kernel_boot_trace(shell_tty, boot_trace_row, started
+                          ? "kernel: init complete"
+                          : "kernel: init returned fail");
     if (!started) {
         uint32_t error = process_last_error();
-        struct vmm_page_fault_trace trace;
-        struct vmm_page_clone_trace clone_trace;
-        uint64_t phys = 0;
-        uint64_t flags = 0;
-        uint64_t pml4e = 0;
-        uint64_t pdpte = 0;
-        uint64_t pde = 0;
-        uint64_t pte = 0;
+        struct kernel_boot_trace_ctx trace_ctx = {
+            .shell_tty = shell_tty,
+            .boot_trace_row = boot_trace_row
+        };
+        const struct hal_boot_trace_ops trace_ops = {
+            .text = kernel_boot_trace_op_text,
+            .hex64 = kernel_boot_trace_op_hex64
+        };
 
         kernel_boot_trace(shell_tty, boot_trace_row, "kernel: init exec failed");
         kernel_boot_trace(shell_tty, boot_trace_row, "kernel: init err code");
         kernel_boot_trace_error_code(shell_tty, boot_trace_row, error);
-        vmm_get_page_fault_trace(&trace);
-        vmm_get_page_clone_trace(&clone_trace);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: cur cr3", vmm_current_root());
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: cl src", clone_trace.source_cr3);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: cl dst", clone_trace.clone_cr3);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: cl s e0", clone_trace.source_pml4e0);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: cl s511", clone_trace.source_pml4e511);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: cl d e0", clone_trace.clone_pml4e0);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: cl d511", clone_trace.clone_pml4e511);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: cl fail v", clone_trace.fail_virt);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: cl fail p", clone_trace.fail_phys);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: cl fail s", clone_trace.fail_stage);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: sw req", trace.requested_cr3);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: sw act", trace.actual_cr3);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: sw rej", trace.reject_flags);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: sw rip", trace.current_rip);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: sw rsp", trace.current_rsp);
-        if (vmm_query_mapping_in_context(trace.requested_cr3, trace.current_rip, &phys, &flags)) {
-            kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rip phys", phys);
-            kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rip flg", flags);
-        } else {
-            kernel_boot_trace(shell_tty, boot_trace_row, "kernel: req rip unmapped");
-        }
-        (void)vmm_query_page_walk_in_context(trace.requested_cr3,
-                                             trace.current_rip,
-                                             &pml4e,
-                                             &pdpte,
-                                             &pde,
-                                             &pte);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rip pml4", pml4e);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rip pdpt", pdpte);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rip pde", pde);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rip pte", pte);
-        if (vmm_query_mapping_in_context(trace.requested_cr3, trace.current_rsp, &phys, &flags)) {
-            kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rsp phys", phys);
-            kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rsp flg", flags);
-        } else {
-            kernel_boot_trace(shell_tty, boot_trace_row, "kernel: req rsp unmapped");
-        }
-        pml4e = 0;
-        pdpte = 0;
-        pde = 0;
-        pte = 0;
-        (void)vmm_query_page_walk_in_context(trace.requested_cr3,
-                                             trace.current_rsp,
-                                             &pml4e,
-                                             &pdpte,
-                                             &pde,
-                                             &pte);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rsp pml4", pml4e);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rsp pdpt", pdpte);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rsp pde", pde);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: req rsp pte", pte);
+        hal_paging_log_init_exec_failure(&trace_ops, &trace_ctx);
         kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: init final err", error);
-        kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: init final swrej", trace.reject_flags);
         kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: init final estage", g_process_exec_last_stage);
         kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: init final probe", init_probe_open_ok);
         kernel_boot_trace_hex64(shell_tty, boot_trace_row, "kernel: init final pkind", init_probe_kind);

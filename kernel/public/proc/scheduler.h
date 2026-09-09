@@ -23,6 +23,9 @@ struct sched_trace_event {
 
 void sched_yield_current(struct process_session *session, const struct syscall_frame *frame);
 void sched_sleep_current(struct process_session *session, const struct syscall_frame *frame, uint32_t ticks);
+void sched_wait_current(struct process_session *session,
+                        const struct syscall_frame *frame,
+                        uint64_t result);
 void sched_preempt_current(struct process_session *session, const struct syscall_frame *frame);
 void sched_resume_current_syscall(struct process_session *session,
                                   const struct syscall_frame *frame,

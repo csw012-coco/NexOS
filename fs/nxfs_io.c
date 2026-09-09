@@ -1,6 +1,13 @@
 #include "fs/nxfs_internal.h"
 #include "lib/string.h"
 
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
+#define NXFS_IO_FAIL_TRACE(...) ((void)0)
+#else
+#include "kernel/public/core/kprint.h"
+#define NXFS_IO_FAIL_TRACE(...) kprint(__VA_ARGS__)
+#endif
+
 void nxfs_mem_copy(void *dest, const void *src, uint32_t size) {
     memcpy(dest, src, size);
 }
@@ -42,6 +49,47 @@ void nxfs_cache_update(struct nxfs_volume *vol, uint32_t block, const uint8_t *d
     if (cached != 0) {
         nxfs_mem_copy(cached, data, NXFS_BLOCK_SIZE);
     }
+}
+
+void nxfs_cache_invalidate_all(struct nxfs_volume *vol) {
+    if (vol == 0) {
+        return;
+    }
+    for (uint32_t i = 0u; i < NXFS_CACHE_BLOCKS; i++) {
+        vol->cache[i].valid = 0u;
+    }
+}
+
+void nxfs_mark_write_failed(struct nxfs_volume *vol) {
+    if (vol == 0) {
+        return;
+    }
+    vol->write_error = 1u;
+    vol->dirty = 1u;
+    nxfs_cache_invalidate_all(vol);
+}
+
+int nxfs_flush(struct nxfs_volume *vol) {
+    if (vol == 0 || !vol->mounted || vol->bdev == 0) {
+        return -1;
+    }
+    if (vol->write_error) {
+        return -1;
+    }
+    if (!vol->dirty) {
+        return 0;
+    }
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
+    vol->dirty = 0u;
+    return 0;
+#else
+    if (blockdev_flush(vol->bdev) != 0) {
+        nxfs_mark_write_failed(vol);
+        return -1;
+    }
+    vol->dirty = 0u;
+    return 0;
+#endif
 }
 
 int nxfs_read_block(struct nxfs_volume *vol, uint32_t block, void *buffer) {
@@ -100,9 +148,23 @@ int nxfs_write_block(struct nxfs_volume *vol, uint32_t block, const void *buffer
     if (vol == 0 || !vol->mounted || vol->bdev == 0 || buffer == 0) {
         return -1;
     }
-    if (blockdev_write(vol->bdev, vol->partition_lba + block, 1, buffer) != 0) {
+    if (vol->write_error) {
         return -1;
     }
+    {
+        int rc = blockdev_write(vol->bdev, vol->partition_lba + block, 1, buffer);
+
+        if (rc != 0) {
+            NXFS_IO_FAIL_TRACE("nxfs: block write failed dev=%s block=%u lba=%u rc=%d\n",
+                               vol->bdev->name != 0 ? vol->bdev->name : "(null)",
+	                               block,
+	                               vol->partition_lba + block,
+	                               rc);
+	            nxfs_mark_write_failed(vol);
+	            return -1;
+	        }
+	    }
+    vol->dirty = 1u;
     nxfs_cache_update(vol, block, (const uint8_t *)buffer);
     return 0;
 }

@@ -233,6 +233,37 @@ void write_err_usage(const char *verb, const char *suffix) {
     write_err_str(suffix);
 }
 
+int cmd_report_access_denied(const char *verb, const char *detail) {
+    if (verb != NULL && verb[0] != '\0') {
+        write_err_str(verb);
+        write_err_str(": ");
+    }
+    write_err_str("permission denied");
+    if (detail != NULL && detail[0] != '\0') {
+        write_err_str(": ");
+        write_err_str(detail);
+    }
+    write_err_str("\n");
+    return 1;
+}
+
+int cmd_report_syscall_failure(const char *verb, const char *detail, int rc) {
+    if (rc == -NEX_ERR_ACCES || rc == -NEX_ERR_PERM) {
+        return cmd_report_access_denied(verb, detail);
+    }
+    if (verb != NULL && verb[0] != '\0') {
+        write_err_str(verb);
+        write_err_str(": ");
+    }
+    write_err_str(detail != NULL && detail[0] != '\0'
+                      ? detail
+                      : "operation failed");
+    write_err_str(" rc=");
+    write_sdec((int32_t)rc);
+    write_err_str("\n");
+    return 1;
+}
+
 int cmd_open_resolved_path(const char *arg, uint32_t flags) {
     if (arg == NULL || arg[0] == '\0') {
         return -1;

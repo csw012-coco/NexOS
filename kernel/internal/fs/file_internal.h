@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "abi/syscall_abi.h"
 #include "kernel/public/fs/vfs_types.h"
 
 enum kernel_file_kind {
@@ -21,8 +22,8 @@ enum kernel_file_read_flags {
 
 enum kernel_file_io_result {
     KERNEL_FILE_IO_ERROR = -1,
-    KERNEL_FILE_IO_WOULD_BLOCK = -2,
-    KERNEL_FILE_IO_BROKEN_PIPE = -3
+    KERNEL_FILE_IO_WOULD_BLOCK = -NEX_ERR_AGAIN,
+    KERNEL_FILE_IO_BROKEN_PIPE = -NEX_ERR_PIPE
 };
 
 enum kernel_file_flags {
@@ -92,6 +93,9 @@ int file_clone(struct file *dst, const struct file *src);
 void file_discard(struct file *file);
 void file_set_offset(struct file *file, uint32_t offset);
 int file_is_active(const struct file *file);
+int file_can_read(const struct file *file);
+int file_can_write(const struct file *file);
+int file_can_readdir(const struct file *file);
 void *file_tty_private_handle(const struct file *file);
 int file_read_would_block(const struct file *file);
 int file_write_would_block(const struct file *file);

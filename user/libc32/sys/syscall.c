@@ -8,6 +8,11 @@
 #include <unistd.h>
 
 #include "abi/syscall_abi.h"
+#include "file.h"
+
+enum {
+    NLIBC32_WRITE_CHUNK_SIZE = 4096u
+};
 
 extern uint32_t __nlibc32_syscall4(uint32_t number,
                                    uint32_t arg0,
@@ -15,21 +20,72 @@ extern uint32_t __nlibc32_syscall4(uint32_t number,
                                    uint32_t arg2,
                                    uint32_t arg3);
 
-ssize_t write(int fd, const void *buffer, size_t size) {
-    ssize_t result;
+static int nlibc32_errno_or(int32_t result, int legacy_error) {
+    if (result == -1) {
+        return legacy_error;
+    }
+    return (int)result;
+}
 
-    do {
-        result = (ssize_t)__nlibc32_syscall4(
-            SYS_WRITE,
-            (uint32_t)fd,
-            (uint32_t)(uintptr_t)buffer,
-            (uint32_t)size,
-            0u);
-        if (result == -2) {
-            yield();
+static int nlibc32_status_to_zero_or(int32_t result, int legacy_error) {
+    if (result > 0) {
+        return 0;
+    }
+    if (result < 0) {
+        return nlibc32_errno_or(result, legacy_error);
+    }
+    return legacy_error;
+}
+
+static int nlibc32_create_open_legacy_error(uint32_t flags) {
+    if ((flags & SYS_IPC_CREATE) == 0u && (flags & SYS_SHM_CREATE) == 0u) {
+        return -NEX_ERR_NOENT;
+    }
+    if (((flags & SYS_IPC_CREATE) != 0u && (flags & SYS_IPC_EXCL) != 0u) ||
+        ((flags & SYS_SHM_CREATE) != 0u && (flags & SYS_SHM_EXCL) != 0u)) {
+        return -NEX_ERR_EXIST;
+    }
+    return -NEX_ERR_INVAL;
+}
+
+static int nlibc32_u32_is_errno(uint32_t result) {
+    return result >= (uint32_t)(int32_t)-4095;
+}
+
+ssize_t write(int fd, const void *buffer, size_t size) {
+    const uint8_t *ptr = (const uint8_t *)buffer;
+    size_t done = 0u;
+
+    if (buffer == 0 || size == 0u) {
+        return 0;
+    }
+    while (done < size) {
+        size_t remaining = size - done;
+        uint32_t chunk = remaining > NLIBC32_WRITE_CHUNK_SIZE ?
+                         NLIBC32_WRITE_CHUNK_SIZE :
+                         (uint32_t)remaining;
+        ssize_t result;
+
+        do {
+            result = (ssize_t)__nlibc32_syscall4(
+                SYS_WRITE,
+                (uint32_t)fd,
+                (uint32_t)(uintptr_t)(ptr + done),
+                chunk,
+                0u);
+            if (result == NEXOS_FILE_IO_WOULD_BLOCK) {
+                yield();
+            }
+        } while (result == NEXOS_FILE_IO_WOULD_BLOCK);
+        if (result < 0) {
+            return done != 0u ? (ssize_t)done : result;
         }
-    } while (result == -2);
-    return result;
+        if (result == 0) {
+            return (ssize_t)done;
+        }
+        done += (size_t)result;
+    }
+    return (ssize_t)done;
 }
 
 ssize_t write_stdout(const void *buffer, size_t size) {
@@ -74,11 +130,13 @@ ssize_t nex_read(int fd, void *buffer, size_t size, uint32_t flags) {
             (uint32_t)(uintptr_t)buffer,
             (uint32_t)size,
             flags);
-        if (result == -2 && (flags & SYS_READ_NONBLOCK) == 0u) {
+        if (result == NEXOS_FILE_IO_WOULD_BLOCK &&
+            (flags & SYS_READ_NONBLOCK) == 0u) {
             yield();
         }
-    } while (result == -2 && (flags & SYS_READ_NONBLOCK) == 0u);
-    if (result == -2) {
+    } while (result == NEXOS_FILE_IO_WOULD_BLOCK &&
+             (flags & SYS_READ_NONBLOCK) == 0u);
+    if (result == NEXOS_FILE_IO_WOULD_BLOCK) {
         return 0;
     }
     return result;
@@ -89,6 +147,21 @@ ssize_t read(int fd, void *buffer, size_t size) {
 }
 
 long lseek(int fd, long offset, int whence) {
+    if (offset < 0 && (whence == SYS_SEEK_CUR || whence == SYS_SEEK_END)) {
+        long base = (long)(int32_t)__nlibc32_syscall4(SYS_SEEK,
+                                                      (uint32_t)fd,
+                                                      0u,
+                                                      (uint32_t)whence,
+                                                      0u);
+        if (base < 0 || base + offset < 0) {
+            return -NEX_ERR_INVAL;
+        }
+        return (long)(int32_t)__nlibc32_syscall4(SYS_SEEK,
+                                                 (uint32_t)fd,
+                                                 (uint32_t)(base + offset),
+                                                 SYS_SEEK_SET,
+                                                 0u);
+    }
     return (long)(int32_t)__nlibc32_syscall4(SYS_SEEK,
                                              (uint32_t)fd,
                                              (uint32_t)offset,
@@ -184,6 +257,30 @@ int remove(const char *path) {
                                    0u);
 }
 
+int chmod(const char *path, uint32_t mode) {
+    return (int)__nlibc32_syscall4(SYS_CHMOD,
+                                   (uint32_t)(uintptr_t)path,
+                                   mode,
+                                   0u,
+                                   0u);
+}
+
+int chown(const char *path, uint32_t uid, uint32_t gid) {
+    return (int)__nlibc32_syscall4(SYS_CHOWN,
+                                   (uint32_t)(uintptr_t)path,
+                                   uid,
+                                   gid,
+                                   0u);
+}
+
+int setcap(const char *path, uint32_t caps) {
+    return (int)__nlibc32_syscall4(SYS_SETCAP,
+                                   (uint32_t)(uintptr_t)path,
+                                   caps,
+                                   0u,
+                                   0u);
+}
+
 int mount(const char *source, const char *target, uint32_t kind) {
     return (int)__nlibc32_syscall4(SYS_MOUNT,
                                    (uint32_t)(uintptr_t)source,
@@ -249,11 +346,11 @@ pid_t fork(void) {
 }
 
 pid_t spawn_ex(const char *command, uint32_t mode, uint32_t flags) {
-    return (pid_t)__nlibc32_syscall4(SYS_SPAWN,
-                                     (uint32_t)(uintptr_t)command,
-                                     mode,
-                                     flags,
-                                     0u);
+    return (pid_t)(int32_t)__nlibc32_syscall4(SYS_SPAWN,
+                                              (uint32_t)(uintptr_t)command,
+                                              mode,
+                                              flags,
+                                              0u);
 }
 
 pid_t spawn(const char *command, uint32_t mode, uint32_t flags) {
@@ -261,19 +358,23 @@ pid_t spawn(const char *command, uint32_t mode, uint32_t flags) {
 }
 
 int exec(const char *command) {
-    return (int)__nlibc32_syscall4(SYS_EXEC,
-                                   (uint32_t)(uintptr_t)command,
-                                   0u,
-                                   0u,
-                                   0u);
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_EXEC,
+                                                 (uint32_t)(uintptr_t)command,
+                                                 0u,
+                                                 0u,
+                                                 0u);
+
+    return (int)result;
 }
 
 int exec_replace(const char *command) {
-    return (int)__nlibc32_syscall4(SYS_EXEC_REPLACE,
-                                   (uint32_t)(uintptr_t)command,
-                                   0u,
-                                   0u,
-                                   0u);
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_EXEC_REPLACE,
+                                                 (uint32_t)(uintptr_t)command,
+                                                 0u,
+                                                 0u,
+                                                 0u);
+
+    return (int)result;
 }
 
 void *mmap(void *addr,
@@ -297,63 +398,80 @@ void *mmap(void *addr,
                                 0u,
                                 0u,
                                 0u);
-    return result == 0u ? MAP_FAILED : (void *)(uintptr_t)result;
+    return result == 0u || nlibc32_u32_is_errno(result) ?
+           MAP_FAILED :
+           (void *)(uintptr_t)result;
 }
 
 int munmap(void *addr, size_t length) {
-    return __nlibc32_syscall4(SYS_MUNMAP,
-                              (uint32_t)(uintptr_t)addr,
-                              (uint32_t)length,
-                              0u,
-                              0u) != 0u ? 0 : -1;
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_MUNMAP,
+                                                (uint32_t)(uintptr_t)addr,
+                                                (uint32_t)length,
+                                                0u,
+                                                0u);
+
+    return nlibc32_status_to_zero_or(result, -NEX_ERR_INVAL);
 }
 
 int mprotect(void *addr, size_t length, int prot) {
-    return __nlibc32_syscall4(SYS_MPROTECT,
-                              (uint32_t)(uintptr_t)addr,
-                              (uint32_t)length,
-                              (uint32_t)prot,
-                              0u) != 0u ? 0 : -1;
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_MPROTECT,
+                                                (uint32_t)(uintptr_t)addr,
+                                                (uint32_t)length,
+                                                (uint32_t)prot,
+                                                0u);
+
+    return nlibc32_status_to_zero_or(result, -NEX_ERR_INVAL);
 }
 
 int shm_open(const char *name, size_t size, int flags) {
-    return (int)__nlibc32_syscall4(SYS_SHM_OPEN,
-                                   (uint32_t)(uintptr_t)name,
-                                   (uint32_t)size,
-                                   (uint32_t)flags,
-                                   0u);
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_SHM_OPEN,
+                                                (uint32_t)(uintptr_t)name,
+                                                (uint32_t)size,
+                                                (uint32_t)flags,
+                                                0u);
+
+    return nlibc32_errno_or(result,
+                            nlibc32_create_open_legacy_error((uint32_t)flags));
 }
 
 int shm_unlink(const char *name) {
-    return __nlibc32_syscall4(SYS_SHM_UNLINK,
-                              (uint32_t)(uintptr_t)name,
-                              0u,
-                              0u,
-                              0u) != 0u ? 0 : -1;
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_SHM_UNLINK,
+                                                (uint32_t)(uintptr_t)name,
+                                                0u,
+                                                0u,
+                                                0u);
+
+    return nlibc32_status_to_zero_or(result, -NEX_ERR_NOENT);
 }
 
 mqd_t mq_open(const char *name, int flags) {
-    return (mqd_t)__nlibc32_syscall4(SYS_MQ_OPEN,
-                                     (uint32_t)(uintptr_t)name,
-                                     (uint32_t)flags,
-                                     0u,
-                                     0u);
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_MQ_OPEN,
+                                                (uint32_t)(uintptr_t)name,
+                                                (uint32_t)flags,
+                                                0u,
+                                                0u);
+
+    return (mqd_t)nlibc32_errno_or(
+        result,
+        nlibc32_create_open_legacy_error((uint32_t)flags));
 }
 
 int mq_unlink(const char *name) {
-    return __nlibc32_syscall4(SYS_MQ_UNLINK,
-                              (uint32_t)(uintptr_t)name,
-                              0u,
-                              0u,
-                              0u) != 0u ? 0 : -1;
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_MQ_UNLINK,
+                                                (uint32_t)(uintptr_t)name,
+                                                0u,
+                                                0u,
+                                                0u);
+
+    return nlibc32_status_to_zero_or(result, -NEX_ERR_NOENT);
 }
 
 int mq_send(mqd_t queue, const void *data, size_t size, int flags) {
     struct syscall_mq_buffer buffer;
     int32_t result;
 
-    if (data == 0 || size == 0u || size > SYS_MQ_MESSAGE_MAX) {
-        return -1;
+    if (queue <= 0 || data == 0 || size == 0u || size > SYS_MQ_MESSAGE_MAX) {
+        return -NEX_ERR_INVAL;
     }
     buffer.data_addr = (uint64_t)(uintptr_t)data;
     buffer.size = (uint32_t)size;
@@ -364,8 +482,14 @@ int mq_send(mqd_t queue, const void *data, size_t size, int flags) {
                                              (uint32_t)(uintptr_t)&buffer,
                                              0u,
                                              0u);
-        if (result != 0 || (flags & IPC_NONBLOCK) != 0) {
-            return result > 0 ? 0 : -1;
+        if (result > 0) {
+            return 0;
+        }
+        if (result < 0) {
+            return nlibc32_errno_or(result, -NEX_ERR_INVAL);
+        }
+        if ((flags & IPC_NONBLOCK) != 0) {
+            return -NEX_ERR_AGAIN;
         }
         yield();
     }
@@ -375,8 +499,8 @@ int mq_receive(mqd_t queue, void *data, size_t capacity, int flags) {
     struct syscall_mq_buffer buffer;
     int32_t result;
 
-    if (data == 0 || capacity == 0u) {
-        return -1;
+    if (queue <= 0 || data == 0 || capacity == 0u) {
+        return -NEX_ERR_INVAL;
     }
     buffer.data_addr = (uint64_t)(uintptr_t)data;
     buffer.size = (uint32_t)capacity;
@@ -387,40 +511,61 @@ int mq_receive(mqd_t queue, void *data, size_t capacity, int flags) {
                                              (uint32_t)(uintptr_t)&buffer,
                                              0u,
                                              0u);
-        if (result != 0 || (flags & IPC_NONBLOCK) != 0) {
-            return result > 0 ? (int)buffer.size : -1;
+        if (result > 0) {
+            return (int)buffer.size;
+        }
+        if (result < 0) {
+            return nlibc32_errno_or(result, -NEX_ERR_INVAL);
+        }
+        if ((flags & IPC_NONBLOCK) != 0) {
+            return -NEX_ERR_AGAIN;
         }
         yield();
     }
 }
 
 sem_t sem_open(const char *name, unsigned int initial_value, int flags) {
-    return (sem_t)__nlibc32_syscall4(SYS_SEM_OPEN,
-                                     (uint32_t)(uintptr_t)name,
-                                     (uint32_t)initial_value,
-                                     (uint32_t)flags,
-                                     0u);
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_SEM_OPEN,
+                                                (uint32_t)(uintptr_t)name,
+                                                (uint32_t)initial_value,
+                                                (uint32_t)flags,
+                                                0u);
+
+    return (sem_t)nlibc32_errno_or(
+        result,
+        nlibc32_create_open_legacy_error((uint32_t)flags));
 }
 
 int sem_unlink(const char *name) {
-    return __nlibc32_syscall4(SYS_SEM_UNLINK,
-                              (uint32_t)(uintptr_t)name,
-                              0u,
-                              0u,
-                              0u) != 0u ? 0 : -1;
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_SEM_UNLINK,
+                                                (uint32_t)(uintptr_t)name,
+                                                0u,
+                                                0u,
+                                                0u);
+
+    return nlibc32_status_to_zero_or(result, -NEX_ERR_NOENT);
 }
 
 int sem_trywait(sem_t sem) {
-    return (int32_t)__nlibc32_syscall4(SYS_SEM_TRYWAIT,
-                                       (uint32_t)sem,
-                                       0u,
-                                       0u,
-                                       0u) > 0 ? 0 : -1;
+    int32_t result;
+
+    if (sem <= 0) {
+        return -NEX_ERR_INVAL;
+    }
+    result = (int32_t)__nlibc32_syscall4(SYS_SEM_TRYWAIT,
+                                         (uint32_t)sem,
+                                         0u,
+                                         0u,
+                                         0u);
+    return nlibc32_status_to_zero_or(result, -NEX_ERR_AGAIN);
 }
 
 int sem_wait(sem_t sem) {
     int32_t result;
 
+    if (sem <= 0) {
+        return -NEX_ERR_INVAL;
+    }
     for (;;) {
         result = (int32_t)__nlibc32_syscall4(SYS_SEM_TRYWAIT,
                                              (uint32_t)sem,
@@ -428,7 +573,7 @@ int sem_wait(sem_t sem) {
                                              0u,
                                              0u);
         if (result < 0) {
-            return -1;
+            return nlibc32_errno_or(result, -NEX_ERR_INVAL);
         }
         if (result > 0) {
             return 0;
@@ -438,11 +583,17 @@ int sem_wait(sem_t sem) {
 }
 
 int sem_post(sem_t sem) {
-    return __nlibc32_syscall4(SYS_SEM_POST,
-                              (uint32_t)sem,
-                              0u,
-                              0u,
-                              0u) != 0u ? 0 : -1;
+    int32_t result;
+
+    if (sem <= 0) {
+        return -NEX_ERR_INVAL;
+    }
+    result = (int32_t)__nlibc32_syscall4(SYS_SEM_POST,
+                                         (uint32_t)sem,
+                                         0u,
+                                         0u,
+                                         0u);
+    return nlibc32_status_to_zero_or(result, -NEX_ERR_INVAL);
 }
 
 int sys_query(uint32_t kind, uint32_t arg0, uint32_t arg1, void *buffer) {
@@ -488,6 +639,10 @@ int part_query(uint32_t disk_index,
 }
 
 int mount_query(uint32_t index, struct syscall_mount_info *info) {
+    return sys_query(SYS_QUERY_MOUNT, index, SYS_QUERY_FLAG_NO_SPACE, info);
+}
+
+int mount_query_space(uint32_t index, struct syscall_mount_info *info) {
     return sys_query(SYS_QUERY_MOUNT, index, 0u, info);
 }
 
@@ -629,28 +784,43 @@ int proc_query(uint32_t kind, uint32_t index, struct syscall_process_info *info)
 }
 
 int waitpid(pid_t pid) {
-    return (int)__nlibc32_syscall4(SYS_WAIT,
-                                   (uint32_t)pid,
-                                   0u,
-                                   0u,
-                                   0u);
+    int32_t result;
+
+    do {
+        result = (int32_t)__nlibc32_syscall4(SYS_WAIT,
+                                             (uint32_t)pid,
+                                             0u,
+                                             0u,
+                                             0u);
+        if (result == NEXOS_FILE_IO_WOULD_BLOCK) {
+            yield();
+        }
+    } while (result == NEXOS_FILE_IO_WOULD_BLOCK);
+    return (int)result;
 }
 
 int wait(uint32_t pid, struct syscall_process_info *info) {
-    int status = (int)__nlibc32_syscall4(SYS_WAIT,
+    int status;
+
+    do {
+        status = (int)__nlibc32_syscall4(SYS_WAIT,
                                          pid,
                                          (uint32_t)(uintptr_t)info,
                                          0u,
                                          0u);
+        if (status == NEXOS_FILE_IO_WOULD_BLOCK) {
+            yield();
+        }
+    } while (status == NEXOS_FILE_IO_WOULD_BLOCK);
 
     if (status != 0 && info != 0) {
-        if (info->pid == 0u) {
+        if (status > 0 && info->pid == 0u) {
             memset(info, 0, sizeof(*info));
             info->pid = pid;
             info->exit_code = status;
         }
     }
-    return status != 0 ? 1 : 0;
+    return status > 0 ? 1 : status;
 }
 
 int kill(pid_t pid) {
@@ -669,8 +839,16 @@ int bg(uint32_t pid) {
     return (int)__nlibc32_syscall4(SYS_BG, pid, 0u, 0u, 0u);
 }
 
+int tty_claim(void) {
+    return (int)__nlibc32_syscall4(SYS_TTY_CLAIM, 0u, 0u, 0u, 0u);
+}
+
 int reboot(void) {
     return (int)__nlibc32_syscall4(SYS_REBOOT, 0u, 0u, 0u, 0u);
+}
+
+int poweroff(void) {
+    return (int)__nlibc32_syscall4(SYS_POWEROFF, 0u, 0u, 0u, 0u);
 }
 
 int capability_event(const struct syscall_capability_event *event) {
@@ -679,6 +857,110 @@ int capability_event(const struct syscall_capability_event *event) {
                                    0u,
                                    0u,
                                    0u);
+}
+
+int capability_get(uint32_t *caps) {
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_CAPABILITY,
+                                                SYS_CAP_OP_GET,
+                                                0u,
+                                                0u,
+                                                0u);
+
+    if (result < 0) {
+        return result;
+    }
+    if (caps != 0) {
+        *caps = (uint32_t)result;
+    }
+    return 0;
+}
+
+int capability_drop(uint32_t mask) {
+    return (int)__nlibc32_syscall4(SYS_CAPABILITY,
+                                   SYS_CAP_OP_DROP,
+                                   mask,
+                                   0u,
+                                   0u);
+}
+
+int capability_grant(uint32_t mask) {
+    return (int)__nlibc32_syscall4(SYS_CAPABILITY,
+                                   SYS_CAP_OP_GRANT,
+                                   mask,
+                                   0u,
+                                   0u);
+}
+
+int capability_auth_grant(uint32_t mask, const char *token) {
+    return (int)__nlibc32_syscall4(SYS_CAPABILITY,
+                                   SYS_CAP_OP_AUTH_GRANT,
+                                   mask,
+                                   (uint32_t)(uintptr_t)token,
+                                   0u);
+}
+
+int capability_spawn_get(uint32_t *caps) {
+    int32_t result = (int32_t)__nlibc32_syscall4(SYS_CAPABILITY,
+                                                SYS_CAP_OP_SPAWN_GET,
+                                                0u,
+                                                0u,
+                                                0u);
+
+    if (result < 0) {
+        return result;
+    }
+    if (caps != 0) {
+        *caps = (uint32_t)result;
+    }
+    return 0;
+}
+
+int capability_spawn_set(uint32_t mask) {
+    return (int)__nlibc32_syscall4(SYS_CAPABILITY,
+                                   SYS_CAP_OP_SPAWN_SET,
+                                   mask,
+                                   0u,
+                                   0u);
+}
+
+int capability_spawn_clear(void) {
+    return (int)__nlibc32_syscall4(SYS_CAPABILITY,
+                                   SYS_CAP_OP_SPAWN_CLEAR,
+                                   0u,
+                                   0u,
+                                   0u);
+}
+
+int identity_get(struct syscall_identity_info *info) {
+    return (int)__nlibc32_syscall4(SYS_IDENTITY,
+                                   SYS_IDENTITY_OP_GET,
+                                   0u,
+                                   0u,
+                                   (uint32_t)(uintptr_t)info);
+}
+
+int identity_drop_user(uint32_t uid) {
+    return (int)__nlibc32_syscall4(SYS_IDENTITY,
+                                   SYS_IDENTITY_OP_DROP_USER,
+                                   uid,
+                                   0u,
+                                   0u);
+}
+
+int identity_auth_root(const char *token) {
+    return (int)__nlibc32_syscall4(SYS_IDENTITY,
+                                   SYS_IDENTITY_OP_AUTH_ROOT,
+                                   0u,
+                                   (uint32_t)(uintptr_t)token,
+                                   0u);
+}
+
+int identity_push(void) {
+    return (int)__nlibc32_syscall4(SYS_IDENTITY, SYS_IDENTITY_OP_PUSH, 0, 0, 0);
+}
+
+int identity_pop(void) {
+    return (int)__nlibc32_syscall4(SYS_IDENTITY, SYS_IDENTITY_OP_POP, 0, 0, 0);
 }
 
 void clear(void) {
@@ -747,7 +1029,9 @@ static int gfx_command(uint32_t op, const struct syscall_gfx_command *cmd) {
 
         if (g_gfx_batch_count >= g_gfx_batch_capacity ||
             op == SYS_GFX_INFO || op == SYS_GFX_PRESENT || op == SYS_GFX_BATCH) {
-            return -1;
+            return g_gfx_batch_count >= g_gfx_batch_capacity ?
+                   -NEX_ERR_NOSPC :
+                   -NEX_ERR_INVAL;
         }
         entry = &g_gfx_batch_entries[g_gfx_batch_count++];
         entry->op = op;
@@ -772,7 +1056,7 @@ int gfx_info(struct syscall_gfx_info *info) {
 
 int gfx_batch_begin(struct syscall_gfx_batch_entry *entries, uint32_t capacity) {
     if (entries == 0 || capacity == 0u || g_gfx_batch_entries != 0) {
-        return -1;
+        return -NEX_ERR_INVAL;
     }
     g_gfx_batch_entries = entries;
     g_gfx_batch_count = 0u;
@@ -784,7 +1068,7 @@ int gfx_batch_submit(uint32_t flags) {
     struct syscall_gfx_batch batch;
 
     if (g_gfx_batch_entries == 0) {
-        return -1;
+        return -NEX_ERR_INVAL;
     }
     batch.entries_addr = (uint64_t)(uintptr_t)g_gfx_batch_entries;
     batch.count = g_gfx_batch_count;
@@ -921,7 +1205,7 @@ int gfx_blit(const uint32_t *pixels,
     struct syscall_gfx_blit blit;
 
     if (pixels == 0 || width == 0u || height == 0u || g_gfx_batch_entries != 0) {
-        return -1;
+        return -NEX_ERR_INVAL;
     }
     blit.pixels_addr = (uint64_t)(uintptr_t)pixels;
     blit.dst_x = dst_x;
@@ -949,7 +1233,7 @@ int gfx_present(void) {
 
 int gui_event_cursor_init(struct syscall_gui_event_cursor *cursor) {
     if (cursor == 0) {
-        return -1;
+        return -NEX_ERR_INVAL;
     }
     return (int)__nlibc32_syscall4(SYS_GUI_EVENT,
                                    SYS_GUI_EVENT_CURSOR_INIT,
@@ -964,7 +1248,7 @@ int gui_poll_event_with_cursor(struct syscall_gui_event_cursor *cursor,
     int rc;
 
     if (cursor == 0 || event == 0) {
-        return -1;
+        return -NEX_ERR_INVAL;
     }
     poll.cursor = *cursor;
     memset(&poll.event, 0, sizeof(poll.event));
@@ -990,11 +1274,12 @@ int gui_poll_event(struct syscall_gui_event *event) {
     static int initialized;
 
     if (event == 0) {
-        return -1;
+        return -NEX_ERR_INVAL;
     }
     if (!initialized) {
-        if (gui_event_cursor_init(&cursor) != 0) {
-            return -1;
+        int rc = gui_event_cursor_init(&cursor);
+        if (rc != 0) {
+            return rc;
         }
         initialized = 1;
     }

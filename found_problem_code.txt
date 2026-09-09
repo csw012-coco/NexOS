@@ -1,0 +1,553 @@
+NexOS terrible code findings
+============================
+
+Reference: find_terrible_code.txt
+
+Scoring notes:
+- 0-2 normal
+- 3-5 uneasy
+- 6-9 dangerous
+- 10-14 terrible
+- 15+ explosive
+- CRITICAL overrides score when a request, DMA buffer, user pointer, IRQ queue,
+  or hardware-owned object can be mismatched or outlive its owner.
+
+
+1. xHCI global active-controller copy + volatile busy flag
+---------------------------------------------------------
+
+Files:
+- drivers/usb/xhci_core.c:3
+- drivers/usb/xhci_core.c:19
+- drivers/usb/xhci_core.c:21
+- drivers/usb/xhci_core.c:33
+- drivers/usb/xhci_core.c:39
+
+Score: 15+ / explosive
+
+Why this is terrible:
+- `g_xhci` is a mutable global "active controller" copy.
+- `xhci_select_controller()` swaps `g_xhci` from `g_xhci_controllers[index]`.
+- `xhci_save_active_controller()` copies the global state back.
+- `volatile uint32_t g_xhci_busy` is used as a pseudo-lock, but it is not a real
+  lock and does not define IRQ/normal-context ownership.
+
+Failure mode:
+- HID polling, MSC I/O, hub probing, hotplug scanning, or future interrupt-driven
+  event handling can operate on the wrong controller if active-controller state is
+  swapped at the wrong time.
+- This matches the real symptoms: stale xHCI events, USB input dying, random block
+  failures, and commands hanging after unrelated USB/audio/storage activity.
+
+Target fix:
+- Pass `struct xhci_state *xhci` through command, transfer, hub, HID, and MSC
+  paths.
+- Store controller pointer/index in each device and request.
+- Replace `g_xhci_busy` with a real driver lock or a clearly documented
+  non-reentrant poll contract.
+
+
+2. xHCI raw event ring still has multiple policy consumers
+----------------------------------------------------------
+
+Files:
+- drivers/usb/xhci.c:208
+- drivers/usb/xhci.c:258
+
+Score: 10-12 / terrible
+
+Why this is terrible:
+- `xhci_wait_command_completion()` and `xhci_wait_transfer_event_spins()` both
+  pop raw events from the same event ring.
+- They currently defer some wrong-type events, which is better than before, but
+  each waiter still owns event classification policy locally.
+
+Failure mode:
+- A command waiter can observe transfer events.
+- A transfer waiter can observe command events.
+- Unsupported or future event types can still be silently consumed.
+- Late events have to be recovered by side queues instead of a single request
+  table.
+
+Target fix:
+- One event pump owns `xhci_pop_event()`.
+- The pump routes events by type, slot, endpoint, TRB physical address, and
+  request generation.
+- Waiters block/poll request records, not the raw event ring.
+
+
+3. HID interrupt timeout leaves request lifetime ambiguous
+---------------------------------------------------------
+
+Files:
+- drivers/usb/xhci_hid.c:299
+- drivers/usb/xhci_hid.c:327
+- drivers/usb/xhci_hid.c:499
+
+Score: 8-11 / dangerous
+
+Why this is terrible:
+- `interrupt_pending` is a boolean standing in for several states:
+  idle/submitted/completed/timed-out/recovering.
+- On timeout, the pending TRB may remain live and a late event may later complete
+  it, but there is no explicit generation/state record.
+
+Failure mode:
+- USB keyboard/mouse can become dependent on stale pending state.
+- Late events can look like stale events forever.
+- Recovery behavior is timing-dependent.
+
+Target fix:
+- Replace boolean `interrupt_pending` with a small request state machine:
+  idle, submitted, completed, timed-out, recovering.
+- Match late events using TRB physical address and a request generation.
+- Decide timeout policy explicitly: keep waiting, stop/reset endpoint, or retire.
+
+
+4. block event queue is lockless global state
+--------------------------------------------
+
+Files:
+- block/block_event.c:7
+- block/block_event.c:27
+- block/block_event.c:49
+
+Score: 8-10 / dangerous
+
+Why this is terrible:
+- `g_block_head`, `g_block_tail`, `g_block_count`, `g_block_dropped`, and
+  `g_block_seq` are mutated without a lock.
+- Writers and readers both touch queue indices and counts.
+
+Failure mode:
+- A block event emitted during storage probing, hotplug, or a syscall read of
+  `/event/block` can race the reader and produce skipped, duplicated, or partially
+  copied events.
+- With real USB MSC/AHCI hotplug activity this can become timing-dependent.
+
+Target fix:
+- Introduce a small event-ring helper with a lock or IRQ-safe critical section.
+- Reuse it for block, VFS file, capability, keyboard, mouse, and net events.
+
+
+5. VFS/eventfs file and capability event queues repeat the same lockless pattern
+-------------------------------------------------------------------------------
+
+Files:
+- fs/vfs_eventfs_format.c:36
+- fs/vfs_eventfs_format.c:72
+- fs/vfs_eventfs_format.c:103
+- fs/vfs_eventfs_format.c:131
+- fs/vfs_eventfs_format.c:151
+
+Score: 8-10 / dangerous
+
+Why this is terrible:
+- File-change and capability-event queues manually maintain head/tail/count/drop
+  counters without a shared synchronization rule.
+- This duplicates the same risky queue pattern as block events.
+
+Failure mode:
+- `/event` readers can observe partially updated records or inconsistent queue
+  counters if events are emitted while reading.
+- The code is easy to subtly fork into different semantics across event types.
+
+Target fix:
+- Build one common fixed-size event queue helper:
+  `event_ring_push_drop_oldest()`, `event_ring_get_after()`,
+  `event_ring_pending()`, `event_ring_dropped()`.
+- Make locking/IRQ rules part of that helper.
+
+
+6. audio registry uses boolean lifecycle and raw ops/context pointers
+--------------------------------------------------------------------
+
+Files:
+- drivers/audio/audio.c:7
+- drivers/audio/audio.c:29
+- drivers/audio/audio.c:113
+- drivers/audio/audio.c:123
+- drivers/audio/audio.c:145
+
+Score: 6-8 / dangerous
+
+Why this is terrible:
+- `used` is the only lifecycle state for an audio device.
+- There is no unregister/disable/inactive reason path.
+- `ops` and `ctx` are raw pointers stored globally.
+
+Failure mode:
+- A driver can register as present but later fail init or lose hardware.
+- Query and playback paths cannot distinguish inactive, missing hardware,
+  init-failed, unloaded, or removed.
+- Future module unload or failed init rollback can leave stale ops/context.
+
+Target fix:
+- Replace `used` with explicit states:
+  empty, registered, active, inactive, init-failed, removed.
+- Store driver/device identity and inactive reason.
+- Add unregister or deactivate path before module unload/device removal.
+
+
+7. AC97 DMA allocation leaks and has no real DMA ownership state
+---------------------------------------------------------------
+
+Files:
+- drivers/audio/ac97.c:47
+- drivers/audio/ac97.c:132
+- drivers/audio/ac97.c:146
+- drivers/audio/ac97.c:399
+
+Score: 9-12 / dangerous to terrible
+
+Why this is terrible:
+- `ac97_prepare_bdl_page()` and `ac97_prepare_buffer_pages()` allocate pages and
+  return failure on direct-map failure without freeing the page.
+- Global DMA pages are reused for playback without an explicit ownership/request
+  state.
+- `ac97_wait_channel_done()` currently treats timeout as success for QEMU
+  compatibility.
+
+Failure mode:
+- Real hardware can keep using DMA buffers while software believes playback is
+  done.
+- Failed direct-map paths leak physical pages.
+- Timeout-as-success hides actual DMA failure and makes audio/backend smoke lie.
+
+Target fix:
+- Free pages on direct-map failure.
+- Add AC97 playback request state: idle, prepared, running, completed, timed-out,
+  stopped.
+- Record whether timeout was a tolerated QEMU quirk or a real hardware failure.
+
+
+8. HDA registers a global audio device with no playback ops
+----------------------------------------------------------
+
+Files:
+- drivers/audio/hda.c:25
+- drivers/audio/hda.c:111
+- drivers/audio/hda.c:132
+- drivers/audio/hda.c:190
+
+Score: 5-7 / uneasy to dangerous
+
+Why this is suspicious:
+- HDA status is global and can be populated both by PCI probing and by driver
+  module publish calls.
+- `hda_register_audio_device()` registers an audio device with `ops = 0`.
+- This makes query output look device-like even when playback is not implemented.
+
+Failure mode:
+- Commands can see HDA as present/registered while actual playback is impossible.
+- Driver state and audio device state can diverge.
+
+Target fix:
+- Only register an audio playback device when playback ops exist.
+- Otherwise publish HDA as query-only with an explicit inactive reason.
+
+
+9. EHCI DMA allocation failure leaks partially allocated pages
+-------------------------------------------------------------
+
+Files:
+- drivers/usb/ehci_core.c:181
+- drivers/usb/ehci_core.c:208
+
+Score: 8-10 / dangerous
+
+Why this is terrible:
+- EHCI allocates several DMA pages, then returns failure if any page is missing,
+  above 32-bit, or direct-map fails.
+- Already allocated pages are not released on later failure.
+
+Failure mode:
+- Repeated init/probe failure can leak physical pages.
+- On real hardware with partial init failure, USB backend stability degrades over
+  time.
+
+Target fix:
+- Add EHCI core/device resource cleanup helpers.
+- Roll back all pages and mappings on any allocation/map failure.
+
+
+10. AHCI i386 DMA virtual mapping allocator is monotonic with no rollback
+------------------------------------------------------------------------
+
+Files:
+- drivers/storage/ahci.c:142
+- drivers/storage/ahci.c:148
+- drivers/storage/ahci.c:525
+- drivers/storage/ahci.c:541
+
+Score: 7-9 / dangerous
+
+Why this is terrible:
+- i386 AHCI DMA virtual mappings use `g_ahci_i386_dma_map_next++`.
+- If `i386_paging_map_page()` fails, the index has already advanced.
+- Failed port setup continues to the next port, but allocated/mapped resources
+  are not clearly rolled back.
+
+Failure mode:
+- Failed probe attempts consume mapping slots permanently.
+- Real disks/controllers with transient setup failures can make later ports fail
+  for unrelated reasons.
+
+Target fix:
+- Advance mapping cursor only after successful map.
+- Add per-port cleanup for command list/FIS/table/data pages and mappings.
+
+
+11. RTL8139 DMA buffer setup leaks on map failure and lacks TX request lifecycle
+-------------------------------------------------------------------------------
+
+Files:
+- drivers/net/rtl8139.c:224
+- drivers/net/rtl8139.c:245
+- drivers/net/rtl8139.c:372
+
+Score: 7-9 / dangerous
+
+Why this is terrible:
+- TX/RX buffers are allocated globally and direct-map failure returns without
+  freeing the physical allocation.
+- TX slot state is implicit in globals and hardware registers.
+
+Failure mode:
+- Init failure leaks pages.
+- TX smoke can become timing-dependent if a descriptor is reused before hardware
+  completion/error is fully observed.
+
+Target fix:
+- Add rollback for TX/RX allocations.
+- Track TX descriptor state explicitly:
+  free, queued, doorbelled, completed, timed-out, reset.
+
+
+12. Block read cache is global and unsynchronized
+------------------------------------------------
+
+Files:
+- block/blockdev.c:24
+- block/blockdev.c:37
+- block/blockdev.c:430
+
+Score: 6-8 / dangerous
+
+Why this is suspicious:
+- Global device list and global read cache have no obvious locking.
+- Read cache entries are keyed by raw `struct block_device *` and LBA.
+
+Failure mode:
+- Concurrent block read/write/unregister can see stale cache state.
+- Device removal/re-registration can reuse pointers and accidentally hit old
+  cache entries unless every unregister path invalidates perfectly.
+
+Target fix:
+- Add blockdev registry/cache lock.
+- Give block devices stable generation IDs and include generation in cache keys.
+
+
+13. Shared memory lifecycle has split refcount state
+---------------------------------------------------
+
+Files:
+- kernel/mem/address_space_core.c:16
+- kernel/mem/address_space_core.c:19
+- kernel/mem/address_space_core.c:23
+- kernel/mem/address_space_core.c:80
+- kernel/mem/address_space_core.c:99
+- kernel/mem/address_space_core.c:173
+- kernel/mem/address_space_core.c:266
+- kernel/mem/address_space_core.c:841
+
+Score: 9-12 / terrible
+
+Why this is terrible:
+- A shm object has both `mapping_refs` and per-pid `ref_pids/ref_counts`.
+- Fork retain increments `mapping_refs`, but rollback only decrements
+  `mapping_refs`; it does not undo per-pid accounting because it never added
+  the child pid ref in the first place.
+- PID release subtracts per-pid refs from `mapping_refs`, with a clamp-to-zero
+  fallback when the numbers disagree.
+
+Failure mode:
+- A shared object can be destroyed early or kept forever depending on which
+  cleanup path runs first.
+- PID reuse can make stale pid refs look like the new process owns old shm refs.
+
+Target fix:
+- Make one shm ref object the single source of truth.
+- Track mappings by process/address-space identity, not raw pid integers.
+- Make fork retain/release update both global and owner refs through one helper.
+
+
+14. i386 PS/2 keyboard queue uses volatile as synchronization
+------------------------------------------------------------
+
+Files:
+- arch/x86/i386/keyboard.c:15
+- arch/x86/i386/keyboard.c:16
+- arch/x86/i386/keyboard.c:17
+- arch/x86/i386/keyboard.c:48
+- arch/x86/i386/keyboard.c:76
+- arch/x86/i386/keyboard.c:84
+
+Score: 10-13 / terrible
+
+Why this is terrible:
+- IRQ context pushes into `key_queue`; normal code pops from it.
+- `key_head`, `key_tail`, counters are `volatile`, but there is no lock,
+  interrupt disable window, or atomic acquire/release protocol.
+
+Failure mode:
+- Rare lost keys, duplicated keys, corrupted events, or a queue that appears
+  empty/full incorrectly.
+- This is exactly the sort of "works until real hardware timing changes" input
+  bug that makes USB/keyboard failures look random.
+
+Target fix:
+- Use a small IRQ-safe ring buffer helper.
+- Update head/tail under interrupt masking or with explicit atomic operations.
+- Make dropped/irq counters best-effort stats, not synchronization state.
+
+
+15. Common MQ/SEM tables are global boolean lifecycle objects
+------------------------------------------------------------
+
+Files:
+- kernel/sys/syscall_common_request_core.c:292
+- kernel/sys/syscall_common_request_core.c:305
+- kernel/sys/syscall_common_request_core.c:306
+- kernel/sys/syscall_common_request_core.c:314
+- kernel/sys/syscall_common_request_core.c:315
+- kernel/sys/syscall_common_request_core.c:321
+- kernel/sys/syscall_common_request_core.c:323
+
+Score: 7-10 / dangerous
+
+Why this is suspicious:
+- Message queues and semaphores live in fixed global arrays with `used` and
+  `linked` booleans.
+- The table itself has no visible lock, owner, generation, or per-process
+  lifetime binding at the declaration boundary.
+
+Failure mode:
+- A process can observe stale handles after unlink/recreate.
+- Concurrent send/receive/open/unlink can race once preemption/SMP/IRQ-driven
+  wakeups become stronger.
+
+Target fix:
+- Add generation-tagged handles.
+- Add locking around queue/sem table mutation.
+- Tie object lifetime to process cleanup and wait/wake rules explicitly.
+
+
+16. i386 gfx syscall adapter uses global staging buffers
+-------------------------------------------------------
+
+Files:
+- kernel/sys/syscall_i386_gfx_adapter.c:11
+- kernel/sys/syscall_i386_gfx_adapter.c:12
+- kernel/sys/syscall_i386_gfx_adapter.c:22
+- kernel/sys/syscall_i386_gfx_adapter.c:26
+- kernel/sys/syscall_i386_gfx_adapter.c:28
+
+Score: 6-9 / dangerous
+
+Why this is suspicious:
+- GFX batch entries and blit chunks are copied through global static buffers.
+- The adapter is now thin, but the staging memory is shared by every process.
+
+Failure mode:
+- Two gfx syscalls, nested fault paths, or future preemption can overwrite the
+  staging buffer while dispatch still assumes it owns the contents.
+- Visual corruption or bad command dispatch will look nondeterministic.
+
+Target fix:
+- Use per-syscall stack chunks when bounded and small.
+- For large blits, use per-process scratch buffers or pin/copy one chunk at a
+  time with an explicit non-preemptible section.
+
+
+17. i386 RTL8139 syscall adapter uses one global TX copy buffer
+--------------------------------------------------------------
+
+Files:
+- kernel/sys/syscall_i386_net_adapter.c:5
+- kernel/sys/syscall_i386_net_adapter.c:9
+- kernel/sys/syscall_i386_net_adapter.c:23
+- kernel/sys/syscall_i386_net_adapter.c:27
+
+Score: 6-9 / dangerous
+
+Why this is suspicious:
+- User TX payloads are staged through `g_compat32_rtl8139_tx_buffer`.
+- This is shared across all callers and does not encode request ownership.
+
+Failure mode:
+- TX tests can pass under QEMU but become flaky once network, IRQ, or scheduler
+  timing changes.
+- A later request can overwrite data before the driver has fully consumed it if
+  dispatch ever becomes asynchronous.
+
+Target fix:
+- Give network TX a request-owned buffer or descriptor.
+- Do not return success until ownership transfer/completion semantics are clear.
+
+
+18. Native/audio syscall paths also use global megabyte staging buffers
+----------------------------------------------------------------------
+
+Files:
+- kernel/sys/syscall_native_request_core.c:5
+- kernel/sys/syscall_native_request_core.c:9
+- kernel/sys/syscall_native_request_core.c:10
+
+Score: 5-8 / uneasy-to-dangerous
+
+Why this is suspicious:
+- Audio playback and native RTL8139 use large static syscall staging buffers.
+- This is not i386-only; x86_64 has the same maintenance smell.
+
+Failure mode:
+- Long audio playback can serialize or corrupt unrelated audio/network requests.
+- Future SMP/preemption will make this pattern fail in ways that look like
+  driver instability.
+
+Target fix:
+- Move large staging buffers into process/request-owned transfer objects.
+- For stream playback, keep only a small bounded chunk buffer in the stream
+  context and make ownership explicit.
+
+
+19. VFS mount table mutation is direct and lockless
+--------------------------------------------------
+
+Files:
+- fs/vfs_mount.c:104
+- fs/vfs_mount.c:121
+- fs/vfs_mount.c:134
+- fs/vfs_mount.c:140
+- fs/vfs_mount.c:147
+- fs/vfs_mount.c:168
+
+Score: 6-8 / dangerous
+
+Why this is suspicious:
+- Mount lookup, readiness checks, builtin info enumeration, and slot allocation
+  all read/write `vfs->mounts[]` directly.
+- There is no visible mount table lock or generation check around slot changes.
+
+Failure mode:
+- `mounts`, `df`, path resolution, and mount/umount can observe partially
+  written or stale mount entries.
+- This can explain "output looks wrong" bugs after storage or pseudo-fs changes.
+
+Target fix:
+- Add a VFS mount table lock and generation counter.
+- Make enumeration snapshot-based, especially for `/proc/mounts` and applet
+  query output.
+
+PS: They should probably call it "TrashOS" instead of NexOS...
+PPS: From now on, this OS is called TrashOS!

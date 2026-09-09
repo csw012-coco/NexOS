@@ -11,11 +11,11 @@
 #define NEX_READ_CHAR SYS_READ_CHAR
 
 #ifndef NEXOS_FILE_IO_WOULD_BLOCK
-#define NEXOS_FILE_IO_WOULD_BLOCK (-2)
+#define NEXOS_FILE_IO_WOULD_BLOCK (-NEX_ERR_AGAIN)
 #endif
 
 #ifndef NEXOS_FILE_IO_BROKEN_PIPE
-#define NEXOS_FILE_IO_BROKEN_PIPE (-3)
+#define NEXOS_FILE_IO_BROKEN_PIPE (-NEX_ERR_PIPE)
 #endif
 
 ssize_t write_stdout(const void *buffer, size_t size);

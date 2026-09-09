@@ -3,6 +3,8 @@
 #include "kernel/internal/proc/process_internal_base.h"
 #include "kernel/internal/mem/address_space_internal.h"
 
+struct syscall_vm_info;
+
 void process_clear_slot_state(struct process *proc);
 void process_model_reset(struct process *proc,
                          uint32_t slot,
@@ -12,6 +14,7 @@ uint32_t sched_current_ticks(void);
 void process_set_name(struct process *proc, const char *name);
 void process_refresh_name_ptr(struct process *proc);
 void process_snapshot_fill(struct process_snapshot *out, const struct process *proc);
+void process_mm_query_vm_snapshot(struct syscall_vm_info *info);
 int process_lifecycle_child_matches_wait(const struct process *child,
                                          uint32_t child_parent_pid,
                                          uint32_t waiter_pid,
@@ -38,6 +41,13 @@ int process_lifecycle_find_wait_child(struct process *const *slots,
                                       uint32_t wait_last_pid,
                                       uint32_t *slot_out,
                                       int *exited_out);
+int process_lifecycle_find_pid_slot(struct process *const *slots,
+                                    uint32_t capacity,
+                                    uint32_t pid,
+                                    uint32_t *slot_out);
+int process_lifecycle_collect_exited_child(struct process *child,
+                                           int32_t *status,
+                                           struct process_snapshot *snapshot);
 uint32_t process_lifecycle_wake_exit_waiters(
     struct process **slots,
     uint32_t capacity,
@@ -49,6 +59,16 @@ uint32_t process_lifecycle_wake_exit_waiters(
     void *copy_context);
 void process_lifecycle_mark_exited_for_scheduler(struct process *proc,
                                                  int32_t exit_code);
+uint32_t process_lifecycle_mark_exited_and_wake(
+    struct process *proc,
+    int32_t exit_code,
+    int clear_wait_state,
+    struct process **slots,
+    uint32_t capacity,
+    void (*copy_wait_info)(uint32_t slot,
+                           const struct process *exited,
+                           void *context),
+    void *copy_context);
 void process_forget_file_array(struct file files[PROCESS_FILE_MAX]);
 void process_discard_file_array(struct file files[PROCESS_FILE_MAX]);
 int process_clone_spawn_files(const struct process *parent,

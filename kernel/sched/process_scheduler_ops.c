@@ -1,3 +1,4 @@
+#include "abi/syscall_abi.h"
 #include "kernel/public/proc/process_scheduler_ops.h"
 
 static const struct process_scheduler_ops *g_process_scheduler_ops;
@@ -16,6 +17,11 @@ int32_t process_scheduler_spawn_image(uint32_t entry,
     image.stack = stack;
     image.root = root;
     image.name = name;
+    image.caps = 0u;
+    image.uid = 0u;
+    image.gid = 0u;
+    image.caps_set = 0u;
+    image.identity_set = 0u;
     return process_scheduler_spawn_loaded(&image);
 }
 
@@ -24,7 +30,7 @@ int32_t process_scheduler_spawn_loaded(
     if (g_process_scheduler_ops == 0 ||
         g_process_scheduler_ops->spawn_loaded == 0 ||
         image == 0) {
-        return -1;
+        return -NEX_ERR_NOSYS;
     }
     return g_process_scheduler_ops->spawn_loaded(image);
 }
@@ -55,7 +61,7 @@ int32_t process_scheduler_fork_current(const struct process_context *context,
                                        uint32_t *child_pid_out) {
     if (g_process_scheduler_ops == 0 ||
         g_process_scheduler_ops->fork_current == 0) {
-        return -1;
+        return -NEX_ERR_NOSYS;
     }
     return g_process_scheduler_ops->fork_current(context, child_pid_out);
 }
@@ -71,6 +77,11 @@ uintptr_t process_scheduler_exec_replace(const struct process_context *context,
     image.stack = stack;
     image.root = root;
     image.name = name;
+    image.caps = 0u;
+    image.uid = 0u;
+    image.gid = 0u;
+    image.caps_set = 0u;
+    image.identity_set = 0u;
     return process_scheduler_exec_replace_loaded(context, &image);
 }
 
@@ -148,7 +159,7 @@ uint32_t process_scheduler_current_pid(void) {
 int32_t process_scheduler_kill(uint32_t pid) {
     if (g_process_scheduler_ops == 0 ||
         g_process_scheduler_ops->kill == 0) {
-        return -1;
+        return -NEX_ERR_NOSYS;
     }
     return g_process_scheduler_ops->kill(pid);
 }
@@ -165,7 +176,15 @@ int process_scheduler_snapshot(uint32_t task,
 int32_t process_scheduler_reap_exited_pid(uint32_t pid) {
     if (g_process_scheduler_ops == 0 ||
         g_process_scheduler_ops->reap_exited_pid == 0) {
-        return -1;
+        return -NEX_ERR_NOSYS;
     }
     return g_process_scheduler_ops->reap_exited_pid(pid);
+}
+
+void process_scheduler_set_console_handle(void *handle) {
+    if (g_process_scheduler_ops == 0 ||
+        g_process_scheduler_ops->set_console_handle == 0) {
+        return;
+    }
+    g_process_scheduler_ops->set_console_handle(handle);
 }

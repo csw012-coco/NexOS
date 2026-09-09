@@ -5,6 +5,29 @@ static int vfs_mount_fail(enum vfs_mount_error error) {
     return -(int)error;
 }
 
+static struct block_device *vfs_root_blockdev(const struct vfs *vfs) {
+    if (vfs == 0) {
+        return 0;
+    }
+    if (vfs->root_kind == VFS_MOUNT_FAT32) {
+        if (vfs->root_slot == 0u) {
+            return vfs->fat32_bdev_ref;
+        }
+        if (vfs->root_slot - 1u < VFS_MOUNT_SLOT_MAX) {
+            return vfs->mounts[vfs->root_slot - 1u].bdev_ref;
+        }
+    }
+    if (vfs->root_kind == VFS_MOUNT_NXFS) {
+        if (vfs->root_slot == 0u) {
+            return vfs->nxfs_bdev_ref;
+        }
+        if (vfs->root_slot - 1u < VFS_MOUNT_SLOT_MAX) {
+            return vfs->mounts[vfs->root_slot - 1u].bdev_ref;
+        }
+    }
+    return 0;
+}
+
 static int vfs_lba_to_u32(uint64_t lba, uint32_t *out) {
     if (out == 0 || lba > 0xffffffffull) {
         return -1;
@@ -18,17 +41,34 @@ static int vfs_mount_root_from_source(struct vfs *vfs,
                                       struct block_device *dev,
                                       uint32_t partition_lba) {
     const struct vfs_builtin_mount_provider *provider;
+    struct block_device **old_ref;
+    struct block_device *old_dev;
+    struct block_device *new_ref;
+    uint8_t replacing_current_builtin_root;
 
     if (vfs == 0) {
-        return -1;
+        return vfs_mount_fail(VFS_MOUNT_ERR_BAD_ARGS);
     }
     provider = vfs_builtin_mount_provider(mount_kind);
     if (provider == 0 || provider->mount_builtin == 0 || provider->root_target == 0) {
-        return -1;
+        return vfs_mount_fail(VFS_MOUNT_ERR_UNSUPPORTED_KIND);
     }
+    if (blockdev_acquire_device(dev) != 0) {
+        return vfs_mount_fail(VFS_MOUNT_ERR_DISK_NOT_FOUND);
+    }
+    new_ref = dev;
+    old_ref = mount_kind == VFS_MOUNT_FAT32 ? &vfs->fat32_bdev_ref : &vfs->nxfs_bdev_ref;
+    old_dev = *old_ref;
+    replacing_current_builtin_root = vfs->root_kind == mount_kind && vfs->root_slot == 0u;
     if (provider->mount_builtin(vfs, dev, partition_lba) != 0) {
-        return -1;
+        blockdev_release(new_ref);
+        return vfs_mount_fail(VFS_MOUNT_ERR_FS_MOUNT);
     }
+    if (replacing_current_builtin_root && old_dev != 0 && old_dev != new_ref) {
+        blockdev_set_rootfs_protected(old_dev, 0u);
+    }
+    blockdev_release(*old_ref);
+    *old_ref = new_ref;
     return vfs_set_root_mount(vfs, provider->root_target);
 }
 
@@ -136,11 +176,13 @@ static void vfs_store_mount_entry(struct vfs *vfs,
                                   uint8_t kind,
                                   uint32_t disk_index,
                                   uint32_t part_index,
-                                  const char *name) {
+                                  const char *name,
+                                  struct block_device *bdev_ref) {
     vfs->mounts[slot].used = 1;
     vfs->mounts[slot].kind = kind;
     vfs->mounts[slot].disk_index = disk_index;
     vfs->mounts[slot].part_index = part_index;
+    vfs->mounts[slot].bdev_ref = bdev_ref;
     vfs_copy_name(vfs->mounts[slot].name, sizeof(vfs->mounts[slot].name), name);
 }
 
@@ -192,7 +234,8 @@ static int vfs_partition_matches(struct block_device *dev,
                                  uint32_t *part_index_out) {
     struct blockdev_partition part;
 
-    if (dev == 0 || part_index_out == 0 || blockdev_partition_get(dev, part_slot, &part) != 0) {
+    if (dev == 0 || part_index_out == 0 ||
+        blockdev_partition_get_cached(dev, part_slot, &part) != 0) {
         return 0;
     }
     if (part.start_lba != partition_lba) {
@@ -211,8 +254,9 @@ static int vfs_find_cached_partition_by_lba(struct block_device *dev,
     if (dev == 0 || part_index_out == 0) {
         return 0;
     }
-    for (uint32_t part_slot = 0; part_slot < blockdev_partition_count(dev); part_slot++) {
-        if (blockdev_partition_get(dev, part_slot, &part) != 0 || part.start_lba != partition_lba) {
+    for (uint32_t part_slot = 0; part_slot < blockdev_partition_count_cached(dev); part_slot++) {
+        if (blockdev_partition_get_cached(dev, part_slot, &part) != 0 ||
+            part.start_lba != partition_lba) {
             continue;
         }
         if (partition_sectors != 0u && part.sector_count != partition_sectors) {
@@ -237,7 +281,7 @@ static int vfs_find_block_source(struct block_device *dev,
         if (current != dev) {
             continue;
         }
-        for (uint32_t part_slot = 0; part_slot < blockdev_partition_count(current); part_slot++) {
+        for (uint32_t part_slot = 0; part_slot < blockdev_partition_count_cached(current); part_slot++) {
             if (vfs_partition_matches(current, part_slot, partition_lba, part_index_out)) {
                 *disk_index_out = disk_index;
                 return 1;
@@ -267,7 +311,7 @@ static int vfs_find_raw_mount_source(uint32_t partition_sectors,
     for (uint32_t disk_index = 0; disk_index < blockdev_count(); disk_index++) {
         struct block_device *dev = blockdev_get(disk_index);
 
-        if (dev == 0 || blockdev_partition_count(dev) != 0) {
+        if (dev == 0 || blockdev_partition_count_cached(dev) != 0) {
             continue;
         }
         if (partition_sectors != 0u && dev->block_count != (uint64_t)partition_sectors) {
@@ -298,8 +342,8 @@ int vfs_find_disk_by_boot_partition(uint32_t partition_lba,
         if (dev == 0) {
             continue;
         }
-        for (uint32_t part_slot = 0; part_slot < blockdev_partition_count(dev); part_slot++) {
-            if (blockdev_partition_get(dev, part_slot, &part) != 0 ||
+        for (uint32_t part_slot = 0; part_slot < blockdev_partition_count_cached(dev); part_slot++) {
+            if (blockdev_partition_get_cached(dev, part_slot, &part) != 0 ||
                 part.start_lba != partition_lba ||
                 (partition_sectors != 0u && part.sector_count != partition_sectors)) {
                 continue;
@@ -345,8 +389,9 @@ int vfs_find_source_by_partition_lba(uint32_t partition_lba,
         if (dev == 0) {
             continue;
         }
-        for (uint32_t part_slot = 0; part_slot < blockdev_partition_count(dev); part_slot++) {
-            if (blockdev_partition_get(dev, part_slot, &part) != 0 || part.start_lba != partition_lba) {
+        for (uint32_t part_slot = 0; part_slot < blockdev_partition_count_cached(dev); part_slot++) {
+            if (blockdev_partition_get_cached(dev, part_slot, &part) != 0 ||
+                part.start_lba != partition_lba) {
                 continue;
             }
             if (vfs_detect_mount_kind_from_source(dev, part.start_lba, &kind) != 0) {
@@ -380,8 +425,8 @@ int vfs_find_source_by_boot_partition(uint32_t partition_lba,
         if (dev == 0) {
             continue;
         }
-        for (uint32_t part_slot = 0; part_slot < blockdev_partition_count(dev); part_slot++) {
-            if (blockdev_partition_get(dev, part_slot, &part) != 0 ||
+        for (uint32_t part_slot = 0; part_slot < blockdev_partition_count_cached(dev); part_slot++) {
+            if (blockdev_partition_get_cached(dev, part_slot, &part) != 0 ||
                 part.start_lba != partition_lba ||
                 part.sector_count != partition_sectors) {
                 continue;
@@ -427,6 +472,8 @@ int vfs_find_source_by_nxfs_uuid(const uint8_t uuid[16],
         if (dev == 0) {
             continue;
         }
+        /* MSC registration can publish a device before a transient first
+         * partition read succeeds.  This call retries an invalid cache. */
         part_count = blockdev_partition_count(dev);
         for (uint32_t part_slot = 0; part_slot < part_count; part_slot++) {
             struct blockdev_partition part;
@@ -478,7 +525,7 @@ int vfs_get_mount_instance(struct vfs *vfs,
         if (!vfs_dynamic_mount_slot_valid(vfs, mount_slot, VFS_MOUNT_FAT32)) {
             return 0;
         }
-        dev = blockdev_get(vfs->mounts[mount_slot - 1u].disk_index);
+        dev = vfs->mounts[mount_slot - 1u].bdev_ref;
         if (dev == 0) {
             return 0;
         }
@@ -504,7 +551,7 @@ int vfs_get_mount_instance(struct vfs *vfs,
         if (!vfs_dynamic_mount_slot_valid(vfs, mount_slot, VFS_MOUNT_NXFS)) {
             return 0;
         }
-        dev = blockdev_get(vfs->mounts[mount_slot - 1u].disk_index);
+        dev = vfs->mounts[mount_slot - 1u].bdev_ref;
         if (dev == 0) {
             return 0;
         }
@@ -597,13 +644,17 @@ int vfs_detect_mount_kind(uint32_t disk_index, uint32_t part_index, uint8_t *kin
 int vfs_set_root_mount(struct vfs *vfs, const char *target) {
     struct vfs_path parsed;
     const struct vfs_builtin_mount_provider *provider;
+    struct block_device *old_root;
+    struct block_device *new_root;
 
     if (vfs == 0 || target == 0) {
         return -1;
     }
+    old_root = vfs_root_blockdev(vfs);
     if (streq(target, "/")) {
         vfs->root_kind = VFS_MOUNT_NONE;
         vfs->root_slot = 0;
+        blockdev_set_rootfs_protected(old_root, 0u);
         return 0;
     }
     if (!vfs_parse_path_for_vfs(vfs, target, &parsed) || parsed.root_dir || !parsed.child_is_root) {
@@ -615,6 +666,11 @@ int vfs_set_root_mount(struct vfs *vfs, const char *target) {
     }
     vfs->root_kind = provider->kind;
     vfs->root_slot = parsed.mount_slot;
+    new_root = vfs_root_blockdev(vfs);
+    if (old_root != 0 && old_root != new_root) {
+        blockdev_set_rootfs_protected(old_root, 0u);
+    }
+    blockdev_set_rootfs_protected(new_root, 1u);
     return 0;
 }
 
@@ -648,6 +704,7 @@ int vfs_mount_fs(struct vfs *vfs, uint8_t kind, uint32_t disk_index, uint32_t pa
     uint32_t slot = 0;
     char name[NOS_NAME_BUFFER_SIZE];
     const struct vfs_builtin_mount_provider *provider;
+    struct block_device *bdev_ref;
     int target_rc;
 
     target_rc = vfs_prepare_dynamic_mount_target(vfs, target, name, sizeof(name), &slot);
@@ -673,10 +730,15 @@ int vfs_mount_fs(struct vfs *vfs, uint8_t kind, uint32_t disk_index, uint32_t pa
     if (provider->requires_partition && part_index == VFS_PARTITION_RAW) {
         return vfs_mount_fail(VFS_MOUNT_ERR_PARTITION_REQUIRED);
     }
+    if (blockdev_acquire_device(dev) != 0) {
+        return vfs_mount_fail(VFS_MOUNT_ERR_DISK_NOT_FOUND);
+    }
+    bdev_ref = dev;
     if (provider->mount_dynamic(vfs, slot, dev, partition_lba) != 0) {
+        blockdev_release(bdev_ref);
         return vfs_mount_fail(VFS_MOUNT_ERR_FS_MOUNT);
     }
-    vfs_store_mount_entry(vfs, slot, kind, disk_index, part_index, name);
+    vfs_store_mount_entry(vfs, slot, kind, disk_index, part_index, name, bdev_ref);
     return 0;
 }
 
@@ -691,6 +753,7 @@ int vfs_mount_fs_at_lba(struct vfs *vfs,
     uint32_t stored_part_index = VFS_PARTITION_RAW;
     char name[NOS_NAME_BUFFER_SIZE];
     const struct vfs_builtin_mount_provider *provider;
+    struct block_device *bdev_ref;
     int target_rc;
 
     target_rc = vfs_prepare_dynamic_mount_target(vfs, target, name, sizeof(name), &slot);
@@ -711,10 +774,15 @@ int vfs_mount_fs_at_lba(struct vfs *vfs,
     if (provider == 0 || provider->mount_dynamic == 0) {
         return vfs_mount_fail(VFS_MOUNT_ERR_UNSUPPORTED_KIND);
     }
+    if (blockdev_acquire_device(dev) != 0) {
+        return vfs_mount_fail(VFS_MOUNT_ERR_DISK_NOT_FOUND);
+    }
+    bdev_ref = dev;
     if (provider->mount_dynamic(vfs, slot, dev, partition_lba) != 0) {
+        blockdev_release(bdev_ref);
         return vfs_mount_fail(VFS_MOUNT_ERR_FS_MOUNT);
     }
-    vfs_store_mount_entry(vfs, slot, kind, disk_index, stored_part_index, name);
+    vfs_store_mount_entry(vfs, slot, kind, disk_index, stored_part_index, name, bdev_ref);
     return 0;
 }
 
@@ -738,11 +806,16 @@ int vfs_umount(struct vfs *vfs, const char *target) {
     bdev = vfs->mounts[slot].kind == VFS_MOUNT_FAT32
         ? vfs->mounts[slot].fat32.bdev
         : vfs->mounts[slot].nxfs.bdev;
-    if (blockdev_flush(bdev) != 0) {
+    if ((vfs->mounts[slot].kind == VFS_MOUNT_NXFS &&
+         nxfs_flush(&vfs->mounts[slot].nxfs) != 0) ||
+        (vfs->mounts[slot].kind != VFS_MOUNT_NXFS &&
+         blockdev_flush(bdev) != 0)) {
         return vfs_mount_fail(VFS_MOUNT_ERR_TARGET_BUSY);
     }
     vfs->mounts[slot].fat32.mounted = 0;
     vfs->mounts[slot].nxfs.mounted = 0;
+    blockdev_release(vfs->mounts[slot].bdev_ref);
+    vfs->mounts[slot].bdev_ref = 0;
     vfs->mounts[slot].fat32.bdev = 0;
     vfs->mounts[slot].nxfs.bdev = 0;
     vfs->mounts[slot].nxfs.partition_lba = 0;
@@ -763,10 +836,11 @@ int vfs_switch_root_to_source(struct vfs *vfs, uint32_t disk_index, uint32_t par
 
     source_rc = vfs_resolve_mount_source(disk_index, part_index, &dev, &partition_lba);
     if (source_rc != 0) {
-        return -1;
+        return source_rc;
     }
-    if (vfs_detect_mount_kind_from_source(dev, partition_lba, &kind) != 0) {
-        return -1;
+    source_rc = vfs_detect_mount_kind_from_source(dev, partition_lba, &kind);
+    if (source_rc != 0) {
+        return source_rc;
     }
     return vfs_mount_root_from_source(vfs, kind, dev, partition_lba);
 }
@@ -782,8 +856,10 @@ int vfs_switch_root_to_nxfs_uuid(struct vfs *vfs, const uint8_t uuid[16]) {
 }
 
 int vfs_switch_root_to_first_kind(struct vfs *vfs, uint8_t kind) {
+    int saw_device = 0;
+
     if (vfs == 0 || kind == VFS_MOUNT_NONE) {
-        return -1;
+        return vfs_mount_fail(VFS_MOUNT_ERR_BAD_ARGS);
     }
     for (uint32_t disk_index = 0; disk_index < blockdev_count(); disk_index++) {
         struct block_device *dev = blockdev_get(disk_index);
@@ -792,6 +868,7 @@ int vfs_switch_root_to_first_kind(struct vfs *vfs, uint8_t kind) {
         if (dev == 0) {
             continue;
         }
+        saw_device = 1;
         part_count = blockdev_partition_count(dev);
         for (uint32_t part_slot = 0; part_slot < part_count; part_slot++) {
             struct blockdev_partition part;
@@ -817,7 +894,7 @@ int vfs_switch_root_to_first_kind(struct vfs *vfs, uint8_t kind) {
             }
         }
     }
-    return -1;
+    return vfs_mount_fail(saw_device ? VFS_MOUNT_ERR_FS_DETECT : VFS_MOUNT_ERR_DISK_NOT_FOUND);
 }
 
 uint32_t vfs_mount_count(const struct vfs *vfs) {

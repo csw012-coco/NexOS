@@ -42,7 +42,7 @@ Notes:
 Title: Shell variable store and libc `environ` are duplicated
 Applicable Modes: Solo, Small, Large
 Risk Score: 6
-Impact Area: `user/apps/elf/ush.c`, `user/libc/std/env.c`, process environment model
+Impact Area: `user/apps/elf/ush/ush.c`, `user/libc/std/env.c`, process environment model
 Status: Closed
 Notes:
 - Exported shell variables now use libc `environ` as the single source of truth; `ush` keeps only shell-only variables in its local table.
@@ -104,11 +104,12 @@ Title: God files still concentrate multiple responsibilities
 Applicable Modes: Solo, Small, Large
 Risk Score: 7
 Impact Area: `user/apps/elf/cmdsuite.c`, `user/apps/elf/ush*.c`, `kernel/core/kernel*.c`, `kernel/sys/syscall_query*.c`
-Status: Closed
+Status: Monitoring
 Notes:
-- The largest original files in this cleanup wave were split into focused translation units:
+- The largest original files in this cleanup wave were split or folded into focused translation units:
   `ush.c` now delegates to `ush_exec.c`, `ush_parse.c`, `ush_editor.c`, and `ush_vars.c`;
   `kernel.c` now delegates to `kernel_boot.c`, `kernel_init.c`, and `kernel_panic.c`;
-  `syscall_query.c` now delegates to `syscall_query_fat.c`, `syscall_query_mount.c`, `syscall_query_kmsg.c`, and `syscall_query_pci.c`.
+  syscall request handling now runs through shared request cores and native/i386 adapters instead of old per-domain wrapper files.
 - `cmdsuite` and FS service/query code were also decomposed; `cmdsuite` now splits text/basic commands, storage, proc, debug, and dispatch responsibilities across separate translation units, and the shared utility file is no longer doubled as the command router or mixed with unrelated command families.
-- The remaining larger files in this area are now primarily single-responsibility implementation units rather than multi-domain “god files”, so the acute concentration risk for this cleanup wave is considered resolved.
+- i386 maintenance cleanup also split `tty.c`, `user/i386/test32.c`, `ush_exec.c`, driver ELF32 loading/services, and i386 boot/service helpers into smaller files.
+- The acute concentration risk is much lower, but this remains under monitoring because `i386_shared_services.c`, split syscall adapters, and scheduler/process bridge files still carry backend glue that should continue shrinking.

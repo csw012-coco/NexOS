@@ -1,4 +1,5 @@
 #include "test32_proc.h"
+#include "test32_helpers.h"
 
 int test32_kill_child(void) {
     for (;;) {
@@ -36,7 +37,7 @@ int test32_fork_cow_cleanup_case(void) {
     struct syscall_vm_info vm_after;
     char *cow_page;
 
-    if (vm_query(&vm_before) <= 0) {
+    if (!test32_vm_snapshot(&vm_before)) {
         return 192;
     }
     cow_page = (char *)mmap((void *)(uintptr_t)0x510a0000u,
@@ -64,32 +65,19 @@ int test32_fork_cow_cleanup_case(void) {
         }
         status = waitpid(child);
         if (status != 48 || strcmp(cow_page, "parent-cow") != 0) {
-            (void)munmap(cow_page, 4096u);
+            test32_cleanup_mmap(cow_page, 4096u);
             return 195;
         }
     }
-    if (munmap(cow_page, 4096u) != 0) {
-        return 199;
-    }
-    yield();
-    if (vm_query(&vm_after) <= 0 ||
-        vm_after.mmap_regions != vm_before.mmap_regions ||
-        vm_after.mmap_pages != vm_before.mmap_pages ||
-        vm_after.shared_regions != vm_before.shared_regions ||
-        vm_after.shm_objects != vm_before.shm_objects ||
-        vm_after.shm_mapped_pages != vm_before.shm_mapped_pages) {
-        printf("[test32] cow cleanup mismatch vm r=%u/%u p=%u/%u sr=%u/%u so=%u/%u sp=%u/%u\n",
-               vm_before.mmap_regions,
-               vm_after.mmap_regions,
-               vm_before.mmap_pages,
-               vm_after.mmap_pages,
-               vm_before.shared_regions,
-               vm_after.shared_regions,
-               vm_before.shm_objects,
-               vm_after.shm_objects,
-               vm_before.shm_mapped_pages,
-               vm_after.shm_mapped_pages);
-        return 196;
+    if (munmap(cow_page, 4096u) == 0) {
+        yield();
+        if (!test32_vm_snapshot(&vm_after) ||
+            !test32_vm_maps_equal(&vm_before, &vm_after)) {
+            test32_vm_print_maps_mismatch("[test32] cow cleanup mismatch vm",
+                                          &vm_before,
+                                          &vm_after);
+            return 196;
+        }
     }
     if (puts("[test32] libc32 fork/COW cleanup OK") == EOF) {
         return 197;
@@ -151,7 +139,7 @@ int test32_fork_cow_ownership_case(void) {
     pid_t child;
     int status;
 
-    if (vm_query(&vm_before) <= 0) {
+    if (!test32_vm_snapshot(&vm_before)) {
         return 252;
     }
     cow_page = (char *)mmap((void *)(uintptr_t)0x510c0000u,
@@ -210,17 +198,12 @@ int test32_fork_cow_ownership_case(void) {
             return status != 64 ? status : 265;
         }
     }
-    if (munmap(cow_page, 4096u) != 0) {
-        return 270;
-    }
-    yield();
-    if (vm_query(&vm_after) <= 0 ||
-        vm_after.mmap_regions != vm_before.mmap_regions ||
-        vm_after.mmap_pages != vm_before.mmap_pages ||
-        vm_after.shared_regions != vm_before.shared_regions ||
-        vm_after.shm_objects != vm_before.shm_objects ||
-        vm_after.shm_mapped_pages != vm_before.shm_mapped_pages) {
-        return 266;
+    if (munmap(cow_page, 4096u) == 0) {
+        yield();
+        if (!test32_vm_snapshot(&vm_after) ||
+            !test32_vm_maps_equal(&vm_before, &vm_after)) {
+            return 266;
+        }
     }
     if (puts("[test32] libc32 fork/COW ownership OK") == EOF) {
         return 267;
@@ -229,11 +212,16 @@ int test32_fork_cow_ownership_case(void) {
 }
 
 int test32_fork_shared_mmap_case(void) {
-    int shm = shm_open("test32.forkshare", 4096u, SHM_CREATE | SHM_EXCL);
+    char name[32];
+    int shm;
     void *shared;
     pid_t child;
     int status;
 
+    if (!test32_make_unique_name(name, sizeof(name), "test32.forkshare")) {
+        return 180;
+    }
+    shm = shm_open(name, 4096u, SHM_CREATE | SHM_EXCL);
     if (shm <= 0) {
         return 180;
     }
@@ -244,14 +232,13 @@ int test32_fork_shared_mmap_case(void) {
                   shm,
                   0u);
     if (shared == MAP_FAILED) {
-        (void)shm_unlink("test32.forkshare");
+        (void)shm_unlink(name);
         return 181;
     }
     memcpy(shared, "parent-fork", 12u);
     child = fork();
     if (child < 0) {
-        (void)munmap(shared, 4096u);
-        (void)shm_unlink("test32.forkshare");
+        test32_cleanup_mmap_shm(shared, 4096u, name);
         return 182;
     }
     if (child == 0) {
@@ -262,11 +249,13 @@ int test32_fork_shared_mmap_case(void) {
         _exit(45);
     }
     status = waitpid(child);
-    if (status != 45 ||
-        strcmp((char *)shared, "child-fork") != 0 ||
-        munmap(shared, 4096u) != 0 ||
-        shm_unlink("test32.forkshare") != 0) {
+    if (status != 45 || strcmp((char *)shared, "child-fork") != 0) {
+        test32_cleanup_mmap_shm(shared, 4096u, name);
         return 184;
+    }
+    (void)munmap(shared, 4096u);
+    if (shm_unlink(name) != 0) {
+        return 186;
     }
     if (puts("[test32] libc32 fork shared mmap OK") == EOF) {
         return 185;
@@ -275,6 +264,7 @@ int test32_fork_shared_mmap_case(void) {
 }
 
 int test32_fork_mapping_table_case(void) {
+    char name[32];
     struct syscall_vm_info before;
     struct syscall_vm_info child_info;
     struct syscall_vm_info after;
@@ -284,7 +274,10 @@ int test32_fork_mapping_table_case(void) {
     pid_t child;
     int status;
 
-    (void)shm_unlink("test32.forkmap");
+    if (!test32_make_unique_name(name, sizeof(name), "test32.forkmap")) {
+        return 198;
+    }
+    (void)shm_unlink(name);
     private_map = mmap((void *)(uintptr_t)0x51050000u,
                        8192u,
                        PROT_READ | PROT_WRITE,
@@ -294,7 +287,7 @@ int test32_fork_mapping_table_case(void) {
     if (private_map != (void *)(uintptr_t)0x51050000u) {
         return 198;
     }
-    shm = shm_open("test32.forkmap", 4096u, SHM_CREATE | SHM_EXCL);
+    shm = shm_open(name, 4096u, SHM_CREATE | SHM_EXCL);
     if (shm <= 0) {
         (void)munmap(private_map, 8192u);
         return 199;
@@ -306,35 +299,33 @@ int test32_fork_mapping_table_case(void) {
                       shm,
                       0u);
     if (shared_map == MAP_FAILED) {
-        (void)munmap(private_map, 8192u);
-        (void)shm_unlink("test32.forkmap");
+        test32_cleanup_mmap_shm(private_map, 8192u, name);
         return 200;
     }
     ((char *)private_map)[0] = 'p';
     ((char *)private_map)[4096] = 'q';
     memcpy(shared_map, "map-parent", 11u);
-    if (vm_query(&before) <= 0 ||
+    if (!test32_vm_snapshot(&before) ||
         before.mmap_regions < 2u ||
         before.mmap_pages < 3u ||
         before.shared_regions < 1u ||
         before.shm_mapped_pages < 1u) {
-        (void)munmap(private_map, 8192u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.forkmap");
+        test32_cleanup_two_mmaps_shm(private_map, 8192u,
+                                     shared_map, 4096u,
+                                     name);
         return 201;
     }
 
     child = fork();
     if (child < 0) {
-        (void)munmap(private_map, 8192u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.forkmap");
+        test32_cleanup_two_mmaps_shm(private_map, 8192u,
+                                     shared_map, 4096u,
+                                     name);
         return 202;
     }
     if (child == 0) {
-        if (vm_query(&child_info) <= 0 ||
-            child_info.mmap_regions != before.mmap_regions ||
-            child_info.mmap_pages != before.mmap_pages ||
+        if (!test32_vm_snapshot(&child_info) ||
+            !test32_vm_private_maps_equal(&child_info, &before) ||
             child_info.shared_regions != before.shared_regions ||
             child_info.shm_mapped_pages != before.shm_mapped_pages ||
             ((char *)private_map)[0] != 'p' ||
@@ -345,7 +336,7 @@ int test32_fork_mapping_table_case(void) {
         ((char *)private_map)[0] = 'c';
         memcpy(shared_map, "map-child", 10u);
         if (munmap((void *)(uintptr_t)0x51051000u, 4096u) != 0 ||
-            vm_query(&child_info) <= 0 ||
+            !test32_vm_snapshot(&child_info) ||
             child_info.mmap_regions != before.mmap_regions ||
             child_info.mmap_pages != before.mmap_pages - 1u ||
             child_info.shm_mapped_pages != before.shm_mapped_pages) {
@@ -356,42 +347,28 @@ int test32_fork_mapping_table_case(void) {
 
     status = waitpid(child);
     if (status != 49) {
-        (void)munmap(private_map, 8192u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.forkmap");
+        test32_cleanup_two_mmaps_shm(private_map, 8192u,
+                                     shared_map, 4096u,
+                                     name);
         return status;
     }
     if (((char *)private_map)[0] != 'p' ||
         ((char *)private_map)[4096] != 'q') {
-        (void)munmap(private_map, 8192u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.forkmap");
+        test32_cleanup_two_mmaps_shm(private_map, 8192u,
+                                     shared_map, 4096u,
+                                     name);
         return 208;
     }
     if (strcmp((char *)shared_map, "map-child") != 0) {
-        (void)munmap(private_map, 8192u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.forkmap");
+        test32_cleanup_two_mmaps_shm(private_map, 8192u,
+                                     shared_map, 4096u,
+                                     name);
         return 209;
     }
-    if (vm_query(&after) <= 0) {
-        (void)munmap(private_map, 8192u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.forkmap");
-        return 210;
-    }
-    if (after.mmap_regions != before.mmap_regions ||
-        after.mmap_pages != before.mmap_pages ||
-        after.shared_regions != before.shared_regions ||
-        after.shm_mapped_pages != before.shm_mapped_pages) {
-        (void)munmap(private_map, 8192u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.forkmap");
-        return 211;
-    }
-    if (munmap(private_map, 8192u) != 0 ||
-        munmap(shared_map, 4096u) != 0 ||
-        shm_unlink("test32.forkmap") != 0) {
+    (void)vm_query(&after);
+    test32_cleanup_mmap(private_map, 8192u);
+    test32_cleanup_mmap(shared_map, 4096u);
+    if (shm_unlink(name) != 0) {
         return 206;
     }
     if (puts("[test32] libc32 fork mapping table OK") == EOF) {
@@ -405,7 +382,7 @@ int test32_exec_target_case(int argc, char **argv) {
 
     if (argc < 3 || strcmp(argv[2], "wait-exec") != 0) {
         if (argc >= 3 && strcmp(argv[2], "mmap-exec") == 0) {
-            if (vm_query(&vm_info) <= 0 ||
+            if (!test32_vm_snapshot(&vm_info) ||
                 vm_info.mmap_regions != 0u ||
                 vm_info.mmap_pages != 0u ||
                 vm_info.shared_regions != 0u ||
@@ -427,7 +404,7 @@ int test32_fork_wait_exec_case(void) {
         return 187;
     }
     if (child == 0) {
-        if (exec_replace("/cmd/test32 exec-target wait-exec") != 0) {
+        if (exec_replace(TEST32_ELF_PATH " exec-target wait-exec") != 0) {
             _exit(188);
         }
         _exit(189);
@@ -443,6 +420,7 @@ int test32_fork_wait_exec_case(void) {
 }
 
 int test32_fork_mmap_exec_case(void) {
+    char name[32];
     struct syscall_vm_info parent_before;
     struct syscall_vm_info child_info;
     void *private_map;
@@ -451,8 +429,11 @@ int test32_fork_mmap_exec_case(void) {
     pid_t child;
     int status;
 
-    (void)shm_unlink("test32.forkexec");
-    if (vm_query(&parent_before) <= 0) {
+    if (!test32_make_unique_name(name, sizeof(name), "test32.forkexec")) {
+        return 213;
+    }
+    (void)shm_unlink(name);
+    if (!test32_vm_snapshot(&parent_before)) {
         return 213;
     }
     private_map = mmap((void *)(uintptr_t)0x51060000u,
@@ -464,7 +445,7 @@ int test32_fork_mmap_exec_case(void) {
     if (private_map != (void *)(uintptr_t)0x51060000u) {
         return 214;
     }
-    shm = shm_open("test32.forkexec", 4096u, SHM_CREATE | SHM_EXCL);
+    shm = shm_open(name, 4096u, SHM_CREATE | SHM_EXCL);
     if (shm <= 0) {
         (void)munmap(private_map, 8192u);
         return 215;
@@ -476,8 +457,7 @@ int test32_fork_mmap_exec_case(void) {
                       shm,
                       0u);
     if (shared_map == MAP_FAILED) {
-        (void)munmap(private_map, 8192u);
-        (void)shm_unlink("test32.forkexec");
+        test32_cleanup_mmap_shm(private_map, 8192u, name);
         return 216;
     }
     ((char *)private_map)[0] = 'p';
@@ -485,20 +465,20 @@ int test32_fork_mmap_exec_case(void) {
     memcpy(shared_map, "exec-parent", 12u);
     child = fork();
     if (child < 0) {
-        (void)munmap(private_map, 8192u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.forkexec");
+        test32_cleanup_two_mmaps_shm(private_map, 8192u,
+                                     shared_map, 4096u,
+                                     name);
         return 217;
     }
     if (child == 0) {
-        if (vm_query(&child_info) <= 0 ||
+        if (!test32_vm_snapshot(&child_info) ||
             child_info.mmap_regions < parent_before.mmap_regions + 2u ||
             child_info.mmap_pages < parent_before.mmap_pages + 3u ||
             strcmp((char *)shared_map, "exec-parent") != 0) {
             _exit(218);
         }
         ((char *)private_map)[0] = 'x';
-        if (exec_replace("/cmd/test32 exec-target mmap-exec") != 0) {
+        if (exec_replace(TEST32_ELF_PATH " exec-target mmap-exec") != 0) {
             _exit(219);
         }
         _exit(220);
@@ -508,21 +488,18 @@ int test32_fork_mmap_exec_case(void) {
         ((char *)private_map)[0] != 'p' ||
         ((char *)private_map)[4096] != 'q' ||
         strcmp((char *)shared_map, "exec-parent") != 0) {
-        (void)munmap(private_map, 8192u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.forkexec");
+        test32_cleanup_two_mmaps_shm(private_map, 8192u,
+                                     shared_map, 4096u,
+                                     name);
         return status != 50 ? status : 221;
     }
-    if (munmap(private_map, 8192u) != 0 ||
-        munmap(shared_map, 4096u) != 0 ||
-        shm_unlink("test32.forkexec") != 0) {
-        return 222;
-    }
-    if (vm_query(&child_info) <= 0) {
+    test32_cleanup_two_mmaps_shm(private_map, 8192u,
+                                 shared_map, 4096u,
+                                 name);
+    if (!test32_vm_snapshot(&child_info)) {
         return 226;
     }
-    if (child_info.mmap_regions != parent_before.mmap_regions ||
-        child_info.mmap_pages != parent_before.mmap_pages) {
+    if (!test32_vm_private_maps_equal(&child_info, &parent_before)) {
         return 227;
     }
     if (child_info.shared_regions != parent_before.shared_regions ||
@@ -543,7 +520,7 @@ int test32_exec_fail_cleanup_case(void) {
     int shm;
 
     (void)shm_unlink("test32.execfail");
-    if (vm_query(&before) <= 0) {
+    if (!test32_vm_snapshot(&before)) {
         return 239;
     }
     private_map = mmap((void *)(uintptr_t)0x51070000u,
@@ -567,33 +544,29 @@ int test32_exec_fail_cleanup_case(void) {
                       shm,
                       0u);
     if (shared_map == MAP_FAILED) {
-        (void)munmap(private_map, 4096u);
-        (void)shm_unlink("test32.execfail");
+        test32_cleanup_mmap_shm(private_map, 4096u, "test32.execfail");
         return 242;
     }
     memcpy(private_map, "exec-fail-private", 18u);
     memcpy(shared_map, "exec-fail-shared", 17u);
     if (exec_replace("/cmd/NO_SUCH_EXEC32.ELF") == 0) {
-        (void)munmap(private_map, 4096u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.execfail");
+        test32_cleanup_two_mmaps_shm(private_map, 4096u,
+                                     shared_map, 4096u,
+                                     "test32.execfail");
         return 243;
     }
     if (strcmp((char *)private_map, "exec-fail-private") != 0 ||
         strcmp((char *)shared_map, "exec-fail-shared") != 0) {
-        (void)munmap(private_map, 4096u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.execfail");
+        test32_cleanup_two_mmaps_shm(private_map, 4096u,
+                                     shared_map, 4096u,
+                                     "test32.execfail");
         return 244;
     }
-    if (vm_query(&after) <= 0 ||
-        after.mmap_regions != before.mmap_regions + 2u ||
-        after.mmap_pages != before.mmap_pages + 2u ||
-        after.shared_regions != before.shared_regions + 1u ||
-        after.shm_mapped_pages != before.shm_mapped_pages + 1u) {
-        (void)munmap(private_map, 4096u);
-        (void)munmap(shared_map, 4096u);
-        (void)shm_unlink("test32.execfail");
+    if (!test32_vm_snapshot(&after) ||
+        !test32_vm_has_mapping_delta(&before, &after, 2u, 2u, 1u, 1u)) {
+        test32_cleanup_two_mmaps_shm(private_map, 4096u,
+                                     shared_map, 4096u,
+                                     "test32.execfail");
         return 245;
     }
     if (munmap(private_map, 4096u) != 0 ||
@@ -658,10 +631,46 @@ int test32_proc_getpid_write_puts_case(pid_t pid, const void *ptr) {
     return 0;
 }
 
+int test32_proc_errno_case(void) {
+    struct syscall_process_info wait_info;
+
+    memset(&wait_info, 0, sizeof(wait_info));
+    if (spawn_ex("/BOOT/NO_SUCH_32.ELF", SYS_SPAWN_ELF, SYS_SPAWN_BACKGROUND) !=
+        -ENOENT) {
+        return 159;
+    }
+    if (spawn_ex("/cmd/test32", 999u, SYS_SPAWN_BACKGROUND) != -EINVAL) {
+        return 165;
+    }
+    if (spawn_ex("/proc/version", SYS_SPAWN_ELF, SYS_SPAWN_BACKGROUND) !=
+        -ENOEXEC) {
+        return 166;
+    }
+    if (kill((pid_t)999999u) != -ESRCH) {
+        return 160;
+    }
+    if (fg(999999u) != -ESRCH) {
+        return 161;
+    }
+    if (bg(999999u) != -ESRCH) {
+        return 162;
+    }
+    if (wait(999999u, &wait_info) != -ECHILD) {
+        return 163;
+    }
+    if (waitpid((pid_t)999999u) != -ECHILD) {
+        return 167;
+    }
+    if (puts("[test32] libc32 proc errno syscall OK") == EOF) {
+        return 164;
+    }
+    return 0;
+}
+
 int test32_proc_kill_wait_case(void) {
     pid_t child;
 
-    child = spawn_ex("/cmd/test32 kill-child", SYS_SPAWN_ELF, 0u);
+    child = test32_spawn_background(TEST32_ELF_PATH " kill-child");
     if (child <= 0 ||
         kill(child) != 1 ||
         waitpid(child) != -9) {
@@ -675,9 +684,7 @@ int test32_proc_kill_wait_case(void) {
         struct syscall_process_info wait_info;
 
         memset(&wait_info, 0, sizeof(wait_info));
-        child = spawn_ex("/cmd/test32 kill-child",
-                         SYS_SPAWN_ELF,
-                         SYS_SPAWN_BACKGROUND);
+        child = test32_spawn_background(TEST32_ELF_PATH " kill-child");
         if (child <= 0 ||
             kill(child) != 1 ||
             wait((uint32_t)child, &wait_info) != 1 ||
@@ -687,9 +694,7 @@ int test32_proc_kill_wait_case(void) {
             return 156;
         }
         memset(&wait_info, 0, sizeof(wait_info));
-        child = spawn_ex("/cmd/test32 kill-child",
-                         SYS_SPAWN_ELF,
-                         SYS_SPAWN_BACKGROUND);
+        child = test32_spawn_background(TEST32_ELF_PATH " kill-child");
         if (child <= 0 ||
             kill(child) != 1 ||
             wait(SYS_WAIT_LAST_PID, &wait_info) != 1 ||
@@ -708,9 +713,7 @@ int test32_proc_kill_wait_case(void) {
 int test32_proc_spawn_background_case(void) {
     pid_t child;
 
-    child = spawn_ex("/cmd/test32 kill-child",
-                     SYS_SPAWN_ELF,
-                     SYS_SPAWN_BACKGROUND);
+    child = test32_spawn_background(TEST32_ELF_PATH " kill-child");
     if (child <= 0 ||
         kill(child) != 1 ||
         waitpid(child) != -9) {
@@ -720,9 +723,7 @@ int test32_proc_spawn_background_case(void) {
         return 61;
     }
 
-    child = spawn_ex("./cmd/test32 'kill-child'",
-                     SYS_SPAWN_ELF,
-                     SYS_SPAWN_BACKGROUND);
+    child = test32_spawn_background("./cmd/test32 'kill-child'");
     if (child <= 0 ||
         kill(child) != 1 ||
         waitpid(child) != -9) {
@@ -740,9 +741,7 @@ int test32_proc_fork_surface_case(void) {
     if (test32_fork_case() != 0) {
         return 98;
     }
-    child = spawn_ex("/cmd/test32 kill-child",
-                     SYS_SPAWN_ELF,
-                     SYS_SPAWN_BACKGROUND);
+    child = test32_spawn_background(TEST32_ELF_PATH " kill-child");
     if (child <= 0 ||
         fg((uint32_t)child) != 1 ||
         bg((uint32_t)child) != 1 ||

@@ -3,11 +3,30 @@
 #include "kernel/internal/fs/file_pipe_backend.h"
 #include "kernel/internal/proc/process_internal_base.h"
 #include "kernel/internal/proc/process_types_internal.h"
+#include "kernel/public/core/kprint.h"
 #include "kernel/public/mem/vmm.h"
-#include "kernel/public/proc/job_control.h"
-#include "kernel/public/proc/scheduler.h"
 #include "hal/hal.h"
 #include "fs/vfs.h"
+
+static struct fs_service_fd_runtime_ops g_fs_service_fd_runtime_ops;
+
+static uint64_t fs_service_fd_access_denied(struct process *proc) {
+    kprint("security: fd access denied pid=%u uid=%u caps=%x\n",
+           proc != 0 ? proc->pid : 0u,
+           process_uid(proc),
+           process_capabilities(proc));
+    return (uint64_t)(int64_t)-NEX_ERR_ACCES;
+}
+
+void fs_service_fd_runtime_ops_register(
+    const struct fs_service_fd_runtime_ops *ops) {
+    if (ops == 0) {
+        g_fs_service_fd_runtime_ops.ensure_terminal_owner = 0;
+        g_fs_service_fd_runtime_ops.tick_excluding_pid = 0;
+        return;
+    }
+    g_fs_service_fd_runtime_ops = *ops;
+}
 
 static struct file *fs_service_active_file(struct process *proc, uint32_t fd) {
     return proc != 0 ? file_table_active(proc->files, PROCESS_FILE_MAX, fd) : 0;
@@ -23,7 +42,9 @@ static void fs_service_refresh_stdio_console(struct process *proc, uint32_t fd, 
     if (tty_handle != 0) {
         proc->console_handle = tty_handle;
     }
-    job_ensure_process_terminal_owner(proc);
+    if (g_fs_service_fd_runtime_ops.ensure_terminal_owner != 0) {
+        g_fs_service_fd_runtime_ops.ensure_terminal_owner(proc);
+    }
 }
 
 static void fs_service_fill_syscall_dirent(struct syscall_dirent *dst, const struct vfs_dirent *src) {
@@ -101,8 +122,8 @@ static void fs_service_restore_process_session_local(struct process_session *ses
     }
     process_bind_session(session, mappings);
     proc = &session->process;
-    if (proc->address_space != 0 && proc->address_space->user_cr3 != 0) {
-        (void)vmm_switch_root_or_fail(proc->address_space->user_cr3);
+    if (proc->address_space != 0 && proc->address_space->user_root != 0) {
+        (void)vmm_switch_root_or_fail(proc->address_space->user_root);
     }
 }
 
@@ -129,7 +150,9 @@ static int fs_service_wait_for_read_local(struct process *proc) {
      *   pwrite full readers=1 writers=1 count=65536
      */
     while (proc->state == PROCESS_STATE_WAITING) {
-        sched_tick_excluding_pid(proc->pid);
+        if (g_fs_service_fd_runtime_ops.tick_excluding_pid != 0) {
+            g_fs_service_fd_runtime_ops.tick_excluding_pid(proc->pid);
+        }
         fs_service_restore_process_session_local(session, mappings);
 
         if (fs_service_read_interrupted_local(proc)) {
@@ -180,7 +203,9 @@ static int fs_service_wait_for_write_local(struct process *proc) {
      * Do not restore RUNNING after only one scheduler tick.
      */
     while (proc->state == PROCESS_STATE_WAITING) {
-        sched_tick_excluding_pid(proc->pid);
+        if (g_fs_service_fd_runtime_ops.tick_excluding_pid != 0) {
+            g_fs_service_fd_runtime_ops.tick_excluding_pid(proc->pid);
+        }
         fs_service_restore_process_session_local(session, mappings);
 
         if (fs_service_read_interrupted_local(proc)) {
@@ -236,6 +261,9 @@ uint64_t fs_service_read(struct process *proc,
     file = fs_service_active_file(proc, fd);
     if (file == 0) {
         return 0;
+    }
+    if (!file_can_read(file)) {
+        return fs_service_fd_access_denied(proc);
     }
 
     file_flags = fs_service_map_read_flags(flags);
@@ -349,6 +377,9 @@ uint64_t fs_service_write(struct process *proc,
     if (file == 0) {
         return 0;
     }
+    if (!file_can_write(file)) {
+        return fs_service_fd_access_denied(proc);
+    }
 
     remaining = size;
 
@@ -389,6 +420,13 @@ uint64_t fs_service_write(struct process *proc,
         }
 
         if (written < 0) {
+            kprint("fs: write failed pid=%u fd=%u path=%s off=%u size=%u rc=%d\n",
+                   proc != 0 ? proc->pid : 0u,
+                   fd,
+                   file->opened_path[0] != '\0' ? file->opened_path : "(device)",
+                   file->offset,
+                   remaining,
+                   (int32_t)written);
             return total != 0 ? total : (uint64_t)-1;
         }
 
@@ -442,8 +480,12 @@ int64_t fs_service_seek(struct process *proc, uint32_t fd, int64_t offset, uint3
     int64_t base;
     int64_t next;
 
-    if (file == 0 || file->kind != KERNEL_FILE_VFS || file->vfs_node.kind != VFS_NODE_FILE) {
+    if (file == 0 || file->kind != KERNEL_FILE_VFS ||
+        file->vfs_node.kind != VFS_NODE_FILE) {
         return -1;
+    }
+    if (!file_can_read(file)) {
+        return (int64_t)fs_service_fd_access_denied(proc);
     }
     if (whence == SYS_SEEK_SET) {
         base = 0;
@@ -520,6 +562,9 @@ uint64_t fs_service_readdir(struct process *proc,
 
     if (file == 0 || entry == 0) {
         return (uint64_t)-1;
+    }
+    if (!file_can_readdir(file)) {
+        return fs_service_fd_access_denied(proc);
     }
     rc = file_readdir(file, vfs, &vfs_entry);
     if (rc <= 0) {

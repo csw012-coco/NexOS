@@ -64,9 +64,7 @@ static int cmd_wrap_mounts(int argc, char **argv) {
 }
 
 static int cmd_wrap_ps(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
-    return cmd_ps();
+    return cmd_ps(argc, argv);
 }
 
 static int cmd_wrap_jobs(int argc, char **argv) {
@@ -229,8 +227,38 @@ static int cmd_wrap_reboot(int argc, char **argv) {
         write_err_usage("reboot", "\n");
         return 1;
     }
+    {
+        int rc = reboot();
+
+        if (rc != 0) {
+            return cmd_report_syscall_failure(
+                "reboot",
+                "requires power capability",
+                rc);
+        }
+    }
     write_str("rebooting...\n");
-    return reboot();
+    return 0;
+}
+
+static int cmd_wrap_poweroff(int argc, char **argv) {
+    int rc;
+
+    (void)argv;
+    if (argc != 1) {
+        write_err_usage("poweroff", "\n");
+        return 1;
+    }
+    rc = poweroff();
+    if (rc != 0) {
+        return cmd_report_syscall_failure(
+            "poweroff",
+            rc == -NEX_ERR_ACCES || rc == -NEX_ERR_PERM
+                ? "requires power capability"
+                : "ACPI poweroff is unavailable",
+            rc);
+    }
+    return 0;
 }
 
 static const struct cmdsuite_entry g_cmdsuite_entries[] = {
@@ -279,6 +307,8 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"mkdir", cmd_mkdir},
     {"rmdir", cmd_rmdir},
     {"rm", cmd_rm},
+    {"chmod", cmd_chmod},
+    {"chown", cmd_chown},
     {"asm", cmd_asm},
     {"stat", cmd_stat},
     {"du", cmd_du},
@@ -300,6 +330,12 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"hotplug", cmd_hotplug},
     {"switch_root", cmd_switch_root},
     {"ps", cmd_wrap_ps},
+    {"id", cmd_id},
+    {"whoami", cmd_whoami},
+    {"su", cmd_su},
+    {"sudo", cmd_sudo},
+    {"login", cmd_login},
+    {"getty", cmd_getty},
     {"session", cmd_session},
     {"service", cmd_service},
     {"jobs", cmd_wrap_jobs},
@@ -310,6 +346,7 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"fg", cmd_wrap_fg},
     {"bg", cmd_wrap_bg},
     {"reboot", cmd_wrap_reboot},
+    {"poweroff", cmd_wrap_poweroff},
     {"progs", cmd_wrap_progs},
     {"fatls", cmd_wrap_fatls},
     {"fatfind", cmd_fatfind},
@@ -370,6 +407,10 @@ int cmdsuite_run_backing_command(const char *command, int argc, char **argv) {
         return 1;
     }
     return entry->handler(argc, argv);
+}
+
+int cmdsuite_has_command(const char *command) {
+    return cmdsuite_find_entry(command_basename(command != NULL ? command : "")) != NULL;
 }
 
 int cmdsuite_dispatch_main(int argc, char **argv) {

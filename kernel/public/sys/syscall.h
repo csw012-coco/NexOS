@@ -16,7 +16,7 @@ struct vfs;
  *   PMM:               arg0=0              arg1=0          buffer=struct syscall_pmm_info*
  *   BLOCK:             arg0=index          arg1=0          buffer=struct syscall_block_info*
  *   PART:              arg0=disk_index     arg1=slot       buffer=struct syscall_partition_info*
- *   MOUNT:             arg0=index          arg1=0          buffer=struct syscall_mount_info*
+ *   MOUNT:             arg0=index          arg1=flags      buffer=struct syscall_mount_info*
  *   PROGRAM:           arg0=index          arg1=0          buffer=struct syscall_program_info*
  *   ROOT:              arg0=index          arg1=0          buffer=struct syscall_root_entry_info*
  *   ROOT_FIND:         arg0=user_name_addr arg1=0          buffer=struct syscall_root_entry_info*
@@ -49,10 +49,10 @@ struct syscall_frame {
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
-    uint64_t rip;
+    uint64_t instruction_pointer;
     uint64_t cs;
     uint64_t rflags;
-    uint64_t rsp;
+    uint64_t stack_pointer;
     uint64_t ss;
 };
 

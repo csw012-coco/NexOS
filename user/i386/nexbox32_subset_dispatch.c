@@ -18,9 +18,7 @@ static int wrap_mounts(int argc, char **argv) {
 }
 
 static int wrap_ps(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
-    return cmd_ps();
+    return cmd_ps(argc, argv);
 }
 
 static int wrap_kill(int argc, char **argv) {
@@ -51,6 +49,8 @@ static const struct cmd32_entry commands[] = {
     {"umount", cmd_umount},
     {"df", cmd_df},
     {"ps", wrap_ps},
+    {"id", cmd_id},
+    {"whoami", cmd_whoami},
     {"kill", wrap_kill},
     {"sysinfo", cmd_sysinfo},
     {"meminfo", wrap_meminfo},

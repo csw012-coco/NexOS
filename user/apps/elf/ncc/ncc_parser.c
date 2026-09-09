@@ -1856,6 +1856,7 @@ static int ncc_parse_global_variable(struct ncc_parser *parser,
         return 0;
     }
     if (!ncc_expect(parser, ";")) {
+        free(initializer_data);
         return 0;
     }
     if (ncc_add_global(parser,

@@ -37,26 +37,6 @@ KERNEL_C_SRCS := \
 	kernel/sys/syscall_common_request_core.c \
 	kernel/sys/syscall_native_request_core.c \
 	kernel/sys/syscall_mem.c \
-	kernel/sys/syscall_proc.c \
-	kernel/sys/syscall_ipc.c \
-	kernel/sys/syscall_mmap.c \
-	kernel/sys/syscall_fs.c \
-	kernel/sys/syscall_fs_path.c \
-	kernel/sys/syscall_fs_fd.c \
-	kernel/sys/syscall_query.c \
-	kernel/sys/syscall_rtl8139.c \
-	kernel/sys/syscall_query_fat.c \
-	kernel/sys/syscall_query_mount.c \
-	kernel/sys/syscall_query_kmsg.c \
-	kernel/sys/syscall_query_pci.c \
-	kernel/sys/syscall_query_ac97.c \
-	kernel/sys/syscall_query_rtl8139.c \
-	kernel/sys/syscall_query_audio.c \
-	kernel/sys/syscall_query_machine.c \
-	kernel/sys/syscall_power.c \
-	kernel/sys/syscall_event.c \
-	kernel/sys/syscall_gfx.c \
-	kernel/sys/syscall_clipboard.c \
 	kernel/fs/fs_service_root_query.c \
 	kernel/fs/fs_service_mount_query.c \
 	kernel/fs/fs_service_path.c \
@@ -65,7 +45,9 @@ KERNEL_C_SRCS := \
 	kernel/proc/process_context.c \
 	kernel/proc/process_command.c \
 	kernel/proc/process_model.c \
+	kernel/proc/process_mm_query.c \
 	kernel/proc/process_core.c \
+	kernel/proc/process_cap_policy.c \
 	kernel/proc/process_exec.c \
 	kernel/proc/process_program_registry.c \
 	kernel/sched/scheduler_core.c \
@@ -76,9 +58,13 @@ KERNEL_C_SRCS := \
 	kernel/proc/process_session.c \
 	kernel/mem/address_space_core.c \
 	kernel/driver/driver.c \
+	arch/x86/x86_64/driver/services.c \
+	arch/x86/x86_64/driver/elf_loader.c \
 	kernel/proc/process_elf.c \
 	arch/x86/x86_64/gdt.c \
-	arch/x86/x86_64/paging.c \
+	arch/x86/x86_64/mm/paging.c \
+	arch/x86/x86_64/mm/pmm.c \
+	arch/x86/x86_64/mm/vmm.c \
 	arch/x86/x86_64/idt.c \
 	$(DRIVER_C_SRCS) \
 	$(FS_C_SRCS) \

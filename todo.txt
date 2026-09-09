@@ -1,79 +1,98 @@
-i386 port maintenance after feature-complete
-32비트 포팅 완료 후 유지보수 정리
+NexOS i386 maintenance/refactor TODO
+====================================
 
-1. Thin syscall_i386_request_adapter.c
-   - Status: second split done; mmap/shm/mq/sem moved to syscall_i386_mem_ipc_adapter.c,
-     and audio/gfx/block/gui/clipboard/RTL8139 device-UI dispatch moved to syscall_i386_device_ui_adapter.c.
-   - 상태: 2차 분리 완료; mmap/shm/mq/sem은 syscall_i386_mem_ipc_adapter.c로,
-     audio/gfx/block/gui/clipboard/RTL8139 device-UI dispatch는 syscall_i386_device_ui_adapter.c로 이동.
-   - Status: mechanical split continued; VM snapshot/cleanup helpers moved to syscall_i386_vm_adapter.c,
-     and foreground/background fallback helpers moved to syscall_i386_job_adapter.c.
-   - 상태: 기계적 분리 추가 완료; VM snapshot/cleanup helper는 syscall_i386_vm_adapter.c로,
-     foreground/background fallback helper는 syscall_i386_job_adapter.c로 이동.
-   - Keep int 0x40 register decode, 32-bit pointer validation, and ABI copy helpers here.
-   - Move mmap/shm/mq/sem/audio/gfx/block/gui/clipboard dispatch into common syscall helpers.
-   - Goal: syscall_i386_request_adapter.c becomes an ABI adapter, not a syscall implementation hub.
-   - syscall_i386_request_adapter.c를 int 0x40 디코드, 32비트 포인터 검사, ABI copy helper 중심으로 줄이기.
-   - mmap/shm/mq/sem/audio/gfx/block/gui/clipboard dispatch는 공통 syscall helper로 옮기기.
+1. test32 VM query helper cleanup
+   - Add helpers:
+     - test32_vm_query_or_fail(struct syscall_vm_info *out)
+     - test32_vm_same_mapping_counts(a, b)
+     - test32_vm_no_mapping_growth(before, after)
+   - Use them in:
+     - user/i386/test32_proc.c
+       - fork-cow-cleanup
+       - fork-cow-ownership
+       - fork-mmap-exec
+       - exec-fail-cleanup
+     - user/i386/test32_mm.c
+       - mmap_fault_cleanup
+       - mmap_kill_cleanup
+       - shared_fault_cleanup
+       - invalid_pointer_cleanup
+       - shm_lifecycle
+   - Goal: keep MM tests readable and make mapping-count checks express intent directly.
 
-2. Split i386_shared_services.c
-   - Status: second split done; full/backend smoke runners moved to i386_smoke_services.c,
-     and TTY input/UTF-8/Hangul selftests moved to i386_tty_selftest.c.
-   - 상태: 2차 분리 완료; full/backend smoke runner는 i386_smoke_services.c로,
-     TTY input/UTF-8/한글 selftest는 i386_tty_selftest.c로 이동.
-   - Move boot smoke runners, backend smoke runners, TTY selftests, and ad-hoc command runners out of the shared service file.
-   - Keep only i386 boot/service glue and arch-specific service registration.
-   - i386_shared_services.c에서 boot smoke, backend smoke, TTY selftest, 임시 command runner를 분리.
-   - 최종적으로 i386 boot/service glue와 arch-specific service 등록만 남기기.
+2. Split strict MM checks from full smoke checks
+   - Keep check-i386-nexbox32-full as a stable functional smoke.
+   - Add an explicit strict path for refcount/page/mapping-count assertions.
+   - Possible commands:
+     - /BOOT/TEST32.ELF strict-mm
+     - /BOOT/TEST32.ELF live-shm
+     - /BOOT/TEST32.ELF fork-cow-strict
+   - Goal: smoke stays stable while deep MM regressions are still testable on demand.
 
-3. Retire i386 driver legacy surface
-   - Status: first cleanup done; driver_i386_stubs.c renamed to driver_i386_legacy.c to reflect its real role.
-   - 상태: 1차 정리 완료; 실제 역할에 맞춰 driver_i386_stubs.c를 driver_i386_legacy.c로 이름 변경.
-   - Status: second cleanup done; legacy manager/discover/load/file-table aliases were removed.
-     The common driver manager now owns driver_discover_root(), driver_load_all(), driver_get_file(), and driver_file_count(),
-     while i386 keeps only driver_arch_probe_file()/driver_arch_load_file() for ELF32 .DRV modules.
-   - 상태: 2차 정리 완료; legacy manager/discover/load/file-table alias 제거.
-     공통 driver manager가 driver_discover_root(), driver_load_all(), driver_get_file(), driver_file_count()를 소유하고,
-     i386은 ELF32 .DRV용 driver_arch_probe_file()/driver_arch_load_file() hook만 유지.
-   - Status: mechanical split done; ELF32 loader/probe stays in driver_i386_legacy.c,
-     while .DRV service symbol exports moved to driver_i386_services.c with a small internal header.
-   - 상태: 기계적 분리 완료; ELF32 loader/probe는 driver_i386_legacy.c에 남기고,
-     .DRV service symbol export는 작은 internal header와 함께 driver_i386_services.c로 이동.
-   - Replace driver_i386_legacy_* aliases with the common driver manager wherever possible.
-   - Keep only the i386 ELF32 .DRV loader/hook and truly arch-specific MMIO/IO helpers.
-   - i386 driver legacy alias 표면을 줄이고 공통 driver manager로 접기.
-   - i386 ELF32 .DRV loader/hook과 진짜 arch-specific MMIO/IO helper만 남기기.
+3. Finish test32 helper pass
+   - Keep already-added helpers:
+     - TEST32_ELF_PATH
+     - test32_make_unique_name()
+     - test32_cleanup_mmap()
+     - test32_cleanup_shm()
+     - test32_cleanup_mmap_shm()
+     - test32_spawn_background()
+     - test32_wait_expect()
+     - test32_spawn_wait_expect()
+   - Continue only where helper use improves readability.
+   - Do not hide important test actions like kill(), fg/bg, wait-info validation, or exec_replace.
 
-4. Split tty.c into smaller subsystems
-   - Status: first split done; UTF-8 helpers moved to tty_utf8.c and ANSI parser/output moved to tty_ansi.c.
-   - 상태: 1차 분리 완료; UTF-8 helper는 tty_utf8.c로, ANSI parser/output은 tty_ansi.c로 이동.
-   - Status: second split done; Hangul composition moved to tty_hangul.c and prompt/history/paste line editing moved to tty_line_edit.c.
-   - 상태: 2차 분리 완료; 한글 조합은 tty_hangul.c로, prompt/history/paste line editing은 tty_line_edit.c로 이동.
-   - Status: third split done; char queue and escape-sequence queue helpers moved to tty_queue.c.
-   - 상태: 3차 분리 완료; char queue와 escape-sequence queue helper는 tty_queue.c로 이동.
-   - Status: fourth split done; raw/line keyboard input dispatch moved to tty_input.c.
-   - 상태: 4차 분리 완료; raw/line keyboard input dispatch는 tty_input.c로 이동.
-   - Status: fifth split done; virtual TTY state and switching moved to tty_virtual.c.
-   - 상태: 5차 분리 완료; virtual TTY state와 switching은 tty_virtual.c로 이동.
-   - Suggested split: tty_utf8.c, tty_hangul.c, tty_line_edit.c, tty_ansi.c, tty_core.c.
-   - Keep UTF-8/Hangul/editor parity smoke passing after each split.
-   - tty.c를 UTF-8, 한글 조합, line editor, ANSI, core로 분리.
-   - 각 분리 단계마다 UTF-8/한글/editor parity smoke 유지.
+4. i386 syscall adapter thinness audit
+   - syscall_i386_request_adapter.c should keep:
+     - int 0x40 register decode
+     - 32-bit pointer validation
+     - copy_to_user/copy_from_user/copy_user_cstr ABI helpers
+     - request/result bridge into common syscall core
+   - Move or keep moved out:
+     - mmap/shm/mq/sem dispatch
+     - audio/gfx/block/gui/clipboard dispatch
+     - query/event/power pure handlers
+   - Goal: i386 adapter is an ABI adapter, not a syscall implementation hub.
 
-5. Split user/i386/test32.c by test area
-   - Suggested split: test32_proc.c, test32_mm.c, test32_fs.c, test32_ipc.c, test32_libc.c.
-   - Keep TEST32.ELF command names and smoke output stable.
-   - test32.c를 proc/mm/fs/ipc/libc 영역별로 분리.
-   - 기존 TEST32.ELF 명령 이름과 smoke 출력은 유지.
+5. process32/scheduler thin backend audit
+   - process32.c target shape:
+     - ELF32 loader/backend
+     - i386 command adapter
+     - arch-specific user entry preparation
+   - scheduler.c target shape:
+     - timer tick glue
+     - current task slot bridge
+     - context switch/FPU/CR3 arch state
+   - Move remaining lifecycle policy into common process/scheduler helpers where practical.
 
-6. Reduce ush_exec.c complexity
-   - Separate command lookup, redirection, job control, path resolution, and exec/spawn handling.
-   - Keep unknown-command behavior identical between x86_64 and i386.
-   - ush_exec.c에서 command lookup, redirection, job-control, path resolve, exec/spawn 처리를 분리.
-   - 없는 명령어 처리 출력은 x86_64/i386 동일하게 유지.
+6. i386 shared services residue audit
+   - i386_shared_services.c should keep only:
+     - i386 boot/service glue
+     - arch-specific service registration
+   - Keep boot smoke runners, TTY selftests, command runners, driver smoke, and autostart glue split by responsibility.
 
-7. Remove procfs dependency on compat32 internals
-   - Replace direct syscall_compat32_vm_snapshot dependency with a common process/mm query API.
-   - procfs should not know about compat32 syscall internals.
-   - vfs_procfs_format.c가 syscall_compat32_vm_snapshot을 직접 보는 구조 제거.
-   - 공통 process/mm query API로 대체.
+7. Driver/backend parity follow-up
+   - Keep checking active paths for:
+     - AHCI read/write/sync/flush
+     - EHCI/XHCI + USB MSC
+     - USB HID
+     - RTL8139 TX/RX
+     - AC97/HDA audio
+   - Ensure /proc/drivers, drivers, doctor --table use the same state/reason model on i386 and x86_64.
+
+8. Userland parity follow-up
+   - Expand NEXBOX32 full applet smoke only for commands that are stable.
+   - Continue checking:
+     - storage/proc/gfx/audio/net/doctor/editor applets
+     - UTF-8/Unifont/Hangul input/editing parity
+     - clipboard behavior
+     - gfx/editor/doom runtime smoke
+
+Regression commands to keep green
+=================================
+
+- make CCACHE= ARCH=i386 check
+- make CCACHE= check-i386-nexbox32-full
+- make CCACHE= check-x86_64-nexbox-full
+
+=====

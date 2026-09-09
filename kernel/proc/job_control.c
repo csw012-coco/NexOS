@@ -87,6 +87,53 @@ static int job_file_terminal(const struct file *file, struct job_terminal_ref *t
     return 0;
 }
 
+static int job_exec_node_setuid_local(const struct vfs_node *node,
+                                      uint32_t *uid_out,
+                                      uint32_t *gid_out) {
+    if (node == 0 || uid_out == 0 || gid_out == 0 ||
+        node->kind != VFS_NODE_FILE ||
+        node->mount_kind != VFS_MOUNT_NXFS ||
+        (node->handle.nxfs_inode.mode & 04000u) == 0u) {
+        return 0;
+    }
+    *uid_out = node->handle.nxfs_inode.uid;
+    *gid_out = node->handle.nxfs_inode.gid;
+    return 1;
+}
+
+static uint32_t job_apply_exec_identity_local(struct process *proc,
+                                              const struct vfs_node *node,
+                                              uint32_t base_caps) {
+    uint32_t uid = 0u;
+    uint32_t gid = 0u;
+    /*
+    kprint("SUID CHECK pid=%u kind=%u mount=%u mode=%o owner=%u:%u before=%u:%u\n",
+           proc != 0 ? proc->pid : 0u,
+           node != 0 ? node->kind : 0u,
+           node != 0 ? node->mount_kind : 0u,
+           node != 0 ? node->handle.nxfs_inode.mode : 0u,
+           node != 0 ? node->handle.nxfs_inode.uid : 0u,
+           node != 0 ? node->handle.nxfs_inode.gid : 0u,
+           process_uid(proc),
+           process_gid(proc));
+    */
+    if (proc != 0 && job_exec_node_setuid_local(node, &uid, &gid)) {
+        (void)process_identity_push(proc);
+        process_set_identity(proc, uid, gid);
+
+        kprint("SUID APPLY pid=%u -> uid=%u gid=%u\n",
+               proc->pid,
+               process_uid(proc),
+               process_gid(proc));
+
+        if (uid == 0u) {
+            return PROCESS_CAP_SYS_ADMIN;
+        }
+    }
+
+    return base_caps;
+}
+
 static int job_process_waiting_on_tty(const struct process *proc, const struct tty *tty) {
     struct job_terminal_ref terminal;
     uint32_t foreground_pid;
@@ -166,6 +213,20 @@ void job_ensure_process_terminal_owner(const struct process *proc) {
     }
 }
 
+int job_claim_process_terminal(const struct process *proc) {
+    struct job_terminal_ref terminal;
+
+    if (proc == 0 || proc->pid == 0u) {
+        return -NEX_ERR_INVAL;
+    }
+    terminal = job_process_terminal(proc);
+    if (terminal.kind == JOB_TERMINAL_NONE) {
+        return -NEX_ERR_INVAL;
+    }
+    job_terminal_set_foreground_pid(terminal, proc->pid);
+    return 1;
+}
+
 int job_tty_wake_waiting_processes(struct tty *tty) {
     int waked = 0;
 
@@ -177,11 +238,11 @@ int job_tty_wake_waiting_processes(struct tty *tty) {
         waked = 1;
     }
     for (uint32_t i = 0; i < USER_PROCESS_LIMIT; i++) {
-        if (!g_bg_runtimes[i].used) {
+        if (!g_job_runtimes[i].used) {
             continue;
         }
-        if (job_process_waiting_on_tty(&g_bg_runtimes[i].session.process, tty)) {
-            g_bg_runtimes[i].session.process.state = PROCESS_STATE_READY;
+        if (job_process_waiting_on_tty(&g_job_runtimes[i].session.process, tty)) {
+            g_job_runtimes[i].session.process.state = PROCESS_STATE_READY;
             waked = 1;
         }
     }
@@ -209,14 +270,14 @@ static void job_restore_bound_session(struct process_session *session, struct us
     uint64_t target_root = 0;
 
     if (session == 0 || mappings == 0) {
-        job_bind_foreground_session();
+        job_bind_root_session();
         return;
     }
     process_bind_session(session, mappings);
-    if (session->address_space.user_cr3 != 0) {
-        target_root = session->address_space.user_cr3;
-    } else if (session->address_space.kernel_cr3 != 0) {
-        target_root = session->address_space.kernel_cr3;
+    if (session->address_space.user_root != 0) {
+        target_root = session->address_space.user_root;
+    } else if (session->address_space.kernel_root != 0) {
+        target_root = session->address_space.kernel_root;
     }
     if (target_root != 0 && !vmm_root_is_current(target_root)) {
         (void)vmm_switch_root_or_fail(target_root);
@@ -231,6 +292,24 @@ static void job_cleanup_runtime(struct job_runtime *runtime) {
     job_reset_runtime(runtime);
 }
 
+static void job_abort_spawn_slot(struct job_runtime *runtime,
+                                 uint32_t slot,
+                                 uint32_t pid) {
+    struct process_snapshot ignored;
+
+    if (runtime != 0 && runtime->used) {
+        session_finish(&runtime->session, runtime->mappings);
+        job_reset_runtime(runtime);
+    }
+    if (pid != 0u) {
+        (void)process_wait_pid(pid, &ignored);
+    }
+    if (slot < USER_PROCESS_LIMIT && g_process_slot_used[slot]) {
+        g_process_slot_used[slot] = 0;
+        process_clear_slot_state(&g_process_slots[slot]);
+    }
+}
+
 static void job_update_ready_work_while_foreground_waits(struct process_session *caller_session,
                                                          struct user_page_mapping *caller_mappings,
                                                          uint32_t foreground_pid) {
@@ -241,7 +320,96 @@ static void job_update_ready_work_while_foreground_waits(struct process_session 
     job_restore_bound_session(caller_session, caller_mappings);
 }
 
-static int job_start_runtime_session(struct job_runtime *runtime, struct process *proc, uint64_t kernel_cr3) {
+static int job_prepare_foreground_terminal(uint32_t pid,
+                                           struct job_runtime *runtime,
+                                           struct process *caller_proc,
+                                           struct job_terminal_ref *terminal_out,
+                                           uint32_t *previous_pid_out) {
+    struct job_terminal_ref terminal;
+    struct job_terminal_ref runtime_terminal;
+
+    if (runtime == 0 || terminal_out == 0 || previous_pid_out == 0) {
+        return -NEX_ERR_INVAL;
+    }
+
+    runtime_terminal = job_process_terminal(&runtime->session.process);
+    terminal = job_process_terminal(caller_proc != 0 ? caller_proc : &runtime->session.process);
+    job_ensure_process_terminal_owner(caller_proc);
+    if (terminal.kind == JOB_TERMINAL_NONE) {
+        terminal = runtime_terminal;
+    }
+    if (terminal.kind != JOB_TERMINAL_NONE &&
+        runtime_terminal.kind != JOB_TERMINAL_NONE &&
+        !job_terminal_same(terminal, runtime_terminal)) {
+        return -NEX_ERR_ACCES;
+    }
+
+    *terminal_out = terminal;
+    *previous_pid_out = job_terminal_foreground_pid(terminal);
+    job_terminal_set_foreground_pid(terminal, pid);
+    return 1;
+}
+
+static void job_restore_foreground_terminal(struct process_session *caller_session,
+                                            struct user_page_mapping *caller_mappings,
+                                            struct job_terminal_ref terminal,
+                                            uint32_t previous_pid) {
+    job_restore_bound_session(caller_session, caller_mappings);
+    job_terminal_set_foreground_pid(terminal, previous_pid);
+}
+
+static void job_run_foreground_slice(struct job_runtime *runtime) {
+    process_bind_session(&runtime->session, runtime->mappings);
+    if (!session_run_active_slice(&runtime->session,
+                                  runtime->mappings,
+                                  runtime->entry,
+                                  runtime->stack_top,
+                                  0)) {
+        process_mark_exit_pending(&runtime->session.process,
+                                  runtime->session.process.exit_code);
+    }
+}
+
+static void job_finish_foreground_runtime_exit(struct job_runtime *runtime) {
+    process_bind_session(&runtime->session, runtime->mappings);
+    job_cleanup_runtime(runtime);
+}
+
+static int job_drive_foreground_runtime(struct job_runtime *runtime,
+                                        struct process_session *caller_session,
+                                        struct user_page_mapping *caller_mappings,
+                                        uint32_t pid) {
+    while (runtime->used && runtime->session.process.pid == pid) {
+        switch (runtime->session.process.state) {
+            case PROCESS_STATE_EXITED:
+                job_finish_foreground_runtime_exit(runtime);
+                return 1;
+            case PROCESS_STATE_READY:
+            case PROCESS_STATE_STOPPED:
+                job_run_foreground_slice(runtime);
+                if (runtime->session.process.state == PROCESS_STATE_STOPPED) {
+                    return 1;
+                }
+                if (runtime->session.process.state == PROCESS_STATE_EXITED) {
+                    job_finish_foreground_runtime_exit(runtime);
+                    return 1;
+                }
+                job_update_ready_work_while_foreground_waits(caller_session, caller_mappings, pid);
+                break;
+            case PROCESS_STATE_FREE:
+                job_reset_runtime(runtime);
+                return 1;
+            default:
+                hal_display_service_pending();
+                hal_cpu_wait_for_interrupt();
+                job_update_ready_work_while_foreground_waits(caller_session, caller_mappings, pid);
+                break;
+        }
+    }
+    return 1;
+}
+
+static int job_start_runtime_session(struct job_runtime *runtime, struct process *proc, uint64_t kernel_root) {
     JOB_TRACE("job: runtime start pid=%u\n", proc != 0 ? proc->pid : 0u);
     runtime->used = 1;
     process_bind_session(&runtime->session, runtime->mappings);
@@ -254,21 +422,21 @@ static int job_start_runtime_session(struct job_runtime *runtime, struct process
     runtime->session.process.state = PROCESS_STATE_READY;
     runtime->session.process.exit_code = 0;
     runtime->session.process.wake_tick = 0;
-    runtime->session.address_space.kernel_cr3 = kernel_cr3 != 0 ? kernel_cr3 : vmm_current_root();
-    JOB_TRACE("job: runtime kernel_cr3=%lx current=%lx\n",
-              runtime->session.address_space.kernel_cr3,
+    runtime->session.address_space.kernel_root = kernel_root != 0 ? kernel_root : vmm_current_root();
+    JOB_TRACE("job: runtime kernel_root=%lx current=%lx\n",
+              runtime->session.address_space.kernel_root,
               vmm_current_root());
-    if (!vmm_root_is_current(runtime->session.address_space.kernel_cr3) &&
-        !vmm_switch_root_or_fail(runtime->session.address_space.kernel_cr3)) {
+    if (!vmm_root_is_current(runtime->session.address_space.kernel_root) &&
+        !vmm_switch_root_or_fail(runtime->session.address_space.kernel_root)) {
         g_process_slot_used[proc->slot] = 0;
         job_reset_runtime(runtime);
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
     }
     JOB_TRACE("job: runtime user root begin\n");
-    runtime->session.address_space.user_cr3 = vmm_create_user_root();
-    JOB_TRACE("job: runtime user root=%lx\n", runtime->session.address_space.user_cr3);
-    if (runtime->session.address_space.user_cr3 == 0) {
+    runtime->session.address_space.user_root = vmm_create_user_root();
+    JOB_TRACE("job: runtime user root=%lx\n", runtime->session.address_space.user_root);
+    if (runtime->session.address_space.user_root == 0) {
         g_process_slot_used[proc->slot] = 0;
         job_reset_runtime(runtime);
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
@@ -306,18 +474,21 @@ int job_tty_foreground_is_shell(struct tty *tty) {
     return job_process_is_active(proc) && job_process_ignores_sigint(proc);
 }
 
-int job_run_background_with_pid(struct vfs *vfs,
-                                const char *name,
-                                const char *const *envp,
-                                enum process_exec_mode mode,
-                                uint32_t *pid_out) {
+int job_spawn_process(struct vfs *vfs,
+                      const char *name,
+                      const char *const *envp,
+                      enum process_exec_mode mode,
+                      uint32_t *pid_out) {
     char command_name[NOS_TTY_LINE_BUFFER_SIZE];
     char resolved_image_name[NOS_TTY_LINE_BUFFER_SIZE];
     char resolved_command_line[NOS_TTY_LINE_BUFFER_SIZE];
+    struct vfs_node node;
     uint32_t bytes_read = 0;
     uint64_t entry = 0;
     struct process *proc;
     struct job_runtime *runtime;
+    uint32_t allocated_slot;
+    uint32_t allocated_pid;
     const char *image_name;
     struct process_session *caller_session = process_current_session();
     struct user_page_mapping *caller_mappings = process_current_mappings();
@@ -325,7 +496,7 @@ int job_run_background_with_pid(struct vfs *vfs,
     uint64_t caller_root = vmm_current_root();
 
     g_process_exec_last_error = PROCESS_EXEC_OK;
-    JOB_TRACE("job: bg start %s\n", name != 0 ? name : "(null)");
+    JOB_TRACE("job: spawn start %s\n", name != 0 ? name : "(null)");
     if (vfs == 0 || name == 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
         return 0;
@@ -338,9 +509,9 @@ int job_run_background_with_pid(struct vfs *vfs,
         g_process_exec_last_error = PROCESS_EXEC_ERR_BAD_ARGS;
         return 0;
     }
-    JOB_TRACE("job: bg command %s\n", command_name);
-    image_name = mode == PROCESS_EXEC_ELF ? command_name : process_resolve_image_name(command_name);
-    JOB_TRACE("job: bg resolve begin %s\n", image_name != 0 ? image_name : "(null)");
+    JOB_TRACE("job: spawn command %s\n", command_name);
+    image_name = command_name;
+    JOB_TRACE("job: spawn resolve begin %s\n", image_name != 0 ? image_name : "(null)");
     if (!process_resolve_exec_target(vfs,
                                      image_name,
                                      name,
@@ -348,91 +519,108 @@ int job_run_background_with_pid(struct vfs *vfs,
                                      sizeof(resolved_image_name),
                                      resolved_command_line,
                                      sizeof(resolved_command_line),
-                                     0,
+                                     &node,
                                      &bytes_read)) {
         return 0;
     }
-    JOB_TRACE("job: bg resolve ok image=%s bytes=%u\n", resolved_image_name, bytes_read);
-    JOB_TRACE("job: bg caller root=%lx user=%lx kernel=%lx\n",
+    /*
+    kprint("EXEC RESOLVE image=%s mode=%u owner=%u:%u\n",
+       resolved_image_name,
+       node.handle.nxfs_inode.mode,
+       node.handle.nxfs_inode.uid,
+       node.handle.nxfs_inode.gid);
+    */
+    JOB_TRACE("job: spawn resolve ok image=%s bytes=%u\n", resolved_image_name, bytes_read);
+    JOB_TRACE("job: spawn caller root=%lx user=%lx kernel=%lx\n",
               caller_root,
-              caller_session != 0 ? caller_session->address_space.user_cr3 : 0,
-              caller_session != 0 ? caller_session->address_space.kernel_cr3 : 0);
+              caller_session != 0 ? caller_session->address_space.user_root : 0,
+              caller_session != 0 ? caller_session->address_space.kernel_root : 0);
     if (caller_session != 0 &&
         caller_session->process.image_kind == PROCESS_IMAGE_NONE &&
-        caller_session->address_space.user_cr3 == 0 &&
-        caller_session->address_space.kernel_cr3 == 0) {
-        caller_session->address_space.kernel_cr3 = caller_root;
+        caller_session->address_space.user_root == 0 &&
+        caller_session->address_space.kernel_root == 0) {
+        caller_session->address_space.kernel_root = caller_root;
     }
 
     job_ensure_process_terminal_owner(parent_proc);
-    JOB_TRACE("job: bg alloc slot begin\n");
+    JOB_TRACE("job: spawn alloc slot begin\n");
     proc = process_alloc_slot(0, parent_proc);
     if (proc == 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ENTER;
         return 0;
     }
-    JOB_TRACE("job: bg alloc slot ok pid=%u slot=%u\n", proc->pid, proc->slot);
-    if (pid_out != 0) {
-        *pid_out = proc->pid;
+    if (parent_proc == process_current()) {
+        struct process *parent = process_current_mut();
+        uint32_t base_caps =
+            process_next_spawn_capabilities(parent, process_capabilities(parent));
+
+        base_caps = job_apply_exec_identity_local(proc, &node, base_caps);
+        process_set_capabilities(
+            proc,
+            process_exec_policy_capabilities(vfs, &node, resolved_image_name, base_caps));
+        process_clear_next_spawn_capabilities(parent);
     }
-    runtime = &g_bg_runtimes[proc->slot];
+    JOB_TRACE("job: spawn alloc slot ok pid=%u slot=%u\n", proc->pid, proc->slot);
+    allocated_slot = proc->slot;
+    allocated_pid = proc->pid;
+    runtime = &g_job_runtimes[proc->slot];
     job_reset_runtime(runtime);
     if (!job_start_runtime_session(runtime,
                                    proc,
-                                   caller_session != 0 ? caller_session->address_space.kernel_cr3 : 0)) {
+                                   caller_session != 0 ? caller_session->address_space.kernel_root : 0)) {
+        job_abort_spawn_slot(runtime, allocated_slot, allocated_pid);
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
-    JOB_TRACE("job: bg runtime ok user_cr3=%lx\n", runtime->session.address_space.user_cr3);
+    JOB_TRACE("job: spawn runtime ok user_root=%lx\n", runtime->session.address_space.user_root);
     job_ensure_process_terminal_owner(&runtime->session.process);
-    JOB_TRACE("job: bg switch user root begin\n");
-    if (!vmm_switch_root_or_fail(runtime->session.address_space.user_cr3)) {
+    JOB_TRACE("job: spawn switch user root begin\n");
+    if (!vmm_switch_root_or_fail(runtime->session.address_space.user_root)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
-        job_cleanup_runtime(runtime);
+        job_abort_spawn_slot(runtime, allocated_slot, allocated_pid);
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
-    JOB_TRACE("job: bg switch user root ok\n");
+    JOB_TRACE("job: spawn switch user root ok\n");
     addrspace_unmap_range_if_present(USER_ELF_BASE, USER_ELF_LIMIT);
     addrspace_unmap_range_if_present(USER_ELF_STACK_BOTTOM, USER_ELF_STACK_TOP);
     vmm_allow_user_range(USER_ELF_BASE, USER_ELF_LIMIT);
     vmm_allow_user_range(USER_ELF_STACK_BOTTOM, USER_ELF_STACK_TOP);
-    process_set_name(&runtime->session.process, resolved_image_name);
+    process_set_name(&runtime->session.process, resolved_command_line);
 
-    JOB_TRACE("job: bg load elf begin\n");
+    JOB_TRACE("job: spawn load elf begin\n");
     if (!process_load_elf_image(g_elf_file_buffer, bytes_read, &entry)) {
-        job_cleanup_runtime(runtime);
+        job_abort_spawn_slot(runtime, allocated_slot, allocated_pid);
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
-    JOB_TRACE("job: bg load elf ok entry=%lx\n", entry);
-    JOB_TRACE("job: bg stack map begin\n");
+    JOB_TRACE("job: spawn load elf ok entry=%lx\n", entry);
+    JOB_TRACE("job: spawn stack map begin\n");
     if (!addrspace_map_range(USER_ELF_STACK_BOTTOM, USER_ELF_STACK_TOP)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_STACK_ALLOC;
-        job_cleanup_runtime(runtime);
+        job_abort_spawn_slot(runtime, allocated_slot, allocated_pid);
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
-    JOB_TRACE("job: bg stack map ok\n");
+    JOB_TRACE("job: spawn stack map ok\n");
 
     runtime->entry = entry;
-    JOB_TRACE("job: bg args begin\n");
+    JOB_TRACE("job: spawn args begin\n");
     if (!process_prepare_arguments(resolved_command_line, envp, &runtime->stack_top)) {
-        job_cleanup_runtime(runtime);
+        job_abort_spawn_slot(runtime, allocated_slot, allocated_pid);
         job_restore_bound_session(caller_session, caller_mappings);
         return 0;
     }
-    JOB_TRACE("job: bg args ok stack=%lx\n", runtime->stack_top);
-    JOB_TRACE("job: bg restore caller begin\n");
+    JOB_TRACE("job: spawn args ok stack=%lx\n", runtime->stack_top);
+    JOB_TRACE("job: spawn restore caller begin\n");
     job_restore_bound_session(caller_session, caller_mappings);
-    JOB_TRACE("job: bg restore caller ok current=%lx\n", vmm_current_root());
+    JOB_TRACE("job: spawn restore caller ok current=%lx\n", vmm_current_root());
     g_process_exec_last_error = PROCESS_EXEC_OK;
-    JOB_TRACE("job: bg ok pid=%u\n", runtime->session.process.pid);
+    JOB_TRACE("job: spawn ok pid=%u\n", runtime->session.process.pid);
+    if (pid_out != 0) {
+        *pid_out = allocated_pid;
+    }
     return 1;
-}
-
-int job_run_background(struct vfs *vfs, const char *name83) {
-    return job_run_background_with_pid(vfs, name83, 0, PROCESS_EXEC_AUTO, 0);
 }
 
 int job_fork_current(const struct syscall_frame *frame, uint32_t *child_pid_out) {
@@ -445,16 +633,16 @@ int job_fork_current(const struct syscall_frame *frame, uint32_t *child_pid_out)
 
     if (frame == 0 || parent_session == 0 || parent_mappings == 0 || parent == 0 ||
         parent->image_kind == PROCESS_IMAGE_NONE ||
-        parent_session->address_space.user_cr3 == 0) {
+        parent_session->address_space.user_root == 0) {
         return 0;
     }
     slot_proc = process_alloc_slot(0, parent);
     if (slot_proc == 0) {
         return 0;
     }
-    child = &g_bg_runtimes[slot_proc->slot];
+    child = &g_job_runtimes[slot_proc->slot];
     job_reset_runtime(child);
-    child_root = vmm_clone_root_cow(parent_session->address_space.user_cr3);
+    child_root = vmm_clone_root_cow(parent_session->address_space.user_root);
     if (child_root == 0) {
         g_process_slot_used[slot_proc->slot] = 0;
         process_clear_slot_state(slot_proc);
@@ -465,7 +653,7 @@ int job_fork_current(const struct syscall_frame *frame, uint32_t *child_pid_out)
     child->entry = parent->entry;
     child->stack_top = parent->stack_top;
     child->session.address_space = parent_session->address_space;
-    child->session.address_space.user_cr3 = child_root;
+    child->session.address_space.user_root = child_root;
     child->session.address_space.reserved_phys_base = 0;
     child->session.address_space.reserved_phys_limit = 0;
     child->session.address_space.reserved_phys_next = 0;
@@ -541,24 +729,30 @@ int job_get(uint32_t slot, struct process_snapshot *out) {
     return 1;
 }
 
-int process_kill_pid(uint32_t pid) {
+int job_kill_pid(uint32_t pid) {
     struct job_runtime *runtime = job_find_runtime_by_pid(pid);
 
     if (runtime == 0) {
-        return 0;
+        return pid == 0u ? -NEX_ERR_INVAL : -NEX_ERR_SRCH;
+    }
+    if (runtime->session.process.state == PROCESS_STATE_EXITED) {
+        return -NEX_ERR_CHILD;
+    }
+    if (runtime->session.process.state == PROCESS_STATE_FREE) {
+        return -NEX_ERR_SRCH;
     }
 
     process_bind_session(&runtime->session, runtime->mappings);
-    if (runtime->session.address_space.user_cr3 != 0) {
-        if (!vmm_switch_root_or_fail(runtime->session.address_space.user_cr3)) {
-            job_bind_foreground_session();
-            return 0;
+    if (runtime->session.address_space.user_root != 0) {
+        if (!vmm_switch_root_or_fail(runtime->session.address_space.user_root)) {
+            job_bind_root_session();
+            return -NEX_ERR_IO;
         }
     }
     process_exit_current(&runtime->session, -9);
     session_finish(&runtime->session, runtime->mappings);
     job_reset_runtime(runtime);
-    job_bind_foreground_session();
+    job_bind_root_session();
     return 1;
 }
 
@@ -567,75 +761,44 @@ int job_foreground_pid(uint32_t pid) {
     struct process_session *caller_session = process_current_session();
     struct user_page_mapping *caller_mappings = process_current_mappings();
     struct process *caller_proc = process_current_mut();
-    struct job_terminal_ref terminal;
-    struct job_terminal_ref runtime_terminal;
-    uint32_t previous_foreground_pid;
+    struct job_terminal_ref terminal = job_terminal_none();
+    uint32_t previous_foreground_pid = 0u;
+    int rc;
 
     if (runtime == 0) {
-        return 0;
-    }
-    runtime_terminal = job_process_terminal(&runtime->session.process);
-    terminal = job_process_terminal(caller_proc != 0 ? caller_proc : &runtime->session.process);
-    job_ensure_process_terminal_owner(caller_proc);
-    if (terminal.kind == JOB_TERMINAL_NONE) {
-        terminal = runtime_terminal;
-    }
-    if (terminal.kind != JOB_TERMINAL_NONE &&
-        runtime_terminal.kind != JOB_TERMINAL_NONE &&
-        !job_terminal_same(terminal, runtime_terminal)) {
-        return 0;
-    }
-    previous_foreground_pid = job_terminal_foreground_pid(terminal);
-
-    job_terminal_set_foreground_pid(terminal, pid);
-    while (runtime->used && runtime->session.process.pid == pid) {
-        if (runtime->session.process.state == PROCESS_STATE_EXITED) {
-            process_bind_session(&runtime->session, runtime->mappings);
-            job_cleanup_runtime(runtime);
-            break;
-        }
-        if (runtime->session.process.state == PROCESS_STATE_READY ||
-            runtime->session.process.state == PROCESS_STATE_STOPPED) {
-            process_bind_session(&runtime->session, runtime->mappings);
-            if (!session_run_active_slice(&runtime->session, runtime->mappings, runtime->entry, runtime->stack_top, 0)) {
-                process_mark_exit_pending(&runtime->session.process, runtime->session.process.exit_code);
-            }
-            if (runtime->session.process.state == PROCESS_STATE_STOPPED) {
-                job_restore_bound_session(caller_session, caller_mappings);
-                job_terminal_set_foreground_pid(terminal, previous_foreground_pid);
-                break;
-            }
-            if (runtime->session.process.state == PROCESS_STATE_EXITED) {
-                job_cleanup_runtime(runtime);
-                break;
-            }
-            job_update_ready_work_while_foreground_waits(caller_session, caller_mappings, pid);
-            continue;
-        }
-        if (runtime->session.process.state == PROCESS_STATE_FREE) {
-            job_reset_runtime(runtime);
-            break;
-        }
-        hal_display_service_pending();
-        hal_cpu_wait_for_interrupt();
-        job_update_ready_work_while_foreground_waits(caller_session, caller_mappings, pid);
+        return pid == 0u ? -NEX_ERR_INVAL : -NEX_ERR_SRCH;
     }
 
-    job_restore_bound_session(caller_session, caller_mappings);
-    job_terminal_set_foreground_pid(terminal, previous_foreground_pid);
-    return 1;
+    rc = job_prepare_foreground_terminal(pid,
+                                         runtime,
+                                         caller_proc,
+                                         &terminal,
+                                         &previous_foreground_pid);
+    if (rc <= 0) {
+        return rc;
+    }
+
+    rc = job_drive_foreground_runtime(runtime, caller_session, caller_mappings, pid);
+    job_restore_foreground_terminal(caller_session,
+                                    caller_mappings,
+                                    terminal,
+                                    previous_foreground_pid);
+    return rc;
 }
 
 int job_background_pid(uint32_t pid) {
     struct job_runtime *runtime = job_find_runtime_by_pid(pid);
 
     if (runtime == 0) {
-        return 0;
+        return pid == 0u ? -NEX_ERR_INVAL : -NEX_ERR_SRCH;
     }
-    if (runtime->session.process.state == PROCESS_STATE_EXITED ||
-        runtime->session.process.state == PROCESS_STATE_FREE) {
-        return 0;
+    if (runtime->session.process.state == PROCESS_STATE_EXITED) {
+        return -NEX_ERR_CHILD;
     }
+    if (runtime->session.process.state == PROCESS_STATE_FREE) {
+        return -NEX_ERR_SRCH;
+    }
+    job_clear_process_foreground_pid(&runtime->session.process);
     if (runtime->session.process.state == PROCESS_STATE_STOPPED) {
         runtime->session.process.state = PROCESS_STATE_READY;
         runtime->session.process.wake_tick = 0;
@@ -663,38 +826,44 @@ int job_serial_current_process_foreground_allowed(void) {
     return g_serial_foreground_pid != 0u && g_serial_foreground_pid == proc->pid;
 }
 
-int job_tty_sigint(struct tty *tty) {
+int job_tty_deliver_sigint(struct tty *tty) {
     struct job_terminal_ref terminal;
     struct process *proc;
 
+    if (tty == 0) {
+        return -NEX_ERR_INVAL;
+    }
     terminal.kind = JOB_TERMINAL_TTY;
     terminal.tty = tty;
     proc = job_find_foreground_process(terminal);
 
     if (!job_process_is_active(proc)) {
-        return 0;
+        return -NEX_ERR_SRCH;
     }
     if (job_process_ignores_sigint(proc)) {
-        return 0;
+        return -NEX_ERR_ACCES;
     }
 
     process_mark_exit_pending(proc, 130);
     return 1;
 }
 
-int job_tty_sigtstp(struct tty *tty, const struct syscall_frame *frame) {
+int job_tty_deliver_sigtstp(struct tty *tty, const struct syscall_frame *frame) {
     struct job_terminal_ref terminal;
     struct process *proc;
 
+    if (tty == 0) {
+        return -NEX_ERR_INVAL;
+    }
     terminal.kind = JOB_TERMINAL_TTY;
     terminal.tty = tty;
     proc = job_find_foreground_process(terminal);
 
     if (!job_process_is_active(proc)) {
-        return 0;
+        return -NEX_ERR_SRCH;
     }
     if (job_process_ignores_sigint(proc)) {
-        return 0;
+        return -NEX_ERR_ACCES;
     }
     if (proc->state == PROCESS_STATE_STOPPED) {
         return 1;

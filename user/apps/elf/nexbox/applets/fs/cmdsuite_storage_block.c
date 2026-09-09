@@ -41,9 +41,10 @@ static void format_human_size_local(uint64_t bytes, char *out, uint32_t out_size
 
 static void format_mountpoints_for_source(uint32_t disk_index,
                                           uint32_t part_index,
+                                          const struct syscall_mount_info *mounts,
+                                          uint32_t mount_count,
                                           char *out,
                                           uint32_t out_size) {
-    struct syscall_mount_info info;
     uint32_t used = 0u;
     uint32_t i;
 
@@ -51,23 +52,41 @@ static void format_mountpoints_for_source(uint32_t disk_index,
         return;
     }
     out[0] = '\0';
-    for (i = 0; i < CMD_MOUNT_SCAN_MAX && mount_query(i, &info) > 0; i++) {
+    for (i = 0; i < mount_count; i++) {
+        const struct syscall_mount_info *info = &mounts[i];
         int written;
 
-        if (!info.source_known || info.disk_index != disk_index || info.part_index != part_index) {
+        if (!info->source_known || info->disk_index != disk_index || info->part_index != part_index) {
             continue;
         }
         written = snprintf(out + used,
                            out_size - used,
                            "%s/%s",
                            used != 0u ? "," : "",
-                           info.target);
+                           info->target);
         if (written <= 0 || (uint32_t)written >= out_size - used) {
             out[out_size - 1u] = '\0';
             return;
         }
         used += (uint32_t)written;
     }
+}
+
+static uint32_t collect_mounts_local(struct syscall_mount_info *mounts,
+                                     uint32_t max_mounts) {
+    uint32_t count = 0u;
+
+    if (mounts == NULL || max_mounts == 0u) {
+        return 0u;
+    }
+    while (count < max_mounts &&
+           sys_query(SYS_QUERY_MOUNT,
+                     count,
+                     SYS_QUERY_FLAG_NO_SPACE,
+                     &mounts[count]) > 0) {
+        count++;
+    }
+    return count;
 }
 
 static void write_blk_disk_line(const struct syscall_block_info *info, const char *size) {
@@ -137,11 +156,14 @@ int cmd_parts(int argc, char **argv) {
 int cmd_blk(void) {
     struct syscall_block_info info;
     struct syscall_partition_info part;
+    static struct syscall_mount_info mount_cache[CMD_MOUNT_SCAN_MAX];
     char size[24];
     char mounts[128];
+    uint32_t mount_count;
     uint32_t i;
 
     write_str("NAME         MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS\n");
+    mount_count = collect_mounts_local(mount_cache, CMD_MOUNT_SCAN_MAX);
     for (i = 0; i < CMD_BLOCK_SCAN_MAX && block_query(i, &info) > 0; i++) {
         uint32_t p;
 
@@ -151,7 +173,12 @@ int cmd_blk(void) {
             format_human_size_local((uint64_t)part.sector_count * (uint64_t)info.block_size,
                                     size,
                                     sizeof(size));
-            format_mountpoints_for_source(i, p, mounts, sizeof(mounts));
+            format_mountpoints_for_source(i,
+                                          p,
+                                          mount_cache,
+                                          mount_count,
+                                          mounts,
+                                          sizeof(mounts));
             write_blk_part_line(&info, &part, p + 1u, info.partition_count, size, mounts);
         }
     }
@@ -291,7 +318,7 @@ int cmd_df(int argc, char **argv) {
         write_str("Filesystem Size Used Avail Use% Mounted on Source\n");
     }
 
-    for (i = 0; mount_query(i, &info) > 0; i++) {
+    for (i = 0; mount_query_space(i, &info) > 0; i++) {
         uint64_t total = df_mount_total_bytes_local(&info);
         uint64_t used = df_mount_used_bytes_local(&info);
         uint64_t free = df_mount_free_bytes_local(&info);
@@ -349,17 +376,29 @@ int cmd_df(int argc, char **argv) {
 }
 
 int cmd_progs(void) {
-    struct syscall_program_info info;
-    uint32_t i;
+    struct syscall_dirent entry;
+    uint32_t i = 0u;
+    int fd;
 
     write_str("user programs\n");
-    for (i = 0; program_query(i, &info) > 0; i++) {
+    fd = opendir("/cmd");
+    if (fd < 0) {
+        write_err_str("progs: /cmd open failed\n");
+        return 1;
+    }
+    while (readdir((uint32_t)fd, &entry) > 0) {
+        if (entry.name[0] == '\0' || streq_local(entry.name, ".") ||
+            streq_local(entry.name, "..")) {
+            continue;
+        }
         write_str("#");
         write_dec(i);
         write_str(": ");
-        write_str(info.name);
+        write_str(entry.name);
         write_str("\n");
+        i++;
     }
+    (void)close((uint32_t)fd);
     return 0;
 }
 

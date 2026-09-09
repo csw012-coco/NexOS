@@ -344,6 +344,107 @@ int cmd_rm(int argc, char **argv) {
     return 0;
 }
 
+static int parse_octal_mode_local(const char *text, uint32_t *mode_out) {
+    uint32_t mode = 0u;
+    uint32_t i = 0u;
+
+    if (text == NULL || text[0] == '\0' || mode_out == NULL) {
+        return 0;
+    }
+    while (text[i] != '\0') {
+        if (text[i] < '0' || text[i] > '7') {
+            return 0;
+        }
+        mode = (mode << 3) | (uint32_t)(text[i] - '0');
+        if (mode > 07777u) {
+            return 0;
+        }
+        i++;
+    }
+    *mode_out = mode;
+    return 1;
+}
+
+int cmd_chmod(int argc, char **argv) {
+    uint32_t mode;
+    int rc;
+
+    if (argc != 3 || !parse_octal_mode_local(argv[1], &mode)) {
+        write_err_usage("chmod", " MODE PATH\n");
+        return 1;
+    }
+    rc = chmod(argv[2], mode);
+    if (rc < 0) {
+        write_err_str("chmod: failed rc=");
+        write_sdec((int32_t)rc);
+        write_err_str("\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int parse_owner_local(const char *text, uint32_t *uid_out, uint32_t *gid_out) {
+    char uid_text[16];
+    char gid_text[16];
+    uint32_t i = 0u;
+    uint32_t sep = 0xffffffffu;
+
+    if (text == NULL || uid_out == NULL || gid_out == NULL) {
+        return 0;
+    }
+    while (text[i] != '\0') {
+        if (text[i] == ':') {
+            sep = i;
+            break;
+        }
+        i++;
+    }
+    if (sep == 0xffffffffu) {
+        if (!parse_u32_local(text, uid_out)) {
+            return 0;
+        }
+        *gid_out = *uid_out;
+        return 1;
+    }
+    if (sep == 0u || sep + 1u >= sizeof(uid_text) || text[sep + 1u] == '\0') {
+        return 0;
+    }
+    for (i = 0u; i < sep && i + 1u < sizeof(uid_text); i++) {
+        uid_text[i] = text[i];
+    }
+    uid_text[i] = '\0';
+    i = 0u;
+    while (text[sep + 1u + i] != '\0' && i + 1u < sizeof(gid_text)) {
+        gid_text[i] = text[sep + 1u + i];
+        i++;
+    }
+    if (text[sep + 1u + i] != '\0') {
+        return 0;
+    }
+    gid_text[i] = '\0';
+    return parse_u32_local(uid_text, uid_out) &&
+           parse_u32_local(gid_text, gid_out);
+}
+
+int cmd_chown(int argc, char **argv) {
+    uint32_t uid;
+    uint32_t gid;
+    int rc;
+
+    if (argc != 3 || !parse_owner_local(argv[1], &uid, &gid)) {
+        write_err_usage("chown", " UID[:GID] PATH\n");
+        return 1;
+    }
+    rc = chown(argv[2], uid, gid);
+    if (rc < 0) {
+        write_err_str("chown: failed rc=");
+        write_sdec((int32_t)rc);
+        write_err_str("\n");
+        return 1;
+    }
+    return 0;
+}
+
 int cmd_run_like(int argc, char **argv, const char *verb, uint32_t mode, uint32_t flags, int use_exec) {
     char command[CMD_PATH_MAX];
     int rc;
@@ -357,6 +458,13 @@ int cmd_run_like(int argc, char **argv, const char *verb, uint32_t mode, uint32_
         write_err_str(" failed rc=");
         eprintf("%d\n", rc);
         return 1;
+    }
+    if (!use_exec && (flags & SYS_SPAWN_BACKGROUND) == 0u) {
+        if (rc == 0 || fg((uint32_t)rc) <= 0) {
+            write_err_str(verb);
+            write_err_str(" foreground failed\n");
+            return 1;
+        }
     }
     return 0;
 }

@@ -19,15 +19,11 @@ uint32_t g_xhci_last_hotplug_tick;
 volatile uint32_t g_xhci_busy;
 
 int xhci_try_begin_busy(void) {
-    if (g_xhci_busy != 0u) {
-        return 0;
-    }
-    g_xhci_busy = 1u;
-    return 1;
+    return __sync_lock_test_and_set(&g_xhci_busy, 1u) == 0u;
 }
 
 void xhci_end_busy(void) {
-    g_xhci_busy = 0u;
+    __sync_lock_release(&g_xhci_busy);
 }
 
 void xhci_save_active_controller(void) {
@@ -114,8 +110,48 @@ void xhci_delay_spin(uint32_t loops) {
 }
 
 void xhci_delay_ms(uint32_t ms) {
-    while (ms-- != 0u) {
-        xhci_delay_spin(100000u);
+    uint32_t hz = hal_timer_hz();
+    uint32_t start;
+    uint32_t last;
+    uint32_t stagnant_spins = 0u;
+    uint64_t wait_ticks;
+
+    if (ms == 0u) {
+        return;
+    }
+    if (hz == 0u) {
+        while (ms-- != 0u) {
+            xhci_delay_spin(100000u);
+        }
+        return;
+    }
+    wait_ticks = ((uint64_t)hz * (uint64_t)ms + 999u) / 1000u;
+    if (wait_ticks == 0u) {
+        wait_ticks = 1u;
+    }
+    if (wait_ticks > 0xffffffffull) {
+        wait_ticks = 0xffffffffu;
+    }
+    start = hal_timer_current_ticks();
+    last = start;
+    while ((uint32_t)(hal_timer_current_ticks() - start) < (uint32_t)wait_ticks) {
+        uint32_t now = hal_timer_current_ticks();
+
+        if (now != last) {
+            last = now;
+            stagnant_spins = 0u;
+        } else {
+            stagnant_spins++;
+            if (stagnant_spins >= 1000000u) {
+                break;
+            }
+        }
+        hal_cpu_relax();
+    }
+    if ((uint32_t)(hal_timer_current_ticks() - start) < (uint32_t)wait_ticks) {
+        while (ms-- != 0u) {
+            xhci_delay_spin(100000u);
+        }
     }
 }
 
@@ -228,12 +264,13 @@ int xhci_alloc_page(uint64_t *phys_out, void **virt_out) {
     if (phys_out == 0 || virt_out == 0) {
         return 0;
     }
-    phys = pmm_alloc_page();
-    if (phys == 0u || phys > 0xffffffffull) {
+    phys = pmm_alloc_page_below(0x100000000ull);
+    if (phys == 0u) {
         return 0;
     }
     virt = hal_phys_direct_map(phys);
     if (virt == 0) {
+        (void)pmm_free_page(phys);
         return 0;
     }
     memset(virt, 0, XHCI_PAGE_SIZE);
@@ -242,11 +279,39 @@ int xhci_alloc_page(uint64_t *phys_out, void **virt_out) {
     return 1;
 }
 
+static void xhci_free_page_record(uint64_t *phys, void **virt) {
+    if (phys != 0 && *phys != 0u) {
+        (void)pmm_free_page(*phys);
+        *phys = 0u;
+    }
+    if (virt != 0) {
+        *virt = 0;
+    }
+}
+
+static void xhci_release_core_rings(uint32_t allocated_scratchpads) {
+    if (g_xhci.scratchpad_array != 0) {
+        for (uint32_t i = 0; i < allocated_scratchpads && i < XHCI_MAX_SCRATCHPADS; i++) {
+            if (g_xhci.scratchpad_array[i] != 0u) {
+                (void)pmm_free_page(g_xhci.scratchpad_array[i]);
+                g_xhci.scratchpad_array[i] = 0u;
+            }
+        }
+    }
+
+    xhci_free_page_record(&g_xhci.scratchpad_array_phys, (void **)&g_xhci.scratchpad_array);
+    xhci_free_page_record(&g_xhci.erst_phys, (void **)&g_xhci.erst);
+    xhci_free_page_record(&g_xhci.event_ring_phys, (void **)&g_xhci.event_ring);
+    xhci_free_page_record(&g_xhci.command_ring_phys, (void **)&g_xhci.command_ring);
+    xhci_free_page_record(&g_xhci.dcbaa_phys, (void **)&g_xhci.dcbaa);
+}
+
 int xhci_alloc_core_rings(uint32_t scratchpads) {
     if (!xhci_alloc_page(&g_xhci.dcbaa_phys, (void **)&g_xhci.dcbaa) ||
         !xhci_alloc_page(&g_xhci.command_ring_phys, (void **)&g_xhci.command_ring) ||
         !xhci_alloc_page(&g_xhci.event_ring_phys, (void **)&g_xhci.event_ring) ||
         !xhci_alloc_page(&g_xhci.erst_phys, (void **)&g_xhci.erst)) {
+        xhci_release_core_rings(0u);
         return 0;
     }
     g_xhci.command_ring[XHCI_RING_TRBS - 1u].control = (XHCI_TRB_LINK << 10) | 2u | 1u;
@@ -258,9 +323,12 @@ int xhci_alloc_core_rings(uint32_t scratchpads) {
 
     if (scratchpads != 0u) {
         if (scratchpads > XHCI_MAX_SCRATCHPADS) {
-            scratchpads = XHCI_MAX_SCRATCHPADS;
+            kprint("xhci: unsupported scratchpads=%u max=%u\n", scratchpads, XHCI_MAX_SCRATCHPADS);
+            xhci_release_core_rings(0u);
+            return 0;
         }
         if (!xhci_alloc_page(&g_xhci.scratchpad_array_phys, (void **)&g_xhci.scratchpad_array)) {
+            xhci_release_core_rings(0u);
             return 0;
         }
         for (uint32_t i = 0; i < scratchpads; i++) {
@@ -268,6 +336,7 @@ int xhci_alloc_core_rings(uint32_t scratchpads) {
             void *scratch_virt;
 
             if (!xhci_alloc_page(&scratch_phys, &scratch_virt)) {
+                xhci_release_core_rings(i);
                 return 0;
             }
             (void)scratch_virt;
@@ -286,6 +355,7 @@ int xhci_alloc_enum_device(struct xhci_enum_device *dev) {
         !xhci_alloc_page(&dev->device_context_phys, (void **)&dev->device_context) ||
         !xhci_alloc_page(&dev->ep0_ring_phys, (void **)&dev->ep0_ring) ||
         !xhci_alloc_page(&dev->descriptor_phys, (void **)&dev->descriptor)) {
+        xhci_release_enum_device_resources(dev);
         return 0;
     }
     xhci_ring_trb_set(&dev->ep0_ring[XHCI_RING_TRBS - 1u],
@@ -295,6 +365,79 @@ int xhci_alloc_enum_device(struct xhci_enum_device *dev) {
     dev->ep0_enqueue = 0u;
     dev->ep0_cycle = 1u;
     return 1;
+}
+
+void xhci_release_enum_device_resources(struct xhci_enum_device *dev) {
+    if (dev == 0) {
+        return;
+    }
+    if (dev->input_context_phys != 0u) {
+        (void)pmm_free_page(dev->input_context_phys);
+    }
+    if (dev->device_context_phys != 0u) {
+        (void)pmm_free_page(dev->device_context_phys);
+    }
+    if (dev->ep0_ring_phys != 0u) {
+        (void)pmm_free_page(dev->ep0_ring_phys);
+    }
+    if (dev->descriptor_phys != 0u) {
+        (void)pmm_free_page(dev->descriptor_phys);
+    }
+    if (dev->bulk_in_ring_phys != 0u) {
+        (void)pmm_free_page(dev->bulk_in_ring_phys);
+    }
+    if (dev->bulk_out_ring_phys != 0u) {
+        (void)pmm_free_page(dev->bulk_out_ring_phys);
+    }
+    if (dev->data_phys != 0u) {
+        (void)pmm_free_page(dev->data_phys);
+    }
+    if (dev->read_cache_phys != 0u) {
+        (void)pmm_free_page(dev->read_cache_phys);
+    }
+    if (dev->cbw_phys != 0u) {
+        (void)pmm_free_page(dev->cbw_phys);
+    }
+    if (dev->csw_phys != 0u) {
+        (void)pmm_free_page(dev->csw_phys);
+    }
+    memset(dev, 0, sizeof(*dev));
+}
+
+void xhci_release_msc_resources(struct xhci_enum_device *dev) {
+    if (dev == 0) {
+        return;
+    }
+    if (dev->bulk_in_ring_phys != 0u) {
+        (void)pmm_free_page(dev->bulk_in_ring_phys);
+    }
+    if (dev->bulk_out_ring_phys != 0u) {
+        (void)pmm_free_page(dev->bulk_out_ring_phys);
+    }
+    if (dev->data_phys != 0u) {
+        (void)pmm_free_page(dev->data_phys);
+    }
+    if (dev->read_cache_phys != 0u) {
+        (void)pmm_free_page(dev->read_cache_phys);
+    }
+    if (dev->cbw_phys != 0u) {
+        (void)pmm_free_page(dev->cbw_phys);
+    }
+    if (dev->csw_phys != 0u) {
+        (void)pmm_free_page(dev->csw_phys);
+    }
+    dev->bulk_in_ring_phys = 0u;
+    dev->bulk_out_ring_phys = 0u;
+    dev->data_phys = 0u;
+    dev->read_cache_phys = 0u;
+    dev->cbw_phys = 0u;
+    dev->csw_phys = 0u;
+    dev->bulk_in_ring = 0;
+    dev->bulk_out_ring = 0;
+    dev->data = 0;
+    dev->read_cache = 0;
+    dev->cbw = 0;
+    dev->csw = 0;
 }
 
 int xhci_alloc_msc_resources(struct xhci_enum_device *dev) {
@@ -307,6 +450,7 @@ int xhci_alloc_msc_resources(struct xhci_enum_device *dev) {
         !xhci_alloc_page(&dev->read_cache_phys, (void **)&dev->read_cache) ||
         !xhci_alloc_page(&dev->cbw_phys, (void **)&dev->cbw) ||
         !xhci_alloc_page(&dev->csw_phys, (void **)&dev->csw)) {
+        xhci_release_msc_resources(dev);
         return 0;
     }
     xhci_ring_trb_set(&dev->bulk_in_ring[XHCI_RING_TRBS - 1u],
@@ -321,6 +465,8 @@ int xhci_alloc_msc_resources(struct xhci_enum_device *dev) {
     dev->bulk_out_enqueue = 0u;
     dev->bulk_in_cycle = 1u;
     dev->bulk_out_cycle = 1u;
+    dev->bulk_in_ring_epoch = 1u;
+    dev->bulk_out_ring_epoch = 1u;
     return 1;
 }
 

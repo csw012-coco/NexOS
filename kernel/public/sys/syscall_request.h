@@ -8,7 +8,8 @@ enum syscall_result_action {
     SYSCALL_RESULT_EXIT = 2,
     SYSCALL_RESULT_EXEC = 3,
     SYSCALL_RESULT_WAIT = 4,
-    SYSCALL_RESULT_SLEEP = 5
+    SYSCALL_RESULT_SLEEP = 5,
+    SYSCALL_RESULT_IO_WAIT = 6
 };
 
 struct kernel_syscall_request {

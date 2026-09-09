@@ -3,6 +3,9 @@
 #include "abi/syscall_abi.h"
 #include "block/blockdev.h"
 #include "drivers/audio/audio.h"
+#include "drivers/bus/acpi.h"
+#include "drivers/bus/lapic.h"
+#include "drivers/bus/ioapic.h"
 #include "drivers/input/keyboard.h"
 #include "drivers/input/mouse.h"
 #include "drivers/serial/uart.h"
@@ -14,11 +17,9 @@
 #include "kernel/public/driver/driver.h"
 #include "hal/hal.h"
 #include "kernel/public/mem/pmm.h"
+#include "kernel/internal/proc/process_lifecycle_internal.h"
 #include "kernel/public/proc/process.h"
 #include "kernel/public/proc/scheduler.h"
-
-extern void syscall_compat32_vm_snapshot(struct syscall_vm_info *info)
-    __attribute__((weak));
 
 static int vfs_process_get_pid(uint32_t pid, struct process_snapshot *out) {
     for (uint32_t i = 0; i < process_capacity(); i++) {
@@ -56,6 +57,50 @@ static const char *vfs_process_state_name(uint32_t state) {
     }
 }
 
+struct vfs_process_cap_name {
+    uint32_t cap;
+    const char *name;
+};
+
+static const struct vfs_process_cap_name g_vfs_process_cap_names[] = {
+    {PROCESS_CAP_POWER, "power"},
+    {PROCESS_CAP_RAW_BLOCK, "raw-block"},
+    {PROCESS_CAP_MOUNT, "mount"},
+    {PROCESS_CAP_SIGNAL, "signal"},
+    {PROCESS_CAP_GRANT, "grant"},
+    {PROCESS_CAP_AUDIO, "audio"},
+    {PROCESS_CAP_NET_RAW, "net-raw"},
+    {PROCESS_CAP_DISPLAY, "display"},
+    {PROCESS_CAP_INPUT, "input"},
+    {PROCESS_CAP_CLIPBOARD, "clipboard"},
+    {PROCESS_CAP_DEBUG, "debug"},
+};
+
+static uint32_t vfs_append_process_cap_names(char *text,
+                                             uint32_t pos,
+                                             uint32_t size,
+                                             uint32_t caps) {
+    uint8_t wrote = 0u;
+
+    caps &= PROCESS_CAP_SYS_ADMIN;
+    if (caps == 0u) {
+        return vfs_append_text(text, pos, size, "none");
+    }
+    for (uint32_t i = 0u;
+         i < sizeof(g_vfs_process_cap_names) / sizeof(g_vfs_process_cap_names[0]);
+         i++) {
+        if ((caps & g_vfs_process_cap_names[i].cap) == 0u) {
+            continue;
+        }
+        if (wrote) {
+            pos = vfs_append_text(text, pos, size, " ");
+        }
+        pos = vfs_append_text(text, pos, size, g_vfs_process_cap_names[i].name);
+        wrote = 1u;
+    }
+    return pos;
+}
+
 static uint32_t vfs_format_proc_meminfo(char *text, uint32_t size) {
     uint32_t pos = 0;
     uint32_t total = pmm_total_pages();
@@ -68,9 +113,7 @@ static uint32_t vfs_format_proc_meminfo(char *text, uint32_t size) {
         ((uint8_t *)&vm)[i] = 0u;
     }
     vm.user_stack_pages = NOS_USER_STACK_SIZE / NOS_PAGE_SIZE;
-    if (syscall_compat32_vm_snapshot != 0) {
-        syscall_compat32_vm_snapshot(&vm);
-    }
+    process_mm_query_vm_snapshot(&vm);
 
     pos = vfs_append_text(text, pos, size, "MemTotalPages: ");
     pos = vfs_append_u32_text(text, pos, size, total);
@@ -165,6 +208,7 @@ static uint32_t vfs_format_proc_mounts(struct vfs *vfs, char *text, uint32_t siz
     for (uint32_t slot = 0; slot < VFS_MOUNT_SLOT_MAX; slot++) {
         const uint32_t mount_slot = slot + 1u;
         const struct blockdev_partition *part = 0;
+        struct blockdev_partition part_storage;
 
         if (!vfs->mounts[slot].used) {
             continue;
@@ -196,8 +240,9 @@ static uint32_t vfs_format_proc_mounts(struct vfs *vfs, char *text, uint32_t siz
         if (vfs->mounts[slot].part_index != VFS_PARTITION_RAW) {
             struct block_device *dev = blockdev_get(vfs->mounts[slot].disk_index);
 
-            if (dev != 0 && vfs->mounts[slot].part_index < blockdev_partition_count(dev)) {
-                part = &dev->partitions[vfs->mounts[slot].part_index];
+            if (dev != 0 &&
+                blockdev_partition_get_cached(dev, vfs->mounts[slot].part_index, &part_storage) == 0) {
+                part = &part_storage;
             }
         }
         if (part != 0) {
@@ -417,11 +462,11 @@ static uint32_t vfs_format_proc_devices(char *text, uint32_t size) {
                                           "yes",
                                           perm,
                                           caps,
-                                          info.name != 0 ? info.name : "block device");
-        for (uint32_t part_index = 0; part_index < blockdev_partition_count(dev); part_index++) {
+                                          info.name);
+        for (uint32_t part_index = 0; part_index < blockdev_partition_count_cached(dev); part_index++) {
             struct blockdev_partition part;
 
-            if (blockdev_partition_get(dev, part_index, &part) != 0) {
+            if (blockdev_partition_get_cached(dev, part_index, &part) != 0) {
                 continue;
             }
             name[0] = '\0';
@@ -705,16 +750,12 @@ static uint32_t vfs_format_proc_cpuinfo(char *text, uint32_t size) {
     uint32_t pos = 0;
 
     pos = vfs_append_text(text, pos, size, "processor\t: 0\n");
-#if defined(__x86_64__)
-    pos = vfs_append_text(text, pos, size, "arch\t\t: x86_64\n");
-    pos = vfs_append_text(text, pos, size, "bits\t\t: 64\n");
-#elif defined(__i386__)
-    pos = vfs_append_text(text, pos, size, "arch\t\t: i386\n");
-    pos = vfs_append_text(text, pos, size, "bits\t\t: 32\n");
-#else
-    pos = vfs_append_text(text, pos, size, "arch\t\t: generic\n");
-    pos = vfs_append_text(text, pos, size, "bits\t\t: 0\n");
-#endif
+    pos = vfs_append_text(text, pos, size, "arch\t\t: ");
+    pos = vfs_append_text(text, pos, size, hal_arch_name());
+    pos = vfs_append_text(text, pos, size, "\n");
+    pos = vfs_append_text(text, pos, size, "bits\t\t: ");
+    pos = vfs_append_u32_text(text, pos, size, (uint32_t)(sizeof(uintptr_t) * 8u));
+    pos = vfs_append_text(text, pos, size, "\n");
     pos = vfs_append_text(text, pos, size, "vendor_id\t: NexOS\n");
     pos = vfs_append_text(text, pos, size, "model name\t: NexOS virtual CPU\n");
     pos = vfs_append_text(text, pos, size, "features\t: protected-mode paging syscall\n");
@@ -739,7 +780,9 @@ static uint32_t vfs_format_proc_block(char *text, uint32_t size) {
     pos = vfs_append_padded_text(text, pos, size, "blocks", 14u);
     pos = vfs_append_padded_text(text, pos, size, "block_size", 12u);
     pos = vfs_append_padded_text(text, pos, size, "parts", 8u);
-    pos = vfs_append_text(text, pos, size, "writable\n");
+    pos = vfs_append_padded_text(text, pos, size, "writable", 10u);
+    pos = vfs_append_padded_text(text, pos, size, "rebinds", 10u);
+    pos = vfs_append_text(text, pos, size, "last_rebind\n");
     for (uint32_t i = 0; i < blockdev_count(); i++) {
         struct block_device *dev = blockdev_get(i);
         struct blockdev_info info;
@@ -755,11 +798,15 @@ static uint32_t vfs_format_proc_block(char *text, uint32_t size) {
         pos = vfs_append_padded_text(text, pos, size, "", 14u);
         pos = vfs_append_u32_text(text, pos, size, info.block_size);
         pos = vfs_append_padded_text(text, pos, size, "", 12u);
-        pos = vfs_append_u32_text(text, pos, size, blockdev_partition_count(dev));
+        pos = vfs_append_u32_text(text, pos, size, blockdev_partition_count_cached(dev));
         pos = vfs_append_padded_text(text, pos, size, "", 8u);
         pos = vfs_append_bool_text(text, pos, size, info.writable);
+        pos = vfs_append_padded_text(text, pos, size, "", 10u);
+        pos = vfs_append_u32_text(text, pos, size, info.rebind_count);
+        pos = vfs_append_padded_text(text, pos, size, "", 10u);
+        pos = vfs_append_text(text, pos, size, info.last_rebind_reason);
         pos = vfs_append_text(text, pos, size, " ");
-        pos = vfs_append_text(text, pos, size, info.name != 0 ? info.name : "block device");
+        pos = vfs_append_text(text, pos, size, info.name);
         pos = vfs_append_text(text, pos, size, "\n");
     }
     return pos;
@@ -779,11 +826,11 @@ static uint32_t vfs_format_proc_partitions(char *text, uint32_t size) {
         if (dev == 0) {
             continue;
         }
-        for (uint32_t part_index = 0; part_index < blockdev_partition_count(dev); part_index++) {
+        for (uint32_t part_index = 0; part_index < blockdev_partition_count_cached(dev); part_index++) {
             struct blockdev_partition part;
             char name[16];
 
-            if (blockdev_partition_get(dev, part_index, &part) != 0) {
+            if (blockdev_partition_get_cached(dev, part_index, &part) != 0) {
                 continue;
             }
             name[0] = '\0';
@@ -892,14 +939,68 @@ static uint32_t vfs_format_proc_interrupts(char *text, uint32_t size) {
     pos = vfs_append_text(text, pos, size, "\n\n");
     pos = vfs_append_padded_text(text, pos, size, "irq", 8u);
     pos = vfs_append_padded_text(text, pos, size, "count", 12u);
+    pos = vfs_append_padded_text(text, pos, size, "gsi", 8u);
+    pos = vfs_append_padded_text(text, pos, size, "flags", 8u);
+    pos = vfs_append_padded_text(text, pos, size, "ioapic", 8u);
     pos = vfs_append_text(text, pos, size, "name\n");
     for (uint32_t irq = 0u; irq < 16u; irq++) {
+        struct hal_irq_route route;
+
+        if (!hal_irq_route((uint8_t)irq, &route)) {
+            route.irq = (uint8_t)irq;
+            route.acpi_override = 0u;
+            route.flags = 0u;
+            route.gsi = irq;
+        }
         pos = vfs_append_u32_text(text, pos, size, irq);
         pos = vfs_append_padded_text(text, pos, size, "", 8u);
         pos = vfs_append_u32_text(text, pos, size, state.lines[irq]);
         pos = vfs_append_padded_text(text, pos, size, "", 12u);
+        pos = vfs_append_u32_text(text, pos, size, route.gsi);
+        pos = vfs_append_padded_text(text, pos, size, "", 8u);
+        pos = vfs_append_hex_u32_text(text, pos, size, route.flags);
+        pos = vfs_append_padded_text(text, pos, size, "", 8u);
+        pos = vfs_append_text(text, pos, size, ioapic_irq_enabled((uint8_t)irq) ? "on" : "-");
+        pos = vfs_append_padded_text(text, pos, size, "", 8u);
         pos = vfs_append_text(text, pos, size, vfs_proc_irq_name(irq));
         pos = vfs_append_text(text, pos, size, "\n");
+    }
+    if (acpi_ioapic_route_count() != 0u) {
+        struct lapic_status lapic;
+
+        if (lapic_query_status(&lapic)) {
+            pos = vfs_append_text(text, pos, size, "\nlapic: address=");
+            if ((lapic.address >> 32) != 0u) {
+                pos = vfs_append_hex_u32_text(text, pos, size, (uint32_t)(lapic.address >> 32));
+            }
+            pos = vfs_append_hex_u32_text(text, pos, size, (uint32_t)lapic.address);
+            pos = vfs_append_text(text, pos, size, " mapped=");
+            pos = vfs_append_u32_text(text, pos, size, lapic.mapped);
+            pos = vfs_append_text(text, pos, size, " id=");
+            pos = vfs_append_u32_text(text, pos, size, lapic.id);
+            pos = vfs_append_text(text, pos, size, " enabled=");
+            pos = vfs_append_u32_text(text, pos, size, lapic.enabled);
+            pos = vfs_append_text(text, pos, size, " msr=");
+            pos = vfs_append_u32_text(text, pos, size, lapic.msr_enabled);
+            pos = vfs_append_text(text, pos, size, "\n");
+        }
+        pos = vfs_append_text(text, pos, size, "\nioapic routes:\n");
+        pos = vfs_append_padded_text(text, pos, size, "id", 8u);
+        pos = vfs_append_padded_text(text, pos, size, "gsi_base", 12u);
+        pos = vfs_append_text(text, pos, size, "address\n");
+        for (uint32_t i = 0u; i < acpi_ioapic_route_count(); i++) {
+            struct acpi_ioapic_route route;
+
+            if (!acpi_ioapic_route_at(i, &route)) {
+                continue;
+            }
+            pos = vfs_append_u32_text(text, pos, size, route.id);
+            pos = vfs_append_padded_text(text, pos, size, "", 8u);
+            pos = vfs_append_u32_text(text, pos, size, route.gsi_base);
+            pos = vfs_append_padded_text(text, pos, size, "", 12u);
+            pos = vfs_append_hex_u32_text(text, pos, size, route.address);
+            pos = vfs_append_text(text, pos, size, "\n");
+        }
     }
     pos = vfs_append_text(text, pos, size, "\ntimer_ticks: ");
     pos = vfs_append_u32_text(text, pos, size, sched_current_ticks());
@@ -970,6 +1071,10 @@ static uint32_t vfs_format_proc_pid_status(uint32_t pid, char *text, uint32_t si
     pos = vfs_append_u32_text(text, pos, size, proc.pid);
     pos = vfs_append_text(text, pos, size, "\nSlot:\t");
     pos = vfs_append_u32_text(text, pos, size, proc.slot);
+    pos = vfs_append_text(text, pos, size, "\nUid:\t");
+    pos = vfs_append_u32_text(text, pos, size, proc.uid);
+    pos = vfs_append_text(text, pos, size, "\nGid:\t");
+    pos = vfs_append_u32_text(text, pos, size, proc.gid);
     pos = vfs_append_text(text, pos, size, "\nState:\t");
     pos = vfs_append_text(text, pos, size, vfs_process_state_name(proc.state));
     pos = vfs_append_text(text, pos, size, "\nExitCode:\t");
@@ -978,6 +1083,10 @@ static uint32_t vfs_format_proc_pid_status(uint32_t pid, char *text, uint32_t si
     pos = vfs_append_u32_text(text, pos, size, proc.wake_tick);
     pos = vfs_append_text(text, pos, size, "\nImage:\t");
     pos = vfs_append_text(text, pos, size, proc.image_kind == PROCESS_IMAGE_ELF ? "elf" : "none");
+    pos = vfs_append_text(text, pos, size, "\nCaps:\t");
+    pos = vfs_append_hex_u32_text(text, pos, size, proc.caps & PROCESS_CAP_SYS_ADMIN);
+    pos = vfs_append_text(text, pos, size, "\nCapNames:\t");
+    pos = vfs_append_process_cap_names(text, pos, size, proc.caps);
     pos = vfs_append_text(text, pos, size, "\n");
     return pos;
 }

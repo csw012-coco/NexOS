@@ -110,7 +110,7 @@ static int64_t vfs_emit_devfs_block_entry(struct vfs_dirent *entry,
     {
         struct blockdev_partition part;
 
-        if (dev == 0 || blockdev_partition_get(dev, part_index, &part) != 0) {
+        if (dev == 0 || blockdev_partition_get_cached(dev, part_index, &part) != 0) {
             return 0;
         }
         vfs_format_partition_node_name(entry->name, sizeof(entry->name), disk_index, part_index);
@@ -138,6 +138,7 @@ int64_t vfs_read_from_devfs(struct vfs *vfs,
     }
     dev = vfs_blockdev_from_node(node, &base_lba, &block_count);
     if (node->aux_index == VFS_DEV_TTY ||
+        node->aux_index == VFS_DEV_TTY1 ||
         node->aux_index == VFS_DEV_TTY2 ||
         node->aux_index == VFS_DEV_TTY3 ||
         node->aux_index == VFS_DEV_STDIN) {
@@ -187,6 +188,7 @@ int64_t vfs_write_to_devfs(struct vfs *vfs,
     }
     dev = vfs_blockdev_from_node(node, &base_lba, &block_count);
     if (node->aux_index == VFS_DEV_TTY ||
+        node->aux_index == VFS_DEV_TTY1 ||
         node->aux_index == VFS_DEV_TTY2 ||
         node->aux_index == VFS_DEV_TTY3 ||
         node->aux_index == VFS_DEV_STDOUT ||
@@ -292,7 +294,7 @@ int64_t vfs_read_dir_devfs(uint32_t *index_io, struct vfs_dirent *entry) {
                 return vfs_emit_devfs_block_entry(entry, index_io, disk_index, VFS_PARTITION_RAW, dev);
             }
             seen++;
-            for (uint32_t part_index = 0; part_index < blockdev_partition_count(dev); part_index++) {
+            for (uint32_t part_index = 0; part_index < blockdev_partition_count_cached(dev); part_index++) {
                 if (seen == ordinal) {
                     return vfs_emit_devfs_block_entry(entry, index_io, disk_index, part_index, dev);
                 }
@@ -330,7 +332,7 @@ struct block_device *vfs_blockdev_from_node(const struct vfs_node *node,
         struct blockdev_partition part;
 
         dev = blockdev_get(disk_index);
-        if (dev == 0 || blockdev_partition_get(dev, part_index, &part) != 0) {
+        if (dev == 0 || blockdev_partition_get_cached(dev, part_index, &part) != 0) {
             return 0;
         }
         if (base_lba_out != 0) {
@@ -383,7 +385,7 @@ static int64_t vfs_blockdev_transfer_bytes(struct vfs *vfs,
         if (write_mode != 0) {
             vfs_devfs_copy_bytes(block_buffer + block_off, bytes + total, chunk);
             if (blockdev_write(dev, base_lba + lba, 1, block_buffer) != 0) {
-                return total != 0 ? (int64_t)total : -1;
+                return -1;
             }
         } else {
             vfs_devfs_copy_bytes(bytes + total, block_buffer + block_off, chunk);
@@ -438,8 +440,13 @@ int vfs_devfs_lookup(const char *name, struct vfs_node *out) {
     if (name == 0 || out == 0) {
         return -1;
     }
-    if (streq(name, "tty") || streq(name, "tty1")) {
+    if (streq(name, "tty")) {
         vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_TTY);
+        vfs_set_node_device_numbers(out, VFS_DEV_MAJOR_TTY, 0u);
+        return 0;
+    }
+    if (streq(name, "tty1")) {
+        vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_TTY1);
         vfs_set_node_device_numbers(out, VFS_DEV_MAJOR_TTY, 0u);
         return 0;
     }
@@ -548,7 +555,7 @@ int vfs_devfs_lookup(const char *name, struct vfs_node *out) {
         {
             struct blockdev_partition part;
 
-            if (blockdev_partition_get(blockdev_get(index), part_index, &part) != 0) {
+            if (blockdev_partition_get_cached(blockdev_get(index), part_index, &part) != 0) {
                 return -1;
             }
             vfs_set_devfs_node(out, VFS_NODE_FILE, VFS_DEV_BLOCK_PARTITION);

@@ -44,6 +44,9 @@ int pipe(int pair[2]);
 int mkdir(const char *path);
 int rmdir(const char *path);
 int remove(const char *path);
+int chmod(const char *path, uint32_t mode);
+int chown(const char *path, uint32_t uid, uint32_t gid);
+int setcap(const char *path, uint32_t caps);
 int mount(const char *source, const char *target, uint32_t kind);
 int umount(const char *target);
 int switch_root(const char *target);
@@ -51,6 +54,10 @@ int chdir(const char *path);
 int getcwd(char *buffer, size_t size);
 pid_t getpid(void);
 pid_t fork(void);
+/*
+ * spawn() returns a child pid (>0) or -NEX_ERR_* and never waits.
+ * Foreground commands must run as spawn(..., 0), fg(pid), wait(pid, info).
+ */
 pid_t spawn(const char *command, uint32_t mode, uint32_t flags);
 pid_t spawn_ex(const char *command, uint32_t mode, uint32_t flags);
 int exec(const char *command);
@@ -61,6 +68,7 @@ int part_query(uint32_t disk_index,
                uint32_t slot,
                struct syscall_partition_info *info);
 int mount_query(uint32_t index, struct syscall_mount_info *info);
+int mount_query_space(uint32_t index, struct syscall_mount_info *info);
 int block_flush(uint32_t disk_index);
 int fd_query(uint32_t fd, struct syscall_fd_info *info);
 int tty_query(uint32_t fd, struct syscall_tty_info *info);
@@ -77,10 +85,17 @@ int root_find(const char *name, struct syscall_root_entry_info *info);
 int fat_root_query(uint32_t index, struct syscall_fat_entry_info *info);
 int fat_root_find(const char *name, struct syscall_fat_entry_info *info);
 int proc_query(uint32_t kind, uint32_t index, struct syscall_process_info *info);
+/* Reaps an exited child/job and fills info. Returns 1 or -NEX_ERR_*. */
 int wait(uint32_t pid, struct syscall_process_info *info);
+/*
+ * Legacy i386 surface: reaps a child and returns the raw child exit code.
+ * Returns -NEX_ERR_* only when wait itself fails.
+ */
 int waitpid(pid_t pid);
 int kill(pid_t pid);
+/* Returns 1 on success or -NEX_ERR_*. */
 int fg(uint32_t pid);
+/* Returns 1 on success or -NEX_ERR_*. */
 int bg(uint32_t pid);
 int reboot(void);
 uint32_t ticks(void);

@@ -25,6 +25,8 @@ static void vfs_reset_mount_slot(struct vfs *vfs, uint32_t slot) {
     if (vfs == 0 || slot >= VFS_MOUNT_SLOT_MAX) {
         return;
     }
+    blockdev_release(vfs->mounts[slot].bdev_ref);
+    vfs->mounts[slot].bdev_ref = 0;
     vfs->mounts[slot].used = 0;
     vfs->mounts[slot].kind = VFS_MOUNT_NONE;
     vfs->mounts[slot].disk_index = 0;
@@ -347,6 +349,7 @@ void vfs_init(struct vfs *vfs) {
         return;
     }
     vfs->fat32.bdev = 0;
+    vfs->fat32_bdev_ref = 0;
     vfs->fat32.partition_lba = 0;
     vfs->fat32.fat_start_lba = 0;
     vfs->fat32.data_start_lba = 0;
@@ -358,6 +361,7 @@ void vfs_init(struct vfs *vfs) {
     vfs->fat32.table_count = 0;
     vfs->fat32.mounted = 0;
     vfs->nxfs.bdev = 0;
+    vfs->nxfs_bdev_ref = 0;
     vfs->nxfs.partition_lba = 0;
     vfs->nxfs.super.magic = 0;
     vfs->nxfs.super.total_blocks = 0;
@@ -376,6 +380,9 @@ void vfs_init(struct vfs *vfs) {
     vfs->eventfs_text_size = 0;
     vfs->eventfs_text_node = 0;
     for (uint32_t i = 0; i < VFS_MOUNT_SLOT_MAX; i++) {
+        /* vfs_init is used for fresh VFS instances; make the new lifetime
+         * field deterministic before the common slot reset path. */
+        vfs->mounts[i].bdev_ref = 0;
         vfs_reset_mount_slot(vfs, i);
     }
 }

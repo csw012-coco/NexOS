@@ -255,6 +255,11 @@ Source:
 
 Commands:
 - `ps`
+- `id`
+- `whoami`
+- `su`
+- `login`
+- `getty`
 - `jobs`
 - `wait`
 - `kill`
@@ -262,6 +267,11 @@ Commands:
 - `bg`
 
 Notes:
+- `id` and `whoami` show the current process identity.
+- `su [USER] [TOKEN] [-- <command> [args...]]` switches identity; default target is `root`.
+- `login` prompts for name and password, then starts a shell as that account.
+- `login [USER] [TOKEN] [-- <command> [args...]]` keeps a noninteractive form; default target is `user`.
+- `getty <tty>` opens the tty, binds it to standard I/O, and execs `login`.
 - `jobs` focuses on background-job state.
 - `wait` supports both “last exited process” and `wait <pid>`.
 
@@ -303,6 +313,19 @@ Notes:
 - `doctor --table` emits the same health checks as a typed table with `check`, `status`, and `detail` columns.
 - The same kernel snapshots are also exposed through procfs-lite:
   `/proc/meminfo`, `/proc/mounts`, `/proc/uptime`, `/proc/rtc`, `/proc/kmsg`, `/proc/actions`, and `/proc/<pid>/status`.
+- `nexctl cap`, `nexctl cap drop|grant <cap...>`, `nexctl cap spawn <cap...>`, and
+  `nexctl cap run <cap...> -- <command> [args...]` inspect and constrain process capabilities.
+- `/system/cap.policy` limits capabilities at exec time with lines like
+  `<exec-path-or-basename> <cap|all|none|mask> ...`; matching policy can only reduce inherited caps.
+- `nexctl cap policy` prints the active exec capability policy file.
+- `nexctl cap check` temporarily drops global-effect capabilities and expects protected syscalls to fail with access denied;
+  `nexctl cap check unsafe` also probes the reboot gate.
+- The `debug` process capability protects kernel-log, profiler, memory-map, physical-memory,
+  virtual-memory, and PCI diagnostic queries.
+- VFS path open also enforces process capabilities for protected pseudo-files and devices:
+  raw block devices and block event/proc nodes require `raw-block`, framebuffer paths require `display`,
+  audio device paths require `audio`, input event paths require `input`, network event paths require `net-raw`,
+  and security/debug proc or event paths require `debug`.
 - Storage drivers currently include legacy ATA and AHCI SATA. AHCI registers SATA disks as block devices such as `ahci0` and supports sector read/write with cache flush.
 - EventFS exposes event sources through `/event`:
   `/event/timer`, `/event/input/keyboard`, `/event/input/mouse`,
@@ -331,7 +354,7 @@ enumeration order.
 
 The current built-in applet list exposed by `help` is:
 
-`help actions action mapper echo yes clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg`
+`help actions action mapper echo yes clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot poweroff switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg`
 
 ## Naming Notes
 

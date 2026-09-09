@@ -21,27 +21,48 @@ I386_COMMON_OBJS := \
 	$(I386_BUILD)/graphics_service.o \
 	$(I386_BUILD)/profile.o \
 	$(I386_BUILD)/system_query.o \
-	$(I386_BUILD)/i386_shared_services.o \
-	$(I386_BUILD)/i386_smoke_services.o \
-	$(I386_BUILD)/i386_tty_selftest.o \
-	$(I386_BUILD)/syscall_compat32.o \
+	$(I386_BUILD)/system_power.o \
+	$(I386_BUILD)/boot_flags.o \
+	$(I386_BUILD)/boot_user_services.o \
+	$(I386_BUILD)/shared_services.o \
+	$(I386_BUILD)/command_services.o \
+	$(I386_BUILD)/driver_services.o \
+	$(I386_BUILD)/input_services.o \
+	$(I386_BUILD)/console_loop.o \
+	$(I386_BUILD)/smoke_services.o \
+	$(I386_BUILD)/tty_selftest.o \
+	$(I386_BUILD)/compat32_core.o \
+	$(I386_BUILD)/compat32_copy_ops.o \
 	$(I386_BUILD)/syscall_common_request_core.o \
-	$(I386_BUILD)/syscall_i386_request_adapter.o \
-	$(I386_BUILD)/syscall_i386_vm_adapter.o \
-	$(I386_BUILD)/syscall_i386_job_adapter.o \
-	$(I386_BUILD)/syscall_i386_mem_ipc_adapter.o \
-	$(I386_BUILD)/syscall_i386_device_ui_adapter.o \
-	$(I386_BUILD)/syscall_compat32_query.o \
-	$(I386_BUILD)/syscall_compat32_fs.o \
-	$(I386_BUILD)/syscall_compat32_proc.o \
+	$(I386_BUILD)/compat32_request_adapter.o \
+	$(I386_BUILD)/compat32_file_ops.o \
+	$(I386_BUILD)/compat32_io_adapter.o \
+	$(I386_BUILD)/compat32_fs_adapter.o \
+	$(I386_BUILD)/compat32_mount_adapter.o \
+	$(I386_BUILD)/compat32_proc_adapter.o \
+	$(I386_BUILD)/compat32_vm_adapter.o \
+	$(I386_BUILD)/compat32_vm_page_ops.o \
+	$(I386_BUILD)/compat32_job_adapter.o \
+	$(I386_BUILD)/compat32_mem_adapter.o \
+	$(I386_BUILD)/compat32_ipc_adapter.o \
+	$(I386_BUILD)/compat32_query_adapter.o \
+	$(I386_BUILD)/compat32_gfx_adapter.o \
+	$(I386_BUILD)/compat32_audio_adapter.o \
+	$(I386_BUILD)/compat32_audio_fd_adapter.o \
+	$(I386_BUILD)/compat32_block_adapter.o \
+	$(I386_BUILD)/compat32_net_adapter.o \
+	$(I386_BUILD)/compat32_ui_adapter.o \
+	$(I386_BUILD)/compat32_misc_adapter.o \
+	$(I386_BUILD)/compat32_proc.o \
 	$(I386_BUILD)/boot_user_init.o \
 	$(I386_BUILD)/process_context.o \
 	$(I386_BUILD)/process_command.o \
 	$(I386_BUILD)/process_model.o \
+	$(I386_BUILD)/process_mm_query.o \
+	$(I386_BUILD)/process_cap_policy.o \
 	$(I386_BUILD)/process_program_registry.o \
 	$(I386_BUILD)/process_user_backend.o \
 	$(I386_BUILD)/process_mm_ops.o \
-	$(I386_BUILD)/process_file_ops.o \
 	$(I386_BUILD)/address_space_core.o \
 	$(I386_BUILD)/pmm_core.o \
 	$(I386_BUILD)/vmm_transfer.o \
@@ -49,8 +70,11 @@ I386_COMMON_OBJS := \
 	$(I386_BUILD)/sched_policy.o \
 	$(I386_BUILD)/runqueue.o \
 	$(I386_BUILD)/driver.o \
-	$(I386_BUILD)/driver_i386_services.o \
-	$(I386_BUILD)/driver_i386_legacy.o \
+	$(I386_BUILD)/driver_elf32_services.o \
+	$(I386_BUILD)/driver_elf32_loader.o \
+	$(I386_BUILD)/fs_service_root_query.o \
+	$(I386_BUILD)/fs_service_path.o \
+	$(I386_BUILD)/fs_service_fd.o \
 	$(I386_BUILD)/path_resolve.o \
 	$(I386_BUILD)/file.o \
 	$(I386_BUILD)/file_backend.o \
@@ -62,6 +86,9 @@ I386_COMMON_OBJS := \
 	$(I386_BUILD)/input_keyboard.o \
 	$(I386_BUILD)/mouse.o \
 	$(I386_BUILD)/usb_hid_keymap.o \
+	$(I386_BUILD)/acpi.o \
+	$(I386_BUILD)/lapic.o \
+	$(I386_BUILD)/ioapic.o \
 	$(I386_BUILD)/ehci_core.o \
 	$(I386_BUILD)/ehci_hid.o \
 	$(I386_BUILD)/ehci_msc.o \
@@ -105,6 +132,7 @@ I386_COMMON_OBJS := \
 	$(I386_BUILD)/vfs_eventfs_format.o \
 	$(I386_BUILD)/vfs_proc_actions.o \
 	$(I386_BUILD)/io.o \
+	$(I386_BUILD)/parse.o \
 	$(I386_BUILD)/string.o \
 	$(I386_BUILD)/div64.o
 I386_ARCH_C_OBJS := \
@@ -119,7 +147,6 @@ I386_ARCH_C_OBJS := \
 	$(I386_BUILD)/context.o \
 	$(I386_BUILD)/scheduler_fpu.o \
 	$(I386_BUILD)/scheduler_backend.o \
-	$(I386_BUILD)/scheduler_file_ops.o \
 	$(I386_BUILD)/scheduler_mm_ops.o \
 	$(I386_BUILD)/scheduler_process_ops.o \
 	$(I386_BUILD)/scheduler_run_ops.o \

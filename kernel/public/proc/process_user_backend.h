@@ -4,8 +4,10 @@
 #include "kernel/public/proc/context.h"
 
 struct process_snapshot;
+struct vfs;
 
 struct process_user_backend_ops {
+    void (*init_runtime_vfs)(struct vfs *vfs);
     int32_t (*spawn_from_user)(const char *command,
                                uint32_t mode,
                                uint32_t flags);
@@ -18,6 +20,7 @@ struct process_user_backend_ops {
 };
 
 void process_user_backend_register(const struct process_user_backend_ops *ops);
+void process_user_init_runtime_vfs(struct vfs *vfs);
 int32_t process_user_spawn_from_user(const char *command,
                                      uint32_t mode,
                                      uint32_t flags);

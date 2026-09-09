@@ -1,5 +1,5 @@
 #include "arch/x86/i386/idt.h"
-#include "arch/x86/i386/paging.h"
+#include "arch/x86/i386/mm/paging.h"
 #include "kernel/public/arch/arch_ops.h"
 
 static void x86_32_halt(void) {

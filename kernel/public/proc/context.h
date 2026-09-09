@@ -25,6 +25,11 @@ struct process_context {
 };
 
 void process_context_reset(struct process_context *context);
+int process_context_init_user(struct process_context *context,
+                              uint64_t entry,
+                              uint64_t stack,
+                              uint64_t first_argument,
+                              int user_mode);
 void process_context_set_return_value(struct process_context *context,
                                       uint64_t value);
 uint64_t process_context_return_value(const struct process_context *context);

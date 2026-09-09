@@ -65,10 +65,11 @@ enum {
     VFS_DEV_BLOCK_PARTITION = 8u,
     VFS_DEV_FRAMEBUFFER = 9u,
     VFS_DEV_TTYS0 = 10u,
-    VFS_DEV_TTY2 = 11u,
-    VFS_DEV_TTY3 = 12u,
-    VFS_DEV_AUDIO = 13u,
-    VFS_DEV_SPEAKER = 14u,
+    VFS_DEV_TTY1 = 11u,
+    VFS_DEV_TTY2 = 12u,
+    VFS_DEV_TTY3 = 13u,
+    VFS_DEV_AUDIO = 14u,
+    VFS_DEV_SPEAKER = 15u,
     VFS_DEV_BLOCK_BUFFER_SIZE = 512u,
     VFS_PROC_TEXT_BUFFER_SIZE = 4096u,
     VFS_EVENT_TEXT_BUFFER_SIZE = 2048u
@@ -150,7 +151,9 @@ struct vfs_mount_ops {
 
 struct vfs {
     struct fat32_volume fat32;
+    struct block_device *fat32_bdev_ref;
     struct nxfs_volume nxfs;
+    struct block_device *nxfs_bdev_ref;
     uint8_t root_kind;
     uint32_t root_slot;
     uint8_t devfs_block_buffer[VFS_DEV_BLOCK_BUFFER_SIZE];
@@ -163,6 +166,7 @@ struct vfs {
         uint8_t kind;
         uint32_t disk_index;
         uint32_t part_index;
+        struct block_device *bdev_ref;
         char name[NOS_NAME_BUFFER_SIZE];
         struct fat32_volume fat32;
         struct nxfs_volume nxfs;

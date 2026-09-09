@@ -3,11 +3,23 @@
 #include "fs/vfs_internal.h"
 #include "kernel/internal/proc/process_types_internal.h"
 #include "kernel/public/core/tty.h"
-#include "kernel/public/proc/job_control.h"
 
-int job_serial_current_process_foreground_allowed(void) __attribute__((weak));
-int job_serial_current_process_foreground_allowed(void) {
-    return 1;
+static struct file_device_backend_runtime_ops g_file_device_runtime_ops;
+
+void file_device_backend_runtime_ops_register(
+    const struct file_device_backend_runtime_ops *ops) {
+    if (ops == 0) {
+        g_file_device_runtime_ops.serial_foreground_allowed = 0;
+        return;
+    }
+    g_file_device_runtime_ops = *ops;
+}
+
+static int file_device_serial_foreground_allowed(void) {
+    if (g_file_device_runtime_ops.serial_foreground_allowed == 0) {
+        return 1;
+    }
+    return g_file_device_runtime_ops.serial_foreground_allowed();
 }
 
 static void file_device_init_with_ops(struct file *file, uint8_t kind, const struct file_ops *ops) {
@@ -45,7 +57,10 @@ static int file_device_tty_foreground_allowed(const struct tty *tty) {
         return 1;
     }
     foreground_pid = tty_foreground_pid(tty);
-    return foreground_pid != 0u && proc->pid == foreground_pid;
+    if (foreground_pid == 0u || proc->pid == foreground_pid) {
+        return 1;
+    }
+    return 0;
 }
 
 static int64_t file_device_tty_read(struct file *file,
@@ -54,6 +69,7 @@ static int64_t file_device_tty_read(struct file *file,
                                     uint32_t size,
                                     uint32_t flags) {
     struct tty *tty = (struct tty *)file->private_data;
+    int64_t rc;
     uint32_t mode;
 
     (void)file;
@@ -66,7 +82,8 @@ static int64_t file_device_tty_read(struct file *file,
     }
     mode = (flags & KERNEL_FILE_READ_CHAR) != 0 ? TTY_READ_CHAR : TTY_READ_LINE;
     tty_set_raw_input(tty, (flags & KERNEL_FILE_READ_CHAR) != 0);
-    return tty_read(tty, (char *)buffer, size, mode);
+    rc = tty_read(tty, (char *)buffer, size, mode);
+    return rc;
 }
 
 static int64_t file_device_tty_write(struct file *file,
@@ -100,7 +117,7 @@ static int64_t file_device_uart_read(struct file *file,
     if (buffer == 0 || size == 0u) {
         return 0;
     }
-    if (!job_serial_current_process_foreground_allowed()) {
+    if (!file_device_serial_foreground_allowed()) {
         return 0;
     }
     return (int64_t)uart_read_tty((char *)buffer,
@@ -152,6 +169,9 @@ static struct tty *file_device_tty_for_node(const struct vfs_node *node, void *c
     if (node == NULL) {
         return NULL;
     }
+    if (node->aux_index == VFS_DEV_TTY1) {
+        return tty_virtual(0u);
+    }
     if (node->aux_index == VFS_DEV_TTY2) {
         return tty_virtual(1u);
     }
@@ -173,16 +193,19 @@ static void file_device_bind_vfs_node(struct file *file,
 
 void file_init_console_in(struct file *file, void *console_handle) {
     file_device_init_with_ops(file, KERNEL_FILE_TTY_STDIN, &g_file_ops_tty_in);
+    file->flags |= KERNEL_FILE_ACCESS_READ;
     file->private_data = console_handle;
 }
 
 void file_init_console_out(struct file *file, void *console_handle) {
     file_device_init_with_ops(file, KERNEL_FILE_TTY_STDOUT, &g_file_ops_tty_out);
+    file->flags |= KERNEL_FILE_ACCESS_WRITE;
     file->private_data = console_handle;
 }
 
 void file_init_console_err(struct file *file, void *console_handle) {
     file_device_init_with_ops(file, KERNEL_FILE_TTY_STDERR, &g_file_ops_tty_out);
+    file->flags |= KERNEL_FILE_ACCESS_WRITE;
     file->private_data = console_handle;
 }
 
@@ -191,30 +214,36 @@ int file_device_backend_bind(struct file *file, const struct vfs_node *node, voi
         return 0;
     }
     if (node->aux_index == VFS_DEV_TTY ||
+        node->aux_index == VFS_DEV_TTY1 ||
         node->aux_index == VFS_DEV_TTY2 ||
         node->aux_index == VFS_DEV_TTY3) {
         file_device_bind_vfs_node(file, node, &g_file_ops_devfs_tty);
+        file->flags |= KERNEL_FILE_ACCESS_READ | KERNEL_FILE_ACCESS_WRITE;
         file->private_data = file_device_tty_for_node(node, console_handle);
         return 1;
     }
     if (node->aux_index == VFS_DEV_STDIN) {
         file_device_bind_vfs_node(file, node, &g_file_ops_tty_in);
+        file->flags |= KERNEL_FILE_ACCESS_READ;
         file->private_data = console_handle;
         return 1;
     }
     if (node->aux_index == VFS_DEV_STDOUT) {
         file_device_bind_vfs_node(file, node, &g_file_ops_tty_out);
+        file->flags |= KERNEL_FILE_ACCESS_WRITE;
         file->private_data = console_handle;
         return 1;
     }
     if (node->aux_index == VFS_DEV_STDERR) {
         file_device_bind_vfs_node(file, node, &g_file_ops_tty_out);
+        file->flags |= KERNEL_FILE_ACCESS_WRITE;
         file->private_data = console_handle;
         return 1;
     }
     if (node->aux_index == VFS_DEV_TTYS0) {
         uart_set_console_input_enabled(0);
         file_device_bind_vfs_node(file, node, &g_file_ops_devfs_uart);
+        file->flags |= KERNEL_FILE_ACCESS_READ | KERNEL_FILE_ACCESS_WRITE;
         return 1;
     }
     return 0;

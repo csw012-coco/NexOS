@@ -16,19 +16,23 @@ typedef unsigned int uint32_t;
 #include "kernel/public/core/early_boot.h"
 #include "kernel/public/core/early_console.h"
 #include "kernel/public/core/kprint.h"
+#include "kernel/public/core/tty.h"
 #include "kernel/public/proc/context.h"
 #include "kernel/public/proc/process.h"
 #include "kernel/public/proc/process_scheduler_ops.h"
 #include "kernel/public/proc/process_user_backend.h"
+#include "kernel/public/proc/job_control.h"
 #include "kernel/internal/sys/syscall_common_request_core.h"
-#include "kernel/internal/sys/syscall_i386_internal.h"
+#include "arch/x86/i386/syscall/compat32_internal.h"
+#include "drivers/input/keyboard.h"
 #include "keyboard.h"
 #include "lib/string.h"
-#include "paging.h"
-#include "process32.h"
+#include "mm/paging.h"
+#include "process/process.h"
 #include "arch/x86/common/pic.h"
-#include "pmm.h"
-#include "scheduler.h"
+#include "mm/pmm.h"
+#include "scheduler/scheduler.h"
+#include "services/shared_services.h"
 #include "user.h"
 
 enum {
@@ -58,13 +62,38 @@ static struct early_vfs early_filesystem;
 extern void hal_display_load_font(const struct bootx_boot_info *boot_info);
 static uint32_t i386_context_action_to_frame(uintptr_t action);
 extern void hal_display_init(const struct bootx_console_info *console);
-extern void kernel_i386_query_init(const struct syscall_boot_info *info,
-                                   const struct syscall_framebuffer_info *fb_info,
-                                   const struct bootx_boot_info *raw_boot_info,
-                                   uint32_t cmdline,
-                                   uint32_t memmap,
-                                   uint32_t memmap_count);
-extern void kernel_i386_syscall_context(syscall_i386_context *ctx);
+
+static void i386_route_keyboard_events(void) {
+    struct i386_key_event raw;
+
+    while (i386_keyboard_pop(&raw)) {
+        struct keyboard_event event = keyboard_handle_scancode(raw.scancode);
+        struct tty *tty;
+
+        if (event.keycode == KEYBOARD_KEY_NONE) {
+            continue;
+        }
+        keyboard_event_queue_push(&event, irq_line_count[0]);
+        if (event.pressed && event.alt) {
+            uint32_t tty_index = TTY_VIRTUAL_COUNT;
+
+            if (event.keycode == KEYBOARD_KEY_F1) {
+                tty_index = 0u;
+            } else if (event.keycode == KEYBOARD_KEY_F2) {
+                tty_index = 1u;
+            } else if (event.keycode == KEYBOARD_KEY_F3) {
+                tty_index = 2u;
+            }
+            if (tty_index < TTY_VIRTUAL_COUNT && tty_switch_active(tty_index)) {
+                continue;
+            }
+        }
+        tty = tty_active();
+        if (tty != 0) {
+            tty_feed_key_event(tty, &event);
+        }
+    }
+}
 
 static int early_test_block_read(struct block_device *dev,
                                  uint64_t lba,
@@ -258,14 +287,13 @@ uint32_t i386_exception_handler(uint32_t vector, struct i386_exception_frame *fr
         }
         if ((frame->cs & 3u) == 3u) {
             struct process_context context;
-            syscall_i386_context service_context;
+            struct syscall_compat32_context service_context;
             uintptr_t action;
 
             i386_context_from_exception(&context, frame);
-            kernel_i386_syscall_context(&service_context);
+            shared_services_syscall_context(&service_context);
             service_context.pid = i386_scheduler_current_pid();
             service_context.ticks = irq_line_count[0];
-            syscall_i386_cleanup_pid(&service_context, service_context.pid);
             action = i386_scheduler_fault_exit(&context, -14);
             return i386_context_action_to_frame(action);
         }
@@ -286,17 +314,17 @@ static uint32_t i386_context_action_to_frame(uintptr_t action) {
 
 uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
     struct process_context schedule_context;
-    syscall_i386_context service_context;
+    struct syscall_compat32_context service_context;
     struct kernel_syscall_request request = {0};
     struct kernel_syscall_result result;
 
     i386_context_from_syscall(&schedule_context, frame);
-    kernel_i386_syscall_context(&service_context);
+    shared_services_syscall_context(&service_context);
     service_context.pid = i386_scheduler_current_pid();
     service_context.ticks = irq_line_count[0];
     service_context.process_context = &schedule_context;
     arch->syscall_decode(frame, &request);
-    if (!syscall_i386_dispatch_request(&service_context, &request, &result)) {
+    if (!syscall_compat32_dispatch_request(&service_context, &request, &result)) {
         result.value = 0u;
         result.action = SYSCALL_RESULT_RETURN;
     }
@@ -325,12 +353,12 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
         int blocked = 0;
         uintptr_t action;
 
-        action = syscall_i386_wait(&service_context,
-                                        &schedule_context,
-                                        (uint32_t)result.value,
-                                        (uint32_t)result.extra,
-                                        &status,
-                                        &blocked);
+        action = syscall_compat32_wait(&service_context,
+                                       &schedule_context,
+                                       (uint32_t)result.value,
+                                       (uint32_t)result.extra,
+                                       &status,
+                                       &blocked);
         if (blocked && action != 0u) {
             return i386_context_action_to_frame(action);
         }
@@ -342,18 +370,28 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
 
         arch->syscall_set_return(frame, 0u);
         i386_context_from_syscall(&schedule_context, frame);
-        action = syscall_i386_sleep(&service_context,
-                                         &schedule_context,
-                                         (uint32_t)result.value);
+        action = syscall_compat32_sleep(&service_context,
+                                        &schedule_context,
+                                        (uint32_t)result.value);
+        return i386_context_action_to_frame(action);
+    }
+    if (result.action == SYSCALL_RESULT_IO_WAIT) {
+        uintptr_t action;
+
+        arch->syscall_set_return(frame, (uint32_t)-NEX_ERR_AGAIN);
+        i386_context_from_syscall(&schedule_context, frame);
+        action = i386_scheduler_block(&schedule_context);
+        (void)job_tty_wake_waiting_processes(
+            (struct tty *)(uintptr_t)result.extra);
         return i386_context_action_to_frame(action);
     }
     if (result.action == SYSCALL_RESULT_EXIT) {
         uintptr_t action;
 
         i386_context_from_syscall(&schedule_context, frame);
-        action = syscall_i386_exit(&service_context,
-                                        &schedule_context,
-                                        (int)result.value);
+        action = syscall_compat32_exit(&service_context,
+                                       &schedule_context,
+                                       (int)result.value);
         return action != 0u
             ? i386_context_action_to_frame(action)
             : 1u;
@@ -362,8 +400,8 @@ uint32_t i386_syscall_handler(struct i386_syscall_frame *frame) {
         uintptr_t action;
 
         i386_context_from_syscall(&schedule_context, frame);
-        action = syscall_i386_yield(&service_context,
-                                         &schedule_context);
+        action = syscall_compat32_yield(&service_context,
+                                        &schedule_context);
         if (action != 0u) {
             return i386_context_action_to_frame(action);
         }
@@ -384,6 +422,7 @@ struct i386_irq_frame *i386_irq_handler(uint32_t irq,
     kernel_irq_state_record(irq, (frame->cs & 3u) == 3u);
     if (irq == 1u) {
         i386_keyboard_handle_irq();
+        i386_route_keyboard_events();
     }
     i386_pic_send_eoi((uint8_t)irq);
     if (irq == 0u) {
@@ -462,7 +501,7 @@ static int i386_interrupts_init(void) {
         return 0;
     }
     i386_pic_init();
-    i386_pit_init(1000u);
+    i386_pit_init(100u);
     i386_keyboard_init();
     i386_pic_set_mask(0u, 0);
     i386_pic_set_mask(1u, 0);
@@ -819,8 +858,8 @@ static int i386_scheduler_test(struct kernel_early_boot_report *report) {
                             task1.stack_top,
                             task1.root) ||
         i386_paging_root() != i386_paging_kernel_root() ||
-        !i386_scheduler_process_snapshot(0u, &process0) ||
-        !i386_scheduler_process_snapshot(1u, &process1)) {
+        !process_scheduler_snapshot(0u, &process0) ||
+        !process_scheduler_snapshot(1u, &process1)) {
         return 0;
     }
 
@@ -874,12 +913,8 @@ static const struct hal_early_ops i386_hal_early_ops = {
     .halt = i386_halt,
 };
 
-extern int kernel_i386_shared_services_init(void);
-extern void kernel_i386_shared_services_run(void);
-extern int kernel_i386_selftest_verbose(void);
-
-int kernel_i386_run_test32(struct process_snapshot *process0,
-                           struct process_snapshot *process1) {
+int boot_user_services_run_test_pair(struct process_snapshot *process0,
+                                     struct process_snapshot *process1) {
     enum {
         TEST_STACK_TOP = 0xbfffe000u
     };
@@ -896,7 +931,12 @@ int kernel_i386_run_test32(struct process_snapshot *process0,
     loaded.stack = task0.stack_top;
     loaded.root = task0.root;
     loaded.name = "test32";
-    if (!(kernel_i386_selftest_verbose()
+    loaded.caps = 0u;
+    loaded.uid = 0u;
+    loaded.gid = 0u;
+    loaded.caps_set = 0u;
+    loaded.identity_set = 0u;
+    if (!(shared_services_selftest_verbose()
               ? process_scheduler_run_loaded(&loaded, process0)
               : process_scheduler_run_loaded_quiet(&loaded, process0))) {
         return 0;
@@ -914,14 +954,14 @@ int kernel_i386_run_test32(struct process_snapshot *process0,
     return 1;
 }
 
-int32_t kernel_i386_spawn_command(const char *command,
-                                  uint32_t mode,
-                                  uint32_t flags) {
+int32_t boot_user_services_spawn_command(const char *command,
+                                         uint32_t mode,
+                                         uint32_t flags) {
     return process_user_spawn_from_user(command, mode, flags);
 }
 
-int kernel_i386_run_command(const char *command,
-                            struct process_snapshot *process) {
+int boot_user_services_run_command_arch(const char *command,
+                                        struct process_snapshot *process) {
     return process_user_run_command(command, process);
 }
 
@@ -950,14 +990,13 @@ static int i386_prepare_shared_kernel(const struct bootx_boot_info *boot_info) {
     if (!i386_filesystem_init(&report)) {
         return 0;
     }
-    if (kernel_i386_selftest_verbose() && !i386_scheduler_test(&report)) {
+    if (shared_services_selftest_verbose() && !i386_scheduler_test(&report)) {
         return 0;
     }
     process32_init(&early_filesystem);
     process32_register_backend();
     i386_scheduler_register_process_ops();
     i386_scheduler_register_mm_ops();
-    i386_scheduler_register_file_ops();
     serial_write("i386: architecture bootstrap passed\n");
     return 1;
 }
@@ -1029,12 +1068,12 @@ void kernel_main32(const struct bootx_boot_info *boot_info) {
     query_boot_info.partition_sectors = boot_info->partition_sectors;
     query_boot_info.module_count = boot_info->module_count;
     syscall_common_request_core_fill_fb_info(boot_info, &query_fb_info);
-    kernel_i386_query_init(&query_boot_info,
-                           &query_fb_info,
-                           boot_info,
-                           boot_info->cmdline,
-                           boot_info->memmap,
-                           boot_info->memmap_count);
+    shared_services_query_init(&query_boot_info,
+                               &query_fb_info,
+                               boot_info,
+                               boot_info->cmdline,
+                               boot_info->memmap,
+                               boot_info->memmap_count);
     if (!i386_map_boot_modules(boot_info) ||
         !i386_map_framebuffer_console(&boot_info->console)) {
         early_console_write("kernel_main32: display module mapping failed\n");
@@ -1042,13 +1081,13 @@ void kernel_main32(const struct bootx_boot_info *boot_info) {
     }
     hal_display_load_font(boot_info);
     hal_display_init(&boot_info->console);
-    if (!kernel_i386_shared_services_init()) {
+    if (!shared_services_init()) {
         early_console_write("kernel_main32: shared service initialization failed\n");
         i386_halt();
     }
     kprint("kernel: services online\n");
     kprint("kernel: system/init\n");
-    kernel_i386_shared_services_run();
+    shared_services_run();
 }
 
 void i386_kernel_main(const struct bootx_boot_info *boot_info) {

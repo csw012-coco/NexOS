@@ -413,9 +413,9 @@ static void process_init_bound_elf_process(struct process *proc) {
 }
 
 static int process_create_elf_address_space(void) {
-    g_bound_session->address_space.kernel_cr3 = vmm_current_root();
-    g_bound_session->address_space.user_cr3 = vmm_create_user_root();
-    if (g_bound_session->address_space.user_cr3 == 0) {
+    g_bound_session->address_space.kernel_root = vmm_current_root();
+    g_bound_session->address_space.user_root = vmm_create_user_root();
+    if (g_bound_session->address_space.user_root == 0) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
     }
@@ -423,12 +423,12 @@ static int process_create_elf_address_space(void) {
 }
 
 static int process_bound_user_root_active(void) {
-    return g_bound_session->address_space.user_cr3 != 0 &&
-           vmm_root_is_current(g_bound_session->address_space.user_cr3);
+    return g_bound_session->address_space.user_root != 0 &&
+           vmm_root_is_current(g_bound_session->address_space.user_root);
 }
 
 static int process_prepare_elf_address_space(void) {
-    if (!vmm_switch_root_or_fail(g_bound_session->address_space.user_cr3)) {
+    if (!vmm_switch_root_or_fail(g_bound_session->address_space.user_root)) {
         g_process_exec_last_error = PROCESS_EXEC_ERR_ELF_SEGMENT_MAP;
         return 0;
     }
@@ -487,8 +487,8 @@ int process_handle_demand_page_fault(struct process_session *session,
             continue;
         }
         process_bind_session(session, mappings);
-        if (!vmm_root_is_current(session->address_space.user_cr3) &&
-            !vmm_switch_root_or_fail(session->address_space.user_cr3)) {
+        if (!vmm_root_is_current(session->address_space.user_root) &&
+            !vmm_switch_root_or_fail(session->address_space.user_root)) {
             return 0;
         }
         if (!addrspace_map_page_at(page, segment->perms)) {

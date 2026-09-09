@@ -2,6 +2,10 @@
 #include "user/libc/sys/syscall.h"
 #include "user/libc/include/nexos/file.h"
 
+enum {
+    NLIBC_WRITE_CHUNK_SIZE = 4096u
+};
+
 uint64_t syscall4(uint64_t number,
                   uint64_t arg0,
                   uint64_t arg1,
@@ -156,14 +160,18 @@ ssize_t write(int fd, const void *data, size_t len) {
     }
 
     while (done < len) {
+        size_t remaining = len - done;
+        uint64_t chunk = remaining > NLIBC_WRITE_CHUNK_SIZE ?
+                         NLIBC_WRITE_CHUNK_SIZE :
+                         (uint64_t)remaining;
         ssize_t rc = (ssize_t)syscall4(SYS_WRITE,
                                        (uint64_t)fd,
                                        (uint64_t)(uintptr_t)(ptr + done),
-                                       (uint64_t)(len - done),
+                                       chunk,
                                        0);
 
         if (rc == (ssize_t)NEXOS_FILE_IO_WOULD_BLOCK) {
-            //yield();
+            yield();
             continue;
         }
 
@@ -220,10 +228,6 @@ ssize_t nex_read(int fd, void *data, size_t max_len, uint32_t flags) {
                 return 0;
             }
 
-            /*
-             * 여기가 중요.
-             * blocking read는 -2를 앱으로 넘기면 안 됨.
-             */
             yield();
             continue;
         }
@@ -272,6 +276,30 @@ int remove(const char *path) {
     return (int)syscall4(SYS_REMOVE, (uint64_t)(uintptr_t)path, 0, 0, 0);
 }
 
+int chmod(const char *path, uint32_t mode) {
+    return (int)syscall4(SYS_CHMOD,
+                         (uint64_t)(uintptr_t)path,
+                         mode,
+                         0,
+                         0);
+}
+
+int chown(const char *path, uint32_t uid, uint32_t gid) {
+    return (int)syscall4(SYS_CHOWN,
+                         (uint64_t)(uintptr_t)path,
+                         uid,
+                         gid,
+                         0);
+}
+
+int setcap(const char *path, uint32_t caps) {
+    return (int)syscall4(SYS_SETCAP,
+                         (uint64_t)(uintptr_t)path,
+                         caps,
+                         0,
+                         0);
+}
+
 int chdir(const char *path) {
     return (int)syscall4(SYS_CHDIR, (uint64_t)(uintptr_t)path, 0, 0, 0);
 }
@@ -305,7 +333,11 @@ int spawn(const char *name, uint32_t mode, uint32_t flags) {
 }
 
 int exec_replace(const char *name) {
-    int rc = (int)syscall4(SYS_EXEC_REPLACE, (uint64_t)(uintptr_t)name, (uint64_t)(uintptr_t)environ, 0, 0);
+    int rc = (int)syscall4(SYS_EXEC_REPLACE,
+                           (uint64_t)(uintptr_t)name,
+                           (uint64_t)(uintptr_t)environ,
+                           0,
+                           0);
 
     return rc < 0 ? rc : 0;
 }
@@ -323,6 +355,10 @@ int part_query(uint32_t disk_index, uint32_t slot, struct syscall_partition_info
 }
 
 int mount_query(uint32_t index, struct syscall_mount_info *info) {
+    return sys_query(SYS_QUERY_MOUNT, index, SYS_QUERY_FLAG_NO_SPACE, info);
+}
+
+int mount_query_space(uint32_t index, struct syscall_mount_info *info) {
     return sys_query(SYS_QUERY_MOUNT, index, 0, info);
 }
 
@@ -452,7 +488,11 @@ int profile_query(uint32_t index, uint32_t flags, struct syscall_profile_info *i
 }
 
 int exec(const char *name) {
-    int rc = (int)syscall4(SYS_EXEC, (uint64_t)(uintptr_t)name, (uint64_t)(uintptr_t)environ, 0, 0);
+    int rc = (int)syscall4(SYS_EXEC,
+                           (uint64_t)(uintptr_t)name,
+                           (uint64_t)(uintptr_t)environ,
+                           0,
+                           0);
 
     return rc < 0 ? rc : 0;
 }
@@ -462,7 +502,15 @@ int proc_query(uint32_t kind, uint32_t index, struct syscall_process_info *info)
 }
 
 int wait(uint32_t pid, struct syscall_process_info *info) {
-    return (int)syscall4(SYS_WAIT, pid, (uint64_t)(uintptr_t)info, 0, 0);
+    int rc;
+
+    do {
+        rc = (int)syscall4(SYS_WAIT, pid, (uint64_t)(uintptr_t)info, 0, 0);
+        if (rc == NEXOS_FILE_IO_WOULD_BLOCK) {
+            yield();
+        }
+    } while (rc == NEXOS_FILE_IO_WOULD_BLOCK);
+    return rc;
 }
 
 int kill(uint32_t pid) {
@@ -483,6 +531,10 @@ int fg(uint32_t pid) {
 
 int bg(uint32_t pid) {
     return (int)syscall4(SYS_BG, pid, 0, 0, 0);
+}
+
+int tty_claim(void) {
+    return (int)syscall4(SYS_TTY_CLAIM, 0, 0, 0, 0);
 }
 
 int dup2(int src_fd, int dst_fd) {
@@ -521,8 +573,92 @@ int reboot(void) {
     return (int)syscall4(SYS_REBOOT, 0, 0, 0, 0);
 }
 
+int poweroff(void) {
+    return (int)syscall4(SYS_POWEROFF, 0, 0, 0, 0);
+}
+
 int capability_event(const struct syscall_capability_event *event) {
     return (int)syscall4(SYS_CAPABILITY_EVENT, (uint64_t)(uintptr_t)event, 0, 0, 0);
+}
+
+int capability_get(uint32_t *caps) {
+    int64_t result = (int64_t)syscall4(SYS_CAPABILITY, SYS_CAP_OP_GET, 0, 0, 0);
+
+    if (result < 0) {
+        return (int)result;
+    }
+    if (caps != 0) {
+        *caps = (uint32_t)result;
+    }
+    return 0;
+}
+
+int capability_drop(uint32_t mask) {
+    return (int)syscall4(SYS_CAPABILITY, SYS_CAP_OP_DROP, mask, 0, 0);
+}
+
+int capability_grant(uint32_t mask) {
+    return (int)syscall4(SYS_CAPABILITY, SYS_CAP_OP_GRANT, mask, 0, 0);
+}
+
+int capability_auth_grant(uint32_t mask, const char *token) {
+    return (int)syscall4(SYS_CAPABILITY,
+                         SYS_CAP_OP_AUTH_GRANT,
+                         mask,
+                         (uint64_t)(uintptr_t)token,
+                         0);
+}
+
+int capability_spawn_get(uint32_t *caps) {
+    int64_t result = (int64_t)syscall4(SYS_CAPABILITY, SYS_CAP_OP_SPAWN_GET, 0, 0, 0);
+
+    if (result < 0) {
+        return (int)result;
+    }
+    if (caps != 0) {
+        *caps = (uint32_t)result;
+    }
+    return 0;
+}
+
+int capability_spawn_set(uint32_t mask) {
+    return (int)syscall4(SYS_CAPABILITY, SYS_CAP_OP_SPAWN_SET, mask, 0, 0);
+}
+
+int capability_spawn_clear(void) {
+    return (int)syscall4(SYS_CAPABILITY, SYS_CAP_OP_SPAWN_CLEAR, 0, 0, 0);
+}
+
+int identity_get(struct syscall_identity_info *info) {
+    return (int)syscall4(SYS_IDENTITY,
+                         SYS_IDENTITY_OP_GET,
+                         0,
+                         0,
+                         (uint64_t)(uintptr_t)info);
+}
+
+int identity_drop_user(uint32_t uid) {
+    return (int)syscall4(SYS_IDENTITY,
+                         SYS_IDENTITY_OP_DROP_USER,
+                         uid,
+                         0,
+                         0);
+}
+
+int identity_auth_root(const char *token) {
+    return (int)syscall4(SYS_IDENTITY,
+                         SYS_IDENTITY_OP_AUTH_ROOT,
+                         0,
+                         (uint64_t)(uintptr_t)token,
+                         0);
+}
+
+int identity_push(void) {
+    return (int)syscall4(SYS_IDENTITY, SYS_IDENTITY_OP_PUSH, 0, 0, 0);
+}
+
+int identity_pop(void) {
+    return (int)syscall4(SYS_IDENTITY, SYS_IDENTITY_OP_POP, 0, 0, 0);
 }
 
 int clipboard_get(char *buffer, uint32_t size) {

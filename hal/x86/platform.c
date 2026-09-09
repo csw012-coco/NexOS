@@ -1,7 +1,17 @@
 #include "hal/x86/platform.h"
+#include "arch/x86/x86_64/mm/pmm.h"
 #include "bootx/bootx.h"
+#include "drivers/bus/acpi.h"
+#include "drivers/bus/ioapic.h"
+#include "drivers/bus/lapic.h"
 #include "drivers/video/framebuffer.h"
 #include "drivers/video/vga.h"
+#include "kernel/internal/mem/vmm_diag.h"
+#include "kernel/public/mem/vmm.h"
+#include "kernel/public/proc/context.h"
+#include "kernel/public/sys/syscall.h"
+#include "kernel/public/sys/syscall_request.h"
+#include "kernel/internal/core/kernel_panic_internal.h"
 
 static volatile uint32_t g_hal_timer_ticks;
 static uint32_t g_hal_timer_hz;
@@ -52,6 +62,15 @@ void hal_paging_init(uint64_t kernel_phys_addr) {
 
 void hal_platform_init(const struct hal_interrupt_handlers *handlers) {
     hal_x86_platform_init_impl(handlers);
+}
+
+int hal_pmm_init_from_boot(const struct bootx_boot_info *boot_info,
+                           uint64_t kernel_phys_addr) {
+    return x86_64_pmm_init(boot_info, kernel_phys_addr);
+}
+
+int hal_paging_enabled(void) {
+    return 1;
 }
 
 uint64_t hal_paging_current_root(void) {
@@ -120,8 +139,235 @@ int hal_paging_get_mapping_info(uint64_t virt_addr, uint64_t *phys_addr, uint64_
     return hal_x86_paging_get_mapping_info_impl(virt_addr, phys_addr, flags);
 }
 
+int hal_paging_get_mapping_info_in_root(uint64_t root,
+                                        uint64_t virt_addr,
+                                        uint64_t *phys_addr,
+                                        uint64_t *flags) {
+    return vmm_query_mapping_in_context(root, virt_addr, phys_addr, flags);
+}
+
+void hal_paging_log_init_exec_failure(const struct hal_boot_trace_ops *ops, void *ctx) {
+    struct vmm_page_fault_trace trace;
+    struct vmm_page_clone_trace clone_trace;
+    uint64_t phys = 0;
+    uint64_t flags = 0;
+    uint64_t pml4e = 0;
+    uint64_t pdpte = 0;
+    uint64_t pde = 0;
+    uint64_t pte = 0;
+
+    if (ops == 0 || ops->text == 0 || ops->hex64 == 0) {
+        return;
+    }
+
+    vmm_get_page_fault_trace(&trace);
+    vmm_get_page_clone_trace(&clone_trace);
+    ops->hex64(ctx, "kernel: cur root", vmm_current_root());
+    ops->hex64(ctx, "kernel: cl src", clone_trace.source_cr3);
+    ops->hex64(ctx, "kernel: cl dst", clone_trace.clone_cr3);
+    ops->hex64(ctx, "kernel: cl s e0", clone_trace.source_pml4e0);
+    ops->hex64(ctx, "kernel: cl s511", clone_trace.source_pml4e511);
+    ops->hex64(ctx, "kernel: cl d e0", clone_trace.clone_pml4e0);
+    ops->hex64(ctx, "kernel: cl d511", clone_trace.clone_pml4e511);
+    ops->hex64(ctx, "kernel: cl fail v", clone_trace.fail_virt);
+    ops->hex64(ctx, "kernel: cl fail p", clone_trace.fail_phys);
+    ops->hex64(ctx, "kernel: cl fail s", clone_trace.fail_stage);
+    ops->hex64(ctx, "kernel: sw req", trace.requested_cr3);
+    ops->hex64(ctx, "kernel: sw act", trace.actual_cr3);
+    ops->hex64(ctx, "kernel: sw rej", trace.reject_flags);
+    ops->hex64(ctx, "kernel: sw ip", trace.current_rip);
+    ops->hex64(ctx, "kernel: sw sp", trace.current_rsp);
+    if (vmm_query_mapping_in_context(trace.requested_cr3, trace.current_rip, &phys, &flags)) {
+        ops->hex64(ctx, "kernel: req ip phys", phys);
+        ops->hex64(ctx, "kernel: req ip flg", flags);
+    } else {
+        ops->text(ctx, "kernel: req ip unmapped");
+    }
+    (void)vmm_query_page_walk_in_context(trace.requested_cr3,
+                                         trace.current_rip,
+                                         &pml4e,
+                                         &pdpte,
+                                         &pde,
+                                         &pte);
+    ops->hex64(ctx, "kernel: req ip lvl0", pml4e);
+    ops->hex64(ctx, "kernel: req ip lvl1", pdpte);
+    ops->hex64(ctx, "kernel: req ip lvl2", pde);
+    ops->hex64(ctx, "kernel: req ip lvl3", pte);
+    if (vmm_query_mapping_in_context(trace.requested_cr3, trace.current_rsp, &phys, &flags)) {
+        ops->hex64(ctx, "kernel: req sp phys", phys);
+        ops->hex64(ctx, "kernel: req sp flg", flags);
+    } else {
+        ops->text(ctx, "kernel: req sp unmapped");
+    }
+    pml4e = 0;
+    pdpte = 0;
+    pde = 0;
+    pte = 0;
+    (void)vmm_query_page_walk_in_context(trace.requested_cr3,
+                                         trace.current_rsp,
+                                         &pml4e,
+                                         &pdpte,
+                                         &pde,
+                                         &pte);
+    ops->hex64(ctx, "kernel: req sp lvl0", pml4e);
+    ops->hex64(ctx, "kernel: req sp lvl1", pdpte);
+    ops->hex64(ctx, "kernel: req sp lvl2", pde);
+    ops->hex64(ctx, "kernel: req sp lvl3", pte);
+    ops->hex64(ctx, "kernel: init final swrej", trace.reject_flags);
+}
+
+void hal_paging_log_panic_entry(const struct hal_boot_trace_ops *ops,
+                                void *ctx,
+                                uint64_t entry) {
+    uint64_t entry_phys = 0;
+    uint64_t entry_flags = 0;
+    uint64_t pml4e = 0;
+    uint64_t pdpte = 0;
+    uint64_t pde = 0;
+    uint64_t pte = 0;
+
+    if (ops == 0 || ops->text == 0 || ops->hex64 == 0 || entry == 0) {
+        return;
+    }
+
+    if (vmm_query_info(entry, &entry_phys, &entry_flags)) {
+        ops->hex64(ctx, "ENTRY MAP PHYS   : ", entry_phys);
+        ops->hex64(ctx, "ENTRY MAP FLAGS  : ", entry_flags);
+    } else {
+        ops->text(ctx, "ENTRY MAP        : <unmapped>");
+    }
+
+    if (vmm_query_page_walk(entry, &pml4e, &pdpte, &pde, &pte)) {
+        ops->hex64(ctx, "ENTRY PML4E      : ", pml4e);
+        ops->hex64(ctx, "ENTRY PDPTE      : ", pdpte);
+        ops->hex64(ctx, "ENTRY PDE        : ", pde);
+        ops->hex64(ctx, "ENTRY PTE        : ", pte);
+    }
+}
+
+void hal_paging_log_panic_target_entry(const struct hal_boot_trace_ops *ops,
+                                       void *ctx,
+                                       uint64_t target_root,
+                                       uint64_t entry) {
+    uint64_t entry_phys = 0;
+    uint64_t entry_flags = 0;
+    uint64_t pml4e = 0;
+    uint64_t pdpte = 0;
+    uint64_t pde = 0;
+    uint64_t pte = 0;
+
+    if (ops == 0 || ops->text == 0 || ops->hex64 == 0 ||
+        target_root == 0 || entry == 0) {
+        return;
+    }
+
+    ops->hex64(ctx, "TARGET USER ROOT : ", target_root);
+    if (vmm_query_mapping_in_context(target_root, entry, &entry_phys, &entry_flags)) {
+        ops->hex64(ctx, "TARGET MAP PHYS  : ", entry_phys);
+        ops->hex64(ctx, "TARGET MAP FLAGS : ", entry_flags);
+    } else {
+        ops->text(ctx, "TARGET ENTRY MAP : <unmapped>");
+    }
+
+    if (vmm_query_page_walk_in_context(target_root, entry, &pml4e, &pdpte, &pde, &pte)) {
+        ops->hex64(ctx, "TARGET PML4E     : ", pml4e);
+        ops->hex64(ctx, "TARGET PDPTE     : ", pdpte);
+        ops->hex64(ctx, "TARGET PDE       : ", pde);
+        ops->hex64(ctx, "TARGET PTE       : ", pte);
+    }
+}
+
+void hal_paging_log_panic_switch_trace(const struct hal_boot_trace_ops *ops,
+                                       void *ctx,
+                                       uint64_t entry) {
+    struct vmm_page_fault_trace trace = {0};
+
+    if (ops == 0 || ops->text == 0 || ops->hex64 == 0) {
+        return;
+    }
+
+    vmm_get_page_fault_trace(&trace);
+    if (trace.requested_cr3 == 0 && trace.previous_cr3 == 0 && trace.actual_cr3 == 0) {
+        return;
+    }
+
+    ops->text(ctx, "--- CR3 SWITCH TRACE ---");
+    ops->hex64(ctx, "REQ              : ", trace.requested_cr3);
+    ops->hex64(ctx, "PREV             : ", trace.previous_cr3);
+    ops->hex64(ctx, "ACTUAL           : ", trace.actual_cr3);
+    ops->hex64(ctx, "FLAGS            : ", trace.reject_flags);
+    ops->hex64(ctx, "CHECKPOINT RIP   : ", trace.current_rip);
+    ops->hex64(ctx, "CHECKPOINT RSP   : ", trace.current_rsp);
+    ops->hex64(ctx, "CUR CR3          : ", vmm_get_current_cr3());
+    ops->hex64(ctx, "ENTRY            : ", entry);
+
+    if (trace.reject_flags != 0) {
+        if (trace.reject_flags & VMM_SWITCH_REJECT_ZERO) {
+            ops->text(ctx, "REJECT REASON    : ZERO");
+        }
+        if (trace.reject_flags & VMM_SWITCH_REJECT_RIP_UNMAPPED) {
+            ops->text(ctx, "REJECT REASON    : RIP");
+        }
+        if (trace.reject_flags & VMM_SWITCH_REJECT_RSP_UNMAPPED) {
+            ops->text(ctx, "REJECT REASON    : RSP");
+        }
+    }
+}
+
+void hal_paging_log_panic_summary(const struct hal_boot_trace_ops *ops,
+                                  void *ctx,
+                                  uint64_t target_root,
+                                  uint64_t entry) {
+    struct vmm_page_fault_trace trace = {0};
+    struct vmm_page_walk_info walk = {0};
+
+    if (ops == 0 || ops->hex64 == 0) {
+        return;
+    }
+
+    vmm_get_page_fault_trace(&trace);
+    (void)vmm_query_page_walk_full(target_root, entry, &walk);
+    ops->hex64(ctx, "ARCH SW FLAGS    : ", trace.reject_flags);
+    ops->hex64(ctx, "ARCH WALK ROOT0  : ", walk.pml4_phys);
+    ops->hex64(ctx, "ARCH WALK ROOT1  : ", walk.pdpt_phys);
+    ops->hex64(ctx, "ARCH WALK TAB0   : ", walk.pd_phys);
+    ops->hex64(ctx, "ARCH WALK TAB1   : ", walk.pt_phys);
+}
+
+int hal_process_context_init_user(struct process_context *context,
+                                  uint64_t entry,
+                                  uint64_t stack,
+                                  uint64_t first_argument,
+                                  int user_mode) {
+    if (context == 0 || !user_mode) {
+        return 0;
+    }
+    process_context_reset(context);
+    context->registers[PROCESS_CONTEXT_ARG0] = first_argument;
+    context->instruction_pointer = entry;
+    context->stack_pointer = stack;
+    context->flags = 0x202u;
+    context->code_selector = GDT64_USER_CODE;
+    context->stack_selector = GDT64_USER_DATA;
+    context->user_mode = 1u;
+    return 1;
+}
+
 void *hal_phys_direct_map(uint64_t phys_addr) {
     return hal_x86_paging_phys_direct_map_impl(phys_addr);
+}
+
+int hal_phys_temporary_map(uint64_t phys_addr, uint32_t slot, void **virt_out) {
+    (void)slot;
+    if (virt_out == 0) {
+        return 0;
+    }
+    *virt_out = hal_phys_direct_map(phys_addr);
+    return *virt_out != 0;
+}
+
+void hal_phys_temporary_unmap(uint32_t slot) {
+    (void)slot;
 }
 
 void *hal_mmio_map(uint64_t phys_addr, uint64_t length) {
@@ -177,15 +423,44 @@ uint32_t hal_timer_hz(void) {
 }
 
 void hal_irq_ack(uint8_t irq) {
+    if (ioapic_irq_enabled(irq)) {
+        lapic_send_eoi();
+        return;
+    }
     hal_x86_irq_ack_impl(irq);
 }
 
 void hal_irq_set_mask(uint8_t irq, int masked) {
+    if (ioapic_irq_enabled(irq)) {
+        (void)ioapic_set_irq_mask(irq, masked);
+        hal_x86_irq_set_mask_impl(irq, 1);
+        return;
+    }
     hal_x86_irq_set_mask_impl(irq, masked);
+}
+
+int hal_irq_route(uint8_t irq, struct hal_irq_route *out) {
+    struct acpi_irq_override_route route;
+    int overridden;
+
+    if (out == 0 || irq >= 16u) {
+        return 0;
+    }
+    overridden = acpi_irq_route_for_isa(irq, &route);
+    out->irq = irq;
+    out->acpi_override = overridden ? 1u : 0u;
+    out->flags = overridden ? route.flags : 0u;
+    out->gsi = overridden ? route.gsi : irq;
+    return 1;
 }
 
 uint8_t hal_keyboard_read_scancode(void) {
     return hal_x86_keyboard_read_scancode_impl();
+}
+
+int hal_keyboard_inject_scancode(uint8_t scancode) {
+    (void)scancode;
+    return 0;
 }
 
 static uint32_t hal_display_cell_from_vga(uint16_t cell) {
@@ -467,6 +742,19 @@ void hal_cpu_enable_sse(void) {
     hal_x86_cpu_enable_sse_impl();
 }
 
+void hal_cpu_trigger_triple_fault(void) {
+    struct {
+        uint16_t limit;
+        uint64_t base;
+    } __attribute__((packed)) null_idt = {0u, 0u};
+
+    __asm__ __volatile__("lidt %0\n\t"
+                         "int3\n\t"
+                         :
+                         : "m"(null_idt)
+                         : "memory");
+}
+
 void hal_fpu_state_init(void *state) {
     hal_x86_fpu_state_init_impl(state);
 }
@@ -496,6 +784,10 @@ void hal_cpu_cpuid(uint32_t leaf,
     hal_x86_cpu_cpuid_impl(leaf, subleaf, eax, ebx, ecx, edx);
 }
 
+const char *hal_arch_name(void) {
+    return "x86_64";
+}
+
 void hal_usermode_enter(uint64_t entry, uint64_t user_stack) {
     hal_x86_usermode_enter_impl(entry, user_stack);
 }
@@ -510,4 +802,104 @@ uint64_t hal_kernel_stack_top(void) {
 
 void hal_set_kernel_stack_top(uint64_t rsp0) {
     hal_x86_set_kernel_stack_top_impl(rsp0);
+}
+
+int hal_exception_frame_is_user(const struct exception_frame *frame) {
+    return frame != 0 && (frame->cs & 0x3u) == 0x3u;
+}
+
+uint64_t hal_exception_frame_ip(const struct exception_frame *frame) {
+    return frame != 0 ? frame->instruction_pointer : 0u;
+}
+
+uint64_t hal_exception_frame_error_code(const struct exception_frame *frame) {
+    return frame != 0 ? frame->error_code : 0u;
+}
+
+uint64_t hal_page_fault_address(void) {
+    uint64_t fault_addr;
+
+    __asm__ __volatile__("mov %%cr2, %0" : "=r"(fault_addr));
+    return fault_addr;
+}
+
+void hal_exception_snapshot(const struct exception_frame *frame,
+                            struct hal_exception_snapshot *snapshot) {
+    const uint64_t *raw = (const uint64_t *)frame;
+    uint64_t stack_segment = 0;
+    uint32_t raw_count = 19u;
+    uint32_t i;
+
+    if (frame == 0 || snapshot == 0) {
+        return;
+    }
+
+    snapshot->general[HAL_EXCEPTION_REGISTER_RAX] = frame->rax;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RBX] = frame->rbx;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RCX] = frame->rcx;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RDX] = frame->rdx;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RSI] = frame->rsi;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RDI] = frame->rdi;
+    snapshot->general[HAL_EXCEPTION_REGISTER_RBP] = frame->rbp;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R8] = frame->r8;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R9] = frame->r9;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R10] = frame->r10;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R11] = frame->r11;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R12] = frame->r12;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R13] = frame->r13;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R14] = frame->r14;
+    snapshot->general[HAL_EXCEPTION_REGISTER_R15] = frame->r15;
+    snapshot->error_code = frame->error_code;
+    snapshot->instruction_pointer = frame->instruction_pointer;
+    snapshot->code_selector = frame->cs;
+    snapshot->flags = frame->rflags;
+    snapshot->user_mode = hal_exception_frame_is_user(frame) ? 1u : 0u;
+    __asm__ __volatile__("mov %%cr0, %0" : "=r"(snapshot->control0));
+    __asm__ __volatile__("mov %%cr2, %0" : "=r"(snapshot->fault_address));
+    __asm__ __volatile__("mov %%cr3, %0" : "=r"(snapshot->paging_root));
+    __asm__ __volatile__("mov %%cr4, %0" : "=r"(snapshot->control4));
+    __asm__ __volatile__("mov %%ss, %0" : "=r"(stack_segment));
+    if (snapshot->user_mode) {
+        snapshot->stack_pointer = raw[19];
+        snapshot->stack_selector = raw[20];
+        raw_count = 21u;
+    } else {
+        snapshot->stack_pointer = (uint64_t)(uintptr_t)(frame + 1);
+        snapshot->stack_selector = stack_segment;
+    }
+    snapshot->raw_word_count = raw_count < HAL_EXCEPTION_RAW_WORD_MAX ?
+                               raw_count :
+                               HAL_EXCEPTION_RAW_WORD_MAX;
+    for (i = 0; i < snapshot->raw_word_count; i++) {
+        snapshot->raw_words[i] = raw[i];
+    }
+}
+
+int hal_syscall_frame_is_user(const struct syscall_frame *frame) {
+    return frame != 0 && (frame->cs & 0x3u) == 0x3u;
+}
+
+uint64_t hal_syscall_frame_ip(const struct syscall_frame *frame) {
+    return frame != 0 ? frame->instruction_pointer : 0u;
+}
+
+uint64_t hal_syscall_frame_sp(const struct syscall_frame *frame) {
+    return frame != 0 ? frame->stack_pointer : 0u;
+}
+
+void hal_syscall_decode_request(const struct syscall_frame *frame,
+                                struct kernel_syscall_request *request) {
+    if (frame == 0 || request == 0) {
+        return;
+    }
+    request->number = (uint32_t)frame->rax;
+    request->user_bits = 64u;
+    request->args[0] = frame->rbx;
+    request->args[1] = frame->rcx;
+    request->args[2] = frame->rdx;
+    request->args[3] = frame->rsi;
+    request->args[4] = frame->rdi;
+    request->args[5] = frame->rbp;
+    request->instruction_pointer = frame->instruction_pointer;
+    request->stack_pointer = frame->stack_pointer;
 }

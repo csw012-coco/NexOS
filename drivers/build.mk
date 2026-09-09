@@ -7,6 +7,9 @@ DRIVER_C_SRCS := \
 	block/blockdev.c \
 	drivers/audio/audio.c \
 	drivers/audio/pc_speaker.c \
+	drivers/bus/acpi.c \
+	drivers/bus/lapic.c \
+	drivers/bus/ioapic.c \
 	drivers/bus/pci.c \
 	drivers/audio/ac97.c \
 	drivers/audio/hda.c \
@@ -43,6 +46,9 @@ I386_DRIVER_C_SRCS := \
 	drivers/video/framebuffer.c \
 	drivers/input/keyboard.c \
 	drivers/input/mouse.c \
+	drivers/bus/acpi.c \
+	drivers/bus/lapic.c \
+	drivers/bus/ioapic.c \
 	drivers/bus/pci.c \
 	drivers/rtc/cmos.c \
 	drivers/storage/ramdisk.c \

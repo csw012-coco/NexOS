@@ -1,0 +1,11 @@
+# NexOS Service v2
+name tty3
+enabled 1
+command /cmd/nexbox getty /dev/tty3
+restart always
+backoff_ms 1000
+max_retries 0
+after 
+requires 
+stdout 
+stderr 

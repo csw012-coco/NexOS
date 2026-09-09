@@ -186,12 +186,33 @@ int ehci_alloc_async_head(void) {
         g_ehci_periodic_list_phys == 0u ||
         g_ehci_async_head_phys > 0xffffffffull || g_ehci_async_dummy_qtd_phys > 0xffffffffull ||
         g_ehci_periodic_list_phys > 0xffffffffull) {
+        if (g_ehci_async_head_phys != 0u) {
+            (void)pmm_free_page(g_ehci_async_head_phys);
+        }
+        if (g_ehci_async_dummy_qtd_phys != 0u) {
+            (void)pmm_free_page(g_ehci_async_dummy_qtd_phys);
+        }
+        if (g_ehci_periodic_list_phys != 0u) {
+            (void)pmm_free_page(g_ehci_periodic_list_phys);
+        }
+        g_ehci_async_head_phys = 0u;
+        g_ehci_async_dummy_qtd_phys = 0u;
+        g_ehci_periodic_list_phys = 0u;
         return 0;
     }
     g_ehci_async_head = (struct ehci_qh *)hal_phys_direct_map(g_ehci_async_head_phys);
     g_ehci_async_dummy_qtd = (struct ehci_qtd *)hal_phys_direct_map(g_ehci_async_dummy_qtd_phys);
     g_ehci_periodic_list = (uint32_t *)hal_phys_direct_map(g_ehci_periodic_list_phys);
     if (g_ehci_async_head == 0 || g_ehci_async_dummy_qtd == 0 || g_ehci_periodic_list == 0) {
+        (void)pmm_free_page(g_ehci_async_head_phys);
+        (void)pmm_free_page(g_ehci_async_dummy_qtd_phys);
+        (void)pmm_free_page(g_ehci_periodic_list_phys);
+        g_ehci_async_head_phys = 0u;
+        g_ehci_async_dummy_qtd_phys = 0u;
+        g_ehci_periodic_list_phys = 0u;
+        g_ehci_async_head = 0;
+        g_ehci_async_dummy_qtd = 0;
+        g_ehci_periodic_list = 0;
         return 0;
     }
     memset(g_ehci_async_head, 0, EHCI_PAGE_SIZE);
@@ -203,6 +224,38 @@ int ehci_alloc_async_head(void) {
     g_ehci_async_dummy_qtd->alt_next = EHCI_LINK_TERMINATE;
     g_ehci_async_dummy_qtd->token = EHCI_QTD_HALTED;
     return 1;
+}
+
+static void ehci_free_msc_memory_local(struct ehci_msc_device *dev) {
+    if (dev == 0) {
+        return;
+    }
+    if (dev->qh_phys != 0u) {
+        (void)pmm_free_page(dev->qh_phys);
+    }
+    if (dev->qtd_phys != 0u) {
+        (void)pmm_free_page(dev->qtd_phys);
+    }
+    if (dev->setup_phys != 0u) {
+        (void)pmm_free_page(dev->setup_phys);
+    }
+    if (dev->data_phys != 0u) {
+        for (uint32_t i = 0; i < EHCI_MSC_TRANSFER_PAGES; i++) {
+            (void)pmm_free_page(dev->data_phys + (uint64_t)i * EHCI_PAGE_SIZE);
+        }
+    }
+    if (dev->read_cache_phys != 0u) {
+        for (uint32_t i = 0; i < EHCI_MSC_TRANSFER_PAGES; i++) {
+            (void)pmm_free_page(dev->read_cache_phys + (uint64_t)i * EHCI_PAGE_SIZE);
+        }
+    }
+    if (dev->cbw_phys != 0u) {
+        (void)pmm_free_page(dev->cbw_phys);
+    }
+    if (dev->csw_phys != 0u) {
+        (void)pmm_free_page(dev->csw_phys);
+    }
+    memset(dev, 0, sizeof(*dev));
 }
 
 int ehci_alloc_msc_memory(struct ehci_msc_device *dev) {
@@ -220,6 +273,7 @@ int ehci_alloc_msc_memory(struct ehci_msc_device *dev) {
         dev->setup_phys > 0xffffffffull || dev->data_phys > 0xffffffffull ||
         dev->read_cache_phys > 0xffffffffull ||
         dev->cbw_phys > 0xffffffffull || dev->csw_phys > 0xffffffffull) {
+        ehci_free_msc_memory_local(dev);
         return 0;
     }
     dev->qh = (struct ehci_qh *)hal_phys_direct_map(dev->qh_phys);
@@ -231,6 +285,7 @@ int ehci_alloc_msc_memory(struct ehci_msc_device *dev) {
     dev->csw = (uint8_t *)hal_phys_direct_map(dev->csw_phys);
     if (dev->qh == 0 || dev->qtd == 0 || dev->setup == 0 || dev->data == 0 ||
         dev->read_cache == 0 || dev->cbw == 0 || dev->csw == 0) {
+        ehci_free_msc_memory_local(dev);
         return 0;
     }
     memset(dev->qh, 0, EHCI_PAGE_SIZE);

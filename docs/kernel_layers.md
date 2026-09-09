@@ -3,7 +3,7 @@
 ## Goal
 
 Related architectural rule set:
-- [/home/csw012/nos/docs/SOSP.md](/home/csw012/nos/docs/SOSP.md)
+- [SOSP.md](/home/csw012/nexos/docs/SOSP.md)
 
 This kernel follows a strict top-down dependency rule:
 
@@ -18,8 +18,8 @@ The goal is to keep policy in upper layers and hardware details in lower layers.
 User programs issue requests only through the user API and syscalls.
 
 Examples:
-- `/home/csw012/nos/user/apps/elf/ush.c`
-- `/home/csw012/nos/user/apps/elf/hello.c`
+- `/home/csw012/nexos/user/apps/elf/ush/ush.c`
+- `/home/csw012/nexos/user/apps/elf/hello.c`
 
 Rules:
 - Must not access kernel internals directly.
@@ -30,11 +30,10 @@ Rules:
 The syscall layer is a thin request boundary.
 
 Examples:
-- `/home/csw012/nos/kernel/sys/syscall.c`
-- `/home/csw012/nos/kernel/sys/syscall_proc.c`
-- `/home/csw012/nos/kernel/sys/syscall_fs_path.c`
-- `/home/csw012/nos/kernel/sys/syscall_fs_fd.c`
-- `/home/csw012/nos/kernel/sys/syscall_mem.c`
+- `/home/csw012/nexos/kernel/sys/syscall.c`
+- `/home/csw012/nexos/kernel/sys/syscall_common_request_core.c`
+- `/home/csw012/nexos/kernel/sys/syscall_native_request_core.c`
+- `/home/csw012/nexos/kernel/sys/syscall_mem.c`
 
 Responsibilities:
 - Decode syscall numbers and arguments.
@@ -51,10 +50,10 @@ Rules:
 The core layer owns kernel policy.
 
 Examples:
-- Process: `/home/csw012/nos/kernel/proc/process_core.c`, `/home/csw012/nos/kernel/proc/process_exec.c`
-- Scheduler: `/home/csw012/nos/kernel/sched/scheduler_core.c`
-- Jobs: `/home/csw012/nos/kernel/proc/job_control.c`
-- Filesystem services: `/home/csw012/nos/kernel/fs/fs_service_path.c`, `/home/csw012/nos/kernel/fs/fs_service_fd.c`
+- Process: `/home/csw012/nexos/kernel/proc/process_core.c`, `/home/csw012/nexos/kernel/proc/process_exec.c`
+- Scheduler: `/home/csw012/nexos/kernel/sched/scheduler_core.c`
+- Jobs: `/home/csw012/nexos/kernel/proc/job_control.c`
+- Filesystem services: `/home/csw012/nexos/kernel/fs/fs_service_path.c`, `/home/csw012/nexos/kernel/fs/fs_service_fd.c`
 
 Responsibilities:
 - Process lifecycle, exec, wait, exit.
@@ -71,8 +70,9 @@ Rules:
 The VMM layer is the memory-management abstraction boundary between core code and paging implementation.
 
 Examples:
-- `/home/csw012/nos/kernel/vmm.h`
-- `/home/csw012/nos/kernel/mem/vmm.c`
+- `/home/csw012/nexos/kernel/mem/vmm.c`
+- `/home/csw012/nexos/kernel/mem/vmm_transfer.c`
+- `/home/csw012/nexos/kernel/mem/address_space_core.c`
 
 Responsibilities:
 - Mapping and unmapping.
@@ -89,9 +89,10 @@ Rules:
 The HAL and arch layers contain hardware-facing implementation details.
 
 Examples:
-- `/home/csw012/nos/hal/hal.h`
-- `/home/csw012/nos/arch/x86/paging.c`
-- `/home/csw012/nos/build` inputs under `arch/x86/` and `hal/`
+- `/home/csw012/nexos/hal/hal.h`
+- `/home/csw012/nexos/arch/x86/i386/paging.c`
+- `/home/csw012/nexos/arch/x86/x86_64/paging.c`
+- `/home/csw012/nexos/build` inputs under `arch/x86/` and `hal/`
 
 Responsibilities:
 - CPU, interrupts, paging implementation, platform operations.
@@ -153,22 +154,22 @@ When adding or reviewing code, check these first:
 The current intended structure is:
 
 - `user`
-  `/home/csw012/nos/user/apps/elf/*`
+  `/home/csw012/nexos/user/apps/elf/*`
 
 - `syscall`
-  `/home/csw012/nos/kernel/syscall*.c`
+  `/home/csw012/nexos/kernel/sys/*`
 
 - `core`
-  `/home/csw012/nos/kernel/process*.c`
-  `/home/csw012/nos/kernel/sched/scheduler_core.c`
-  `/home/csw012/nos/kernel/proc/job_control.c`
-  `/home/csw012/nos/kernel/fs_service*.c`
+  `/home/csw012/nexos/kernel/proc/*`
+  `/home/csw012/nexos/kernel/sched/*`
+  `/home/csw012/nexos/kernel/fs/*`
+  `/home/csw012/nexos/kernel/core/*`
 
 - `vmm`
-  `/home/csw012/nos/kernel/mem/vmm.c`
+  `/home/csw012/nexos/kernel/mem/*`
 
 - `hal/arch`
-  `/home/csw012/nos/hal/*`
-  `/home/csw012/nos/arch/x86/*`
+  `/home/csw012/nexos/hal/*`
+  `/home/csw012/nexos/arch/x86/*`
 
 This document is intentionally short. If a future change conflicts with this layering, fix the layering first instead of adding a shortcut.

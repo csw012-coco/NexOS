@@ -52,7 +52,7 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "-o") == 0) {
             if (++i >= argc) {
                 ncc_usage();
-                return 1;
+                goto out;
             }
             output_arg = argv[i];
         } else if (argv[i][0] == '-') {
