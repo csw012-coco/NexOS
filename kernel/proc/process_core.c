@@ -110,6 +110,7 @@ static void process_prepare_slot(struct process *proc,
     process_discard_files(proc);
     process_set_default_state(proc, slot, PROCESS_STATE_RUNNING);
     proc->pid = g_next_pid++;
+    proc->parent.pid = parent_proc != NULL ? parent_proc->pid : 0u;
     process_set_capabilities(
         proc,
         parent_proc != NULL ? process_capabilities(parent_proc) : PROCESS_CAP_SYS_ADMIN);
@@ -342,6 +343,7 @@ void process_mark_exit_pending(struct process *proc, int32_t exit_code) {
     proc->exit_code = exit_code;
     proc->state = PROCESS_STATE_EXITED;
     proc->has_saved_frame = 0;
+    proc->stop_pending = 0u;
     proc->wake_tick = 0;
 }
 

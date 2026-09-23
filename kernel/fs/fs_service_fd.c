@@ -100,7 +100,9 @@ static int fs_service_read_interrupted_local(const struct process *proc) {
     if (proc == 0) {
         return 0;
     }
-    return proc->state == PROCESS_STATE_EXITED || proc->state == PROCESS_STATE_STOPPED;
+    return proc->state == PROCESS_STATE_EXITED ||
+           proc->state == PROCESS_STATE_STOPPED ||
+           proc->stop_pending != 0u;
 }
 
 static int fs_service_read_would_block_local(const struct file *file, int64_t bytes) {
@@ -384,7 +386,17 @@ uint64_t fs_service_write(struct process *proc,
     remaining = size;
 
     while (remaining != 0) {
-        int64_t written = file_write(file, vfs, (const uint8_t *)buffer + total, remaining);
+        int64_t written;
+
+        if (fs_service_read_interrupted_local(proc)) {
+            return total;
+        }
+
+        written = file_write(file, vfs, (const uint8_t *)buffer + total, remaining);
+
+        if (fs_service_read_interrupted_local(proc)) {
+            return total;
+        }
 
         if (written == KERNEL_FILE_IO_BROKEN_PIPE) {
             return total != 0 ? total : (uint64_t)-1;

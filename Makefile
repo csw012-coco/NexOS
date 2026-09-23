@@ -20,8 +20,10 @@ TEST_WAV := $(ASSETS)/audio/test.wav
 TEST2_WAV := $(ASSETS)/audio/test2.wav
 TEST3_WAV := $(ASSETS)/audio/test3.wav
 TEST4_WAV := $(ASSETS)/audio/test4.wav
-FONT_HEX := $(ASSETS)/fonts/font.hex
-BOOT_FONT_HEX := $(BUILD)/font-boot.hex
+FONT_BDF ?= $(ASSETS)/fonts/font.bdf
+BOOT_FONT_SELECTION := $(BUILD)/boot-font-module.selection
+BOOT_FONT_MODULE := $(FONT_BDF)
+BOOT_FONT_MODULE_NAME := FONT.BDF
 ROOT_WAD_FILES := \
 	"$(DOOM1_WAD):$(DOOM1_GUEST_WAD)" \
 	"$(DOOM2_WAD):$(DOOM2_GUEST_WAD)" \
@@ -54,10 +56,10 @@ NXFS_ROOT_DIRS := \
 IMAGE_DIR := $(BUILD)/images
 CMD_SUITE_WRAPPER_DIR := $(BUILD)/cmd-wrappers
 BOOT := $(ROOT)/boot
-BOOTX_DIR := $(ROOT)/bootloader/bootx
-BOOTX_BUILD := $(BOOTX_DIR)/build
-BOOTX_CONFIG := $(ROOT)/config/bootx.cfg
-BOOTX_CONFIG_RENDERED := $(BUILD)/bootx.generated.cfg
+JANUS_DIR := $(ROOT)/bootloader/janus
+JANUS_BUILD := $(JANUS_DIR)/build
+JANUS_CONFIG := $(ROOT)/config/janus.cfg
+JANUS_CONFIG_RENDERED := $(BUILD)/janus.generated.cfg
 IMAGE := $(IMAGE_DIR)/NexOS.img
 BIOS_IMAGE := $(IMAGE_DIR)/NexOS-bios.img
 UEFI_IMAGE := $(IMAGE_DIR)/NexOS-uefi.img
@@ -67,6 +69,11 @@ NXFS_IMAGE := $(IMAGE_DIR)/nxfs.img
 RAMDISK_IMAGE := $(BUILD)/ramdisk.img
 RAMDISK_SIZE ?= 4M
 NXFS_TOOL := $(BUILD)/nxfs_host
+MKFS_NXFS_TOOL := $(BUILD)/mkfs.nxfs
+MKFS_FAT_TOOL := $(BUILD)/mkfs.fat
+HOST_FORMAT_TOOLS := $(MKFS_NXFS_TOOL) $(MKFS_FAT_TOOL)
+MKFS_FAT ?= mkfs.fat
+MKFS_FAT_FLAGS ?= -F 32
 NXFS_FS := $(BUILD)/nxfs.fs
 BOOT_FS_IMAGE := $(BUILD)/boot.fat
 ROOT_FS_IMAGE := $(BUILD)/root.nxfs
@@ -82,9 +89,9 @@ include fs/build.mk
 SCRIPT_SMOKE_SH := $(BUILD)/script-smoke.sh
 BUILD_OPT_FLAGS ?= -O2
 SECTION_FLAGS := -ffunction-sections -fdata-sections
-CFLAGS64 := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -pipe $(SECTION_FLAGS) -Wall -Wextra $(BUILD_OPT_FLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include
-DRV_CFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -pipe $(SECTION_FLAGS) -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Wextra $(BUILD_OPT_FLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include
-USERCFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -pipe $(SECTION_FLAGS) -Wall -Wextra $(BUILD_OPT_FLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT)/user/libc/include -I$(ROOT)/user/libc/include/sys -I$(ROOT)/user/libc/include/nexos -I$(ROOT)/user/public -I$(ROOT)/abi
+CFLAGS64 := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -pipe $(SECTION_FLAGS) -Wall -Wextra $(BUILD_OPT_FLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include
+DRV_CFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -pipe $(SECTION_FLAGS) -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Wextra $(BUILD_OPT_FLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include
+USERCFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=large -pipe $(SECTION_FLAGS) -Wall -Wextra $(BUILD_OPT_FLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(ROOT)/user/libc/include -I$(ROOT)/user/libc/include/sys -I$(ROOT)/user/libc/include/nexos -I$(ROOT)/user/public -I$(ROOT)/abi
 LDFLAGS64 := -nostdlib -static -m elf_x86_64 --gc-sections
 ROOT_INIT_SCRIPT := $(ROOT)/user/init/init_root.sh
 RAMDISK_INIT_SCRIPT := $(ROOT)/user/init/init_ramdisk.sh
@@ -92,9 +99,9 @@ OS_CONFIG := $(ROOT)/config/NEX.SCF
 FSTAB_CONFIG := $(ROOT)/config/fstab.scf
 CAP_POLICY := $(ROOT)/config/CAP.POLICY
 PASSWD_CONFIG := $(ROOT)/config/passwd.scf
-SERVICE_FILES :=
+SERVICE_FILES := $(wildcard $(ROOT)/config/service/*.svc)
 FASM_TEST_SOURCE := $(ROOT)/user/examples/fasm/test.asm
-CMD_SUITE_NAMES := NEXBOX HELP ACTIONS ACTION MAPPER ECHO CLEAR PWD TTY ENV FONT WHICH TYPE LS CAT LESS HEXDUMP GREP DATE HWCLOCK SLEEP WATCH ON EVENTS CLIPBOARD WC HEAD TAIL FIND AS PICK SELECT SORT-BY COUNT-BY TO VIEW ED VI VIM TOUCH MV CP MKDIR RMDIR RM CHMOD CHOWN ASM STAT DU TREE FILE BLK PARTS FDISK DD MKFS DF MOUNTS PROGS FATLS FATFIND FATREAD CPIO MOUNT UMOUNT HOTPLUG RUN RUNELF RUNBG PS ID WHOAMI SU SUDO LOGIN GETTY SESSION SERVICE JOBS WAIT ALARM TIMEOUT KILL FG BG REBOOT POWEROFF SWITCH_ROOT DMESG LSPCI AC97 HDA RTL8139 RTL8139TX RTL8139RX ARP ROUTE NETSTAT PING DNS DHCP IFCONFIG HTTP WGET NC AUDIO TONE WAV MPLAY DOCTOR NEXCTL SYSINFO MEMINFO MINFO UNAME CPUINFO CONFIG DBG
+CMD_SUITE_NAMES := NEXBOX HELP ACTIONS ACTION MAPPER ECHO CLEAR PWD TTY ENV FONT WHICH TYPE LS CAT LESS HEXDUMP GREP DATE HWCLOCK SLEEP WATCH ON EVENTS CLIPBOARD WC HEAD TAIL FIND AS PICK SELECT SORT-BY COUNT-BY TO VIEW ED VI VIM TOUCH MV CP MKDIR RMDIR RM CHMOD CHOWN ASM STAT DU TREE FILE BLK PARTS FDISK DD MKFS MKFS.NXFS MKFS.FAT DF MOUNTS PROGS FATLS FATFIND FATREAD CPIO MOUNT UMOUNT HOTPLUG RUN RUNELF RUNBG PS ID WHOAMI SU SUDO LOGIN GETTY SESSION SERVICE JOBS WAIT ALARM TIMEOUT KILL FG BG REBOOT POWEROFF SWITCH_ROOT DMESG LSPCI AC97 HDA RTL8139 RTL8139TX RTL8139RX ARP ROUTE NETSTAT PING DNS DHCP IFCONFIG HTTP WGET NC AUDIO TONE WAV MPLAY DOCTOR NEXCTL SYSINFO MEMINFO MINFO UNAME CPUINFO CONFIG DBG
 QEMU_AUDIODEV ?= pa,id=snd0
 QEMU_SERIAL ?= -serial stdio
 QEMU_NET ?= -nic user,model=rtl8139
@@ -112,10 +119,10 @@ QEMU_XHCI_HID ?= -device usb-kbd,bus=xhci.0 -device usb-mouse,bus=xhci.0
 OVMF_CODE ?= /usr/share/OVMF/x64/OVMF_CODE.4m.fd
 OVMF_VARS_TEMPLATE ?= /usr/share/OVMF/x64/OVMF_VARS.4m.fd
 OVMF_VARS_IMAGE := $(BUILD)/OVMF_VARS.fd
-BOOTX_STAGE1 := $(BOOTX_BUILD)/stage1.bin
-BOOTX_STAGE2 := $(BOOTX_BUILD)/stage2.bin
-BOOTX_STAGE3 := $(BOOTX_BUILD)/stage3.sys
-BOOTX_UEFI := $(BOOTX_BUILD)/BOOTX64.EFI
+JANUS_STAGE1 := $(JANUS_BUILD)/stage1.bin
+JANUS_STAGE2 := $(JANUS_BUILD)/stage2.bin
+JANUS_STAGE3 := $(JANUS_BUILD)/stage3.sys
+JANUS_UEFI := $(JANUS_BUILD)/BOOTX64.EFI
 
 include kernel/build.mk
 include user/libc/build.mk
@@ -156,7 +163,7 @@ endef
 
 define do_hostcc
 	$(call log_cmd,HOSTCC,$@)
-	$(Q)$(HOSTCC) -O2 -Wall -Wextra -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include $(shell pkg-config --cflags fuse3) $< -o $@ $(shell pkg-config --libs fuse3)
+	$(Q)$(HOSTCC) -O2 -Wall -Wextra -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include $(shell pkg-config --cflags fuse3) $< -o $@ $(shell pkg-config --libs fuse3)
 endef
 
 define do_as
@@ -189,10 +196,10 @@ endef
 
 all: arch-build
 
-all-x86_64: images $(NXFS_IMAGE)
+all-x86_64: images $(NXFS_IMAGE) $(HOST_FORMAT_TOOLS)
 
 
-.PHONY: all all-x86_64 images arch arch-build arch-check arch-run arch-unsupported kernel-i386 run-i386 check-i386 run run-x86_64 dev run-uefi dev-uefi run-ac97 dev-ac97 run-tap dev-tap run-hda-tap dev-hda-tap run-ac97-tap dev-ac97-tap tap-up tap-down clean distclean check check-x86_64 check-x86_64-nexbox-full check-i386-gfx-editor-smoke check-i386-utf8-input-parity check-i386-driver-active check-i386-backend-long check-i386-backend-audio check-i386-backend-hda check-i386-backend-ahci check-i386-backend-ehci check-i386-backend-xhci check-i386-backend-ehci-hid check-i386-backend-xhci-hid check-i386-backend-rtl8139 check-all check-kernel check-image check-deps check-host-tools check-host-tools-i386 check-host-tools-x86_64 check-host-tools-image check-host-tools-qemu-i386 check-host-tools-qemu-x86_64 oneoff-user
+.PHONY: FORCE all all-x86_64 images arch arch-build arch-check arch-run arch-unsupported kernel-i386 run-i386 check-i386 run run-x86_64 dev run-uefi dev-uefi run-ac97 dev-ac97 run-tap dev-tap run-hda-tap dev-hda-tap run-ac97-tap dev-ac97-tap tap-up tap-down clean distclean check check-pmm-stress check-pmm-vmm-stress check-x86_64 check-x86_64-nexbox-full check-x86_64-stress check-x86_64-mm-stress check-i386-smoke check-i386-strict-mm check-i386-mm-stress check-i386-gfx-editor-smoke check-i386-utf8-input-parity check-i386-driver-active check-i386-backend-long check-i386-backend-audio check-i386-backend-hda check-i386-backend-ahci check-i386-backend-ehci check-i386-backend-xhci check-i386-backend-ehci-hid check-i386-backend-xhci-hid check-i386-backend-rtl8139 check-syscall-invalid check-vfs-block-stress check-boot-loop check-stabilization-base check-stabilization-smoke check-stabilization-mm check-stabilization-driver check-stabilization check-all check-kernel check-image check-deps check-host-tools check-host-tools-i386 check-host-tools-x86_64 check-host-tools-image check-host-tools-qemu-i386 check-host-tools-qemu-x86_64 oneoff-user
 .SILENT:
 arch: arch-build
 
@@ -259,9 +266,9 @@ clean:
 
 distclean: clean
 	rm -rf $(NXFS_IMAGE)
-.PHONY: bootx-loader
+.PHONY: janus-loader
 
-bootx-loader:
-	$(Q)$(MAKE) -C $(BOOTX_DIR)
+janus-loader:
+	$(Q)$(MAKE) -C $(JANUS_DIR)
 
-$(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOTX_STAGE3) $(BOOTX_UEFI): bootx-loader
+$(JANUS_STAGE1) $(JANUS_STAGE2) $(JANUS_STAGE3) $(JANUS_UEFI): janus-loader

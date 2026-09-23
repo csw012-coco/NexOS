@@ -2,13 +2,14 @@ typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 
-#include "bootx.h"
+#include "janus.h"
 #include "block/blockdev.h"
 #include "drivers/bus/pci.h"
 #include "drivers/storage/ata.h"
 #include "fs/early_vfs.h"
 #include "context.h"
 #include "gdt.h"
+#include "hal/hal.h"
 #include "hal/early.h"
 #include "idt.h"
 #include "kernel/internal/core/boot_state_internal.h"
@@ -59,9 +60,9 @@ static volatile uint32_t user_syscall_argument;
 static struct block_device early_test_block;
 static struct early_vfs early_filesystem;
 
-extern void hal_display_load_font(const struct bootx_boot_info *boot_info);
+extern void hal_display_load_font(const struct janus_boot_info *boot_info);
 static uint32_t i386_context_action_to_frame(uintptr_t action);
-extern void hal_display_init(const struct bootx_console_info *console);
+extern void hal_display_init(const struct janus_console_info *console);
 
 static void i386_route_keyboard_events(void) {
     struct i386_key_event raw;
@@ -74,19 +75,8 @@ static void i386_route_keyboard_events(void) {
             continue;
         }
         keyboard_event_queue_push(&event, irq_line_count[0]);
-        if (event.pressed && event.alt) {
-            uint32_t tty_index = TTY_VIRTUAL_COUNT;
-
-            if (event.keycode == KEYBOARD_KEY_F1) {
-                tty_index = 0u;
-            } else if (event.keycode == KEYBOARD_KEY_F2) {
-                tty_index = 1u;
-            } else if (event.keycode == KEYBOARD_KEY_F3) {
-                tty_index = 2u;
-            }
-            if (tty_index < TTY_VIRTUAL_COUNT && tty_switch_active(tty_index)) {
-                continue;
-            }
+        if (shared_services_handle_tty_switch(&event)) {
+            continue;
         }
         tty = tty_active();
         if (tty != 0) {
@@ -429,6 +419,7 @@ struct i386_irq_frame *i386_irq_handler(uint32_t irq,
         struct process_context current_context;
         const struct process_context *next_context;
 
+        hal_timer_notify_tick();
         i386_context_from_irq(&current_context, frame);
         next_context = i386_scheduler_tick(&current_context);
         return next_context == &current_context
@@ -471,7 +462,7 @@ static int paging_identity_matches(uint32_t address) {
     return i386_paging_translate(address, &physical) && physical == address;
 }
 
-static int paging_verify(const struct bootx_boot_info *boot_info) {
+static int paging_verify(const struct janus_boot_info *boot_info) {
     uint32_t stack_address;
 
     __asm__ volatile("mov %%esp, %0" : "=r"(stack_address));
@@ -569,7 +560,7 @@ static int i386_breakpoint_test(void) {
     return breakpoint_count == 1u;
 }
 
-static int i386_paging_stage(const struct bootx_boot_info *boot_info,
+static int i386_paging_stage(const struct janus_boot_info *boot_info,
                              struct kernel_early_boot_report *report) {
     if (!i386_paging_init() || !paging_verify(boot_info)) {
         return 0;
@@ -597,7 +588,7 @@ static int i386_page_fault_test(struct kernel_early_boot_report *report) {
            page_fault_error == 0x00000002u;
 }
 
-static int i386_pmm_stage(const struct bootx_boot_info *boot_info,
+static int i386_pmm_stage(const struct janus_boot_info *boot_info,
                           struct kernel_early_boot_report *report) {
     uint32_t free_before;
     uint32_t page_a;
@@ -965,11 +956,11 @@ int boot_user_services_run_command_arch(const char *command,
     return process_user_run_command(command, process);
 }
 
-static int i386_prepare_shared_kernel(const struct bootx_boot_info *boot_info) {
+static int i386_prepare_shared_kernel(const struct janus_boot_info *boot_info) {
     struct kernel_early_boot_report report = {0};
 
     string_runtime_init();
-    if (boot_info == 0 || boot_info->hdr.magic != BOOTX_MAGIC) {
+    if (boot_info == 0 || boot_info->hdr.magic != JANUS_MAGIC) {
         return 0;
     }
     if (!i386_segments_init()) {
@@ -1027,8 +1018,8 @@ static int i386_identity_map_range(uint64_t address, uint64_t size) {
     return 1;
 }
 
-static int i386_map_boot_modules(const struct bootx_boot_info *boot_info) {
-    const struct bootx_module *modules;
+static int i386_map_boot_modules(const struct janus_boot_info *boot_info) {
+    const struct janus_module *modules;
 
     if (boot_info == 0 || boot_info->module_count == 0u ||
         boot_info->modules == 0u) {
@@ -1036,10 +1027,10 @@ static int i386_map_boot_modules(const struct bootx_boot_info *boot_info) {
     }
     if (!i386_identity_map_range(boot_info->modules,
                                  boot_info->module_count *
-                                     sizeof(struct bootx_module))) {
+                                     sizeof(struct janus_module))) {
         return 0;
     }
-    modules = (const struct bootx_module *)(uintptr_t)boot_info->modules;
+    modules = (const struct janus_module *)(uintptr_t)boot_info->modules;
     for (uint32_t i = 0u; i < boot_info->module_count; i++) {
         if (modules[i].address != 0u && modules[i].size != 0u &&
             !i386_identity_map_range(modules[i].address, modules[i].size)) {
@@ -1049,17 +1040,17 @@ static int i386_map_boot_modules(const struct bootx_boot_info *boot_info) {
     return 1;
 }
 
-static int i386_map_framebuffer_console(const struct bootx_console_info *console) {
+static int i386_map_framebuffer_console(const struct janus_console_info *console) {
     uint64_t framebuffer_size;
 
-    if (console == 0 || console->type != BOOTX_CONSOLE_FRAMEBUFFER) {
+    if (console == 0 || console->type != JANUS_CONSOLE_FRAMEBUFFER) {
         return 1;
     }
     framebuffer_size = (uint64_t)console->pitch * console->height;
     return i386_identity_map_range(console->framebuffer_addr, framebuffer_size);
 }
 
-void kernel_main32(const struct bootx_boot_info *boot_info) {
+void kernel_main32(const struct janus_boot_info *boot_info) {
     struct syscall_boot_info query_boot_info;
     struct syscall_framebuffer_info query_fb_info;
 
@@ -1079,18 +1070,18 @@ void kernel_main32(const struct bootx_boot_info *boot_info) {
         early_console_write("kernel_main32: display module mapping failed\n");
         i386_halt();
     }
-    hal_display_load_font(boot_info);
     hal_display_init(&boot_info->console);
     if (!shared_services_init()) {
         early_console_write("kernel_main32: shared service initialization failed\n");
         i386_halt();
     }
+    hal_display_load_font(boot_info);
     kprint("kernel: services online\n");
     kprint("kernel: system/init\n");
     shared_services_run();
 }
 
-void i386_kernel_main(const struct bootx_boot_info *boot_info) {
+void i386_kernel_main(const struct janus_boot_info *boot_info) {
     hal_early_bind(&i386_hal_early_ops);
     serial_init();
     if (!i386_prepare_shared_kernel(boot_info)) {

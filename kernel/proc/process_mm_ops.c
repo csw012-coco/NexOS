@@ -1,9 +1,26 @@
 #include "kernel/public/proc/process_mm_ops.h"
+#include "kernel/internal/proc/process_internal_base.h"
 
 static const struct process_mm_ops *g_process_mm_ops;
 
 void process_mm_ops_register(const struct process_mm_ops *ops) {
     g_process_mm_ops = ops;
+}
+
+int process_mm_user_page_valid(uint32_t user_page) {
+    return (uint64_t)user_page >= USER_ALLOC_BASE &&
+           (uint64_t)user_page < USER_ALLOC_END &&
+           (user_page & (USER_PAGE_SIZE - 1u)) == 0u;
+}
+
+int process_mm_phys_page_valid(uint32_t frame) {
+    return frame != 0u && (frame & (USER_PAGE_SIZE - 1u)) == 0u;
+}
+
+void process_mm_rewind_heap_cursor(uint32_t *heap_next, uint32_t user_page) {
+    if (heap_next != 0 && user_page < *heap_next) {
+        *heap_next = user_page;
+    }
 }
 
 uint32_t process_mm_page_alloc(void) {

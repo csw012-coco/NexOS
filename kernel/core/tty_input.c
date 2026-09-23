@@ -4,6 +4,14 @@
 #include "kernel/internal/core/clipboard_internal.h"
 #include "kernel/public/proc/job_control.h"
 
+static int tty_keycode_is_modifier(enum keyboard_keycode keycode) {
+    return keycode == KEYBOARD_KEY_LEFT_SHIFT ||
+           keycode == KEYBOARD_KEY_RIGHT_SHIFT ||
+           keycode == KEYBOARD_KEY_LEFT_CTRL ||
+           keycode == KEYBOARD_KEY_RIGHT_CTRL ||
+           keycode == KEYBOARD_KEY_LEFT_ALT;
+}
+
 void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
     char ch;
     int had_readable_input;
@@ -20,6 +28,9 @@ void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
         tty_hangul_commit(tty);
         tty->hangul_mode ^= 1u;
         tty_hangul_render_mode(tty);
+        return;
+    }
+    if (tty_keycode_is_modifier(event->keycode)) {
         return;
     }
     if (tty->raw_input) {
@@ -98,6 +109,10 @@ void tty_feed_key_event(struct tty *tty, const struct keyboard_event *event) {
             }
             if (event->keycode == KEYBOARD_KEY_C) {
                 tty_queue_char(tty, 0x03);
+                goto done;
+            }
+            if (event->keycode == KEYBOARD_KEY_Z) {
+                tty_queue_char(tty, 0x1a);
                 goto done;
             }
         }

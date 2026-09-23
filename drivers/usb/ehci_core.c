@@ -76,6 +76,13 @@ int ehci_wait_op_set(uint32_t offset, uint32_t mask) {
 }
 
 int ehci_start_controller(void) {
+    uint32_t cmd = EHCI_USBCMD_RS;
+
+    if (g_ehci_periodic_qh_head != 0u) {
+        cmd |= EHCI_USBCMD_PSE;
+    }
+    kprint("ehci: start controller cmd_before=%x cmd=%x periodic=%x\n",
+           ehci_read_op(0x00u), cmd, g_ehci_periodic_qh_head);
     ehci_write_op(0x04u, EHCI_USBSTS_CLEAR);
     ehci_write_op(0x08u, 0u);
     ehci_write_op(0x10u, 0u);
@@ -86,7 +93,7 @@ int ehci_start_controller(void) {
         ehci_write_op(0x18u, (uint32_t)g_ehci_async_head_phys);
     }
     (void)ehci_read_op(0x18u);
-    ehci_write_op(0x00u, EHCI_USBCMD_RS);
+    ehci_write_op(0x00u, cmd);
     (void)ehci_read_op(0x00u);
     if (!ehci_wait_op_clear(0x04u, EHCI_USBSTS_HCHALTED)) {
         return 0;
@@ -98,7 +105,9 @@ int ehci_start_controller(void) {
 }
 
 int ehci_reset_controller_runtime(void) {
-    ehci_write_op(0x00u, ehci_read_op(0x00u) & ~(EHCI_USBCMD_RS | EHCI_USBCMD_ASE));
+    kprint("ehci: runtime reset cmd=%x sts=%x\n",
+           ehci_read_op(0x00u), ehci_read_op(0x04u));
+    ehci_write_op(0x00u, ehci_read_op(0x00u) & ~(EHCI_USBCMD_RS | EHCI_USBCMD_PSE | EHCI_USBCMD_ASE));
     (void)ehci_wait_op_set(0x04u, EHCI_USBSTS_HCHALTED);
     ehci_write_op(0x00u, EHCI_USBCMD_HCRESET);
     if (!ehci_wait_op_clear(0x00u, EHCI_USBCMD_HCRESET)) {
@@ -179,9 +188,9 @@ void ehci_write_name(char *dst, uint32_t index) {
 }
 
 int ehci_alloc_async_head(void) {
-    g_ehci_async_head_phys = pmm_alloc_page();
-    g_ehci_async_dummy_qtd_phys = pmm_alloc_page();
-    g_ehci_periodic_list_phys = pmm_alloc_page();
+    g_ehci_async_head_phys = pmm_alloc_page_below(0x100000000ull);
+    g_ehci_async_dummy_qtd_phys = pmm_alloc_page_below(0x100000000ull);
+    g_ehci_periodic_list_phys = pmm_alloc_page_below(0x100000000ull);
     if (g_ehci_async_head_phys == 0u || g_ehci_async_dummy_qtd_phys == 0u ||
         g_ehci_periodic_list_phys == 0u ||
         g_ehci_async_head_phys > 0xffffffffull || g_ehci_async_dummy_qtd_phys > 0xffffffffull ||
@@ -259,13 +268,13 @@ static void ehci_free_msc_memory_local(struct ehci_msc_device *dev) {
 }
 
 int ehci_alloc_msc_memory(struct ehci_msc_device *dev) {
-    dev->qh_phys = pmm_alloc_page();
-    dev->qtd_phys = pmm_alloc_page();
-    dev->setup_phys = pmm_alloc_page();
+    dev->qh_phys = pmm_alloc_page_below(0x100000000ull);
+    dev->qtd_phys = pmm_alloc_page_below(0x100000000ull);
+    dev->setup_phys = pmm_alloc_page_below(0x100000000ull);
     dev->data_phys = pmm_alloc_contiguous_below(EHCI_MSC_TRANSFER_PAGES, 0x100000000ull);
     dev->read_cache_phys = pmm_alloc_contiguous_below(EHCI_MSC_TRANSFER_PAGES, 0x100000000ull);
-    dev->cbw_phys = pmm_alloc_page();
-    dev->csw_phys = pmm_alloc_page();
+    dev->cbw_phys = pmm_alloc_page_below(0x100000000ull);
+    dev->csw_phys = pmm_alloc_page_below(0x100000000ull);
     if (dev->qh_phys == 0u || dev->qtd_phys == 0u || dev->setup_phys == 0u ||
         dev->data_phys == 0u || dev->read_cache_phys == 0u ||
         dev->cbw_phys == 0u || dev->csw_phys == 0u ||
@@ -603,6 +612,408 @@ int ehci_bulk_transfer(struct ehci_msc_device *dev,
     }
     *toggle = (dev->qh->token & EHCI_QTD_TOGGLE) != 0u ? 1u : 0u;
     return 1;
+}
+
+static uint16_t ehci_interrupt_interval_power2_floor(uint16_t value) {
+    uint16_t interval = 1u;
+
+    if (value == 0u) {
+        return 1u;
+    }
+    while (interval < 1024u && (uint16_t)(interval << 1u) <= value) {
+        interval = (uint16_t)(interval << 1u);
+    }
+    return interval;
+}
+
+static uint16_t ehci_interrupt_interval_frames(uint8_t speed, uint8_t interval) {
+    uint16_t frames;
+
+    if (interval == 0u) {
+        interval = 10u;
+    }
+    if (speed == EHCI_DEV_SPEED_HIGH) {
+        uint8_t exponent = interval > 16u ? 16u : interval;
+        uint32_t microframes = 1u << (exponent - 1u);
+
+        frames = (uint16_t)((microframes + 7u) / 8u);
+    } else {
+        frames = interval;
+    }
+    if (frames == 0u) {
+        frames = 1u;
+    }
+    if (frames > 1024u) {
+        frames = 1024u;
+    }
+    return ehci_interrupt_interval_power2_floor(frames);
+}
+
+static struct ehci_msc_device *ehci_periodic_xfer_at(uint32_t index) {
+    uint32_t keyboards = g_ehci_hid_keyboard_count;
+    uint32_t mice = g_ehci_hid_mouse_count;
+
+    if (keyboards > EHCI_MAX_HID_KEYBOARDS) {
+        keyboards = EHCI_MAX_HID_KEYBOARDS;
+    }
+    if (mice > EHCI_MAX_HID_MICE) {
+        mice = EHCI_MAX_HID_MICE;
+    }
+    if (index < keyboards) {
+        return &g_ehci_hid_keyboards[index].xfer;
+    }
+    index -= keyboards;
+    if (index < mice) {
+        return &g_ehci_hid_mice[index].xfer;
+    }
+    return 0;
+}
+
+static uint32_t ehci_periodic_xfer_count(void) {
+    uint32_t keyboards = g_ehci_hid_keyboard_count;
+    uint32_t mice = g_ehci_hid_mouse_count;
+
+    if (keyboards > EHCI_MAX_HID_KEYBOARDS) {
+        keyboards = EHCI_MAX_HID_KEYBOARDS;
+    }
+    if (mice > EHCI_MAX_HID_MICE) {
+        mice = EHCI_MAX_HID_MICE;
+    }
+    return keyboards + mice;
+}
+
+static uint32_t ehci_periodic_xfer_order(const struct ehci_msc_device *dev) {
+    uint32_t count = ehci_periodic_xfer_count();
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (ehci_periodic_xfer_at(i) == dev) {
+            return i;
+        }
+    }
+    return 0xffffffffu;
+}
+
+static int ehci_periodic_xfer_active(const struct ehci_msc_device *dev) {
+    return dev != 0 && dev->controller.op == g_ehci.op &&
+           dev->controller.schedule == g_ehci.schedule &&
+           dev->qh != 0 && dev->qh_phys != 0u &&
+           dev->interrupt_interval_frames != 0u;
+}
+
+static int ehci_periodic_xfer_due_at(const struct ehci_msc_device *dev, uint32_t frame) {
+    uint16_t interval;
+    uint16_t phase;
+
+    if (!ehci_periodic_xfer_active(dev)) {
+        return 0;
+    }
+    interval = dev->interrupt_interval_frames;
+    phase = dev->interrupt_phase_frames;
+    if (interval == 0u) {
+        interval = 1u;
+    }
+    if (phase >= interval) {
+        phase = 0u;
+    }
+    return (frame & (uint32_t)(interval - 1u)) == phase;
+}
+
+static uint32_t ehci_periodic_phase_load(const struct ehci_msc_device *skip, uint16_t phase) {
+    uint32_t count = ehci_periodic_xfer_count();
+    uint32_t load = 0u;
+
+    for (uint32_t i = 0; i < count; i++) {
+        struct ehci_msc_device *xfer = ehci_periodic_xfer_at(i);
+
+        if (xfer != skip && ehci_periodic_xfer_due_at(xfer, phase)) {
+            load++;
+        }
+    }
+    return load;
+}
+
+static uint16_t ehci_interrupt_phase_frames(const struct ehci_msc_device *dev, uint16_t interval) {
+    uint16_t best_phase = 0u;
+    uint32_t best_load = 0xffffffffu;
+
+    if (interval <= 1u) {
+        return 0u;
+    }
+    for (uint16_t phase = 0u; phase < interval; phase++) {
+        uint32_t load = ehci_periodic_phase_load(dev, phase);
+
+        if (load < best_load) {
+            best_load = load;
+            best_phase = phase;
+        }
+    }
+    return best_phase;
+}
+
+static int ehci_periodic_successor_due_after(const struct ehci_msc_device *first,
+                                             const struct ehci_msc_device *next) {
+    uint16_t first_interval;
+    uint16_t next_interval;
+
+    if (!ehci_periodic_xfer_active(first) || !ehci_periodic_xfer_active(next) || first == next) {
+        return 0;
+    }
+    first_interval = first->interrupt_interval_frames;
+    next_interval = next->interrupt_interval_frames;
+    if (next_interval > first_interval) {
+        return 0;
+    }
+    return (first->interrupt_phase_frames & (uint16_t)(next_interval - 1u)) ==
+           next->interrupt_phase_frames;
+}
+
+static struct ehci_msc_device *ehci_periodic_best_successor(struct ehci_msc_device *dev) {
+    uint32_t count = ehci_periodic_xfer_count();
+    uint32_t dev_order = ehci_periodic_xfer_order(dev);
+    struct ehci_msc_device *best = 0;
+    uint32_t best_order = 0xffffffffu;
+
+    for (uint32_t i = 0; i < count; i++) {
+        struct ehci_msc_device *candidate = ehci_periodic_xfer_at(i);
+        uint32_t candidate_order;
+
+        if (!ehci_periodic_successor_due_after(dev, candidate)) {
+            continue;
+        }
+        candidate_order = ehci_periodic_xfer_order(candidate);
+        if (candidate->interrupt_interval_frames == dev->interrupt_interval_frames &&
+            candidate_order <= dev_order) {
+            continue;
+        }
+        if (best == 0 ||
+            candidate->interrupt_interval_frames > best->interrupt_interval_frames ||
+            (candidate->interrupt_interval_frames == best->interrupt_interval_frames &&
+             candidate_order < best_order)) {
+            best = candidate;
+            best_order = candidate_order;
+        }
+    }
+    return best;
+}
+
+static struct ehci_msc_device *ehci_periodic_best_head_for_frame(uint32_t frame) {
+    uint32_t count = ehci_periodic_xfer_count();
+    struct ehci_msc_device *best = 0;
+    uint32_t best_order = 0xffffffffu;
+
+    for (uint32_t i = 0; i < count; i++) {
+        struct ehci_msc_device *candidate = ehci_periodic_xfer_at(i);
+
+        if (!ehci_periodic_xfer_due_at(candidate, frame)) {
+            continue;
+        }
+        if (best == 0 ||
+            candidate->interrupt_interval_frames > best->interrupt_interval_frames ||
+            (candidate->interrupt_interval_frames == best->interrupt_interval_frames &&
+             i < best_order)) {
+            best = candidate;
+            best_order = i;
+        }
+    }
+    return best;
+}
+
+static void ehci_periodic_rebuild_links(void) {
+    uint32_t count = ehci_periodic_xfer_count();
+
+    g_ehci_periodic_qh_head = 0u;
+    for (uint32_t i = 0; i < count; i++) {
+        struct ehci_msc_device *xfer = ehci_periodic_xfer_at(i);
+        struct ehci_msc_device *next;
+
+        if (!ehci_periodic_xfer_active(xfer)) {
+            continue;
+        }
+        next = ehci_periodic_best_successor(xfer);
+        xfer->qh->horiz_link = next != 0
+                                   ? (uint32_t)next->qh_phys | EHCI_LINK_TYPE_QH
+                                   : EHCI_LINK_TERMINATE;
+        if (g_ehci_periodic_qh_head == 0u) {
+            g_ehci_periodic_qh_head = (uint32_t)xfer->qh_phys | EHCI_LINK_TYPE_QH;
+        }
+    }
+}
+
+static uint8_t ehci_interrupt_split_start_mask(const struct ehci_msc_device *dev) {
+    uint8_t microframe;
+
+    if (dev == 0 || dev->speed == EHCI_DEV_SPEED_HIGH || dev->hub_addr == 0u) {
+        return EHCI_QH_INTR_S_MASK_1;
+    }
+    microframe = (uint8_t)(dev->interrupt_phase_frames & 0x03u);
+    return (uint8_t)(1u << microframe);
+}
+
+static uint8_t ehci_interrupt_split_complete_mask(const struct ehci_msc_device *dev, uint16_t mps) {
+    uint8_t start_microframe;
+    uint8_t complete_start;
+    uint8_t complete_count;
+    uint8_t mask = 0u;
+
+    if (dev == 0 || dev->speed == EHCI_DEV_SPEED_HIGH || dev->hub_addr == 0u) {
+        return 0u;
+    }
+    start_microframe = (uint8_t)(dev->interrupt_phase_frames & 0x03u);
+    complete_start = (uint8_t)(start_microframe + 2u);
+    complete_count = (dev->speed == EHCI_DEV_SPEED_LOW || mps > 32u) ? 4u : 3u;
+    for (uint8_t i = 0u; i < complete_count && complete_start + i < 8u; i++) {
+        mask |= (uint8_t)(1u << (complete_start + i));
+    }
+    return mask;
+}
+
+static void ehci_periodic_list_set_head(void) {
+    if (g_ehci_periodic_list == 0) {
+        return;
+    }
+    ehci_periodic_rebuild_links();
+    for (uint32_t frame = 0; frame < EHCI_PAGE_SIZE / sizeof(uint32_t); frame++) {
+        struct ehci_msc_device *head = ehci_periodic_best_head_for_frame(frame);
+
+        g_ehci_periodic_list[frame] = head != 0
+                                          ? (uint32_t)head->qh_phys | EHCI_LINK_TYPE_QH
+                                          : EHCI_LINK_TERMINATE;
+    }
+}
+
+static void ehci_qh_prepare_interrupt(struct ehci_msc_device *dev,
+                                             uint8_t ep,
+                                             uint16_t mps,
+                                             uint32_t first_qtd_phys,
+                                             uint8_t initial_toggle) {
+    uint8_t start_mask = ehci_interrupt_split_start_mask(dev);
+    uint8_t complete_mask = ehci_interrupt_split_complete_mask(dev, mps);
+
+    ehci_qh_prepare(dev, dev->address, ep, mps, 0u, first_qtd_phys, 0u, initial_toggle);
+    dev->qh->horiz_link = EHCI_LINK_TERMINATE;
+    dev->qh->ep_cap = EHCI_QH_MULT_1 | start_mask | ((uint32_t)complete_mask << EHCI_QH_INTR_C_MASK_SHIFT);
+    if (dev->speed != EHCI_DEV_SPEED_HIGH && dev->hub_addr != 0u) {
+        dev->qh->ep_cap |= ((uint32_t)dev->hub_addr << 16) |
+                           ((uint32_t)dev->hub_port << 23);
+    }
+}
+
+static void ehci_interrupt_qtd_arm(struct ehci_msc_device *dev,
+                                          uint8_t *toggle,
+                                          uint64_t phys,
+                                          uint32_t bytes,
+                                          uint8_t in) {
+    memset(dev->qtd, 0, EHCI_PAGE_SIZE);
+    ehci_qtd_prepare(&dev->qtd[0], phys, 0u, in ? EHCI_QTD_PID_IN : EHCI_QTD_PID_OUT, bytes, 0u, 1u);
+    dev->qh->current_qtd = 0u;
+    dev->qh->next_qtd = (uint32_t)dev->qtd_phys;
+    dev->qh->alt_next_qtd = EHCI_LINK_TERMINATE;
+    dev->qh->token = *toggle != 0u ? EHCI_QTD_TOGGLE : 0u;
+    dev->qh->buffer[0] = 0u;
+    dev->qh->buffer[1] = 0u;
+    dev->qh->buffer[2] = 0u;
+    dev->qh->buffer[3] = 0u;
+    dev->qh->buffer[4] = 0u;
+    dev->qh->buffer_hi[0] = 0u;
+    dev->qh->buffer_hi[1] = 0u;
+    dev->qh->buffer_hi[2] = 0u;
+    dev->qh->buffer_hi[3] = 0u;
+    dev->qh->buffer_hi[4] = 0u;
+}
+
+static int ehci_periodic_enable_for(const struct ehci_msc_device *dev) {
+    ehci_use_device_controller(dev);
+    if (!ehci_ensure_running()) {
+        return 0;
+    }
+    ehci_write_op(0x14u, (uint32_t)g_ehci_periodic_list_phys);
+    (void)ehci_read_op(0x14u);
+    ehci_write_op(0x00u, ehci_read_op(0x00u) | EHCI_USBCMD_PSE);
+    (void)ehci_read_op(0x00u);
+    return ehci_wait_op_set(0x04u, EHCI_USBSTS_PSS);
+}
+
+int ehci_interrupt_open(struct ehci_msc_device *dev,
+                               uint8_t ep_addr,
+                               uint16_t mps,
+                               uint8_t interval,
+                               uint8_t *toggle,
+                               uint64_t phys,
+                               uint32_t bytes,
+                               uint8_t in) {
+    if (dev == 0 || dev->qh == 0 || dev->qtd == 0 || toggle == 0 ||
+        bytes > EHCI_MSC_TRANSFER_BYTES || mps == 0u ||
+        dev->controller.op == 0 || dev->controller.schedule == 0) {
+        return 0;
+    }
+    ehci_use_device_controller(dev);
+    if (g_ehci_periodic_list == 0 || g_ehci_periodic_list_phys == 0u ||
+        !ehci_ensure_running()) {
+        return 0;
+    }
+    dev->interrupt_interval_frames = ehci_interrupt_interval_frames(dev->speed, interval);
+    dev->interrupt_phase_frames = ehci_interrupt_phase_frames(dev, dev->interrupt_interval_frames);
+    ehci_qh_prepare_interrupt(dev, ep_addr & 0x0fu, mps, (uint32_t)dev->qtd_phys, *toggle);
+    ehci_interrupt_qtd_arm(dev, toggle, phys, bytes, in);
+    ehci_periodic_list_set_head();
+    ehci_dma_barrier();
+    if (!ehci_periodic_enable_for(dev)) {
+        dev->interrupt_interval_frames = 0u;
+        dev->interrupt_phase_frames = 0u;
+        dev->qh->horiz_link = EHCI_LINK_TERMINATE;
+        ehci_periodic_list_set_head();
+        return 0;
+    }
+    return 1;
+}
+
+int ehci_interrupt_poll(struct ehci_msc_device *dev, uint8_t *toggle, uint32_t *token_out) {
+    uint32_t token;
+
+    if (dev == 0 || dev->qtd == 0 || dev->qh == 0 || toggle == 0) {
+        return 0;
+    }
+    token = dev->qtd[0].token;
+    if (token_out != 0) {
+        *token_out = token;
+    }
+    if ((token & EHCI_QTD_ACTIVE) != 0u || (token & EHCI_QTD_HALTED) != 0u) {
+        return 0;
+    }
+    *toggle = (dev->qh->token & EHCI_QTD_TOGGLE) != 0u ? 1u : 0u;
+    return 1;
+}
+
+void ehci_interrupt_rearm(struct ehci_msc_device *dev,
+                                 uint8_t *toggle,
+                                 uint64_t phys,
+                                 uint32_t bytes,
+                                 uint8_t in) {
+    if (dev == 0 || dev->qh == 0 || dev->qtd == 0 || toggle == 0) {
+        return;
+    }
+    ehci_interrupt_qtd_arm(dev, toggle, phys, bytes, in);
+    ehci_dma_barrier();
+}
+
+void ehci_interrupt_close(struct ehci_msc_device *dev) {
+    if (dev == 0 || dev->qh == 0 || dev->qh_phys == 0u) {
+        return;
+    }
+    ehci_use_device_controller(dev);
+    dev->interrupt_interval_frames = 0u;
+    dev->interrupt_phase_frames = 0u;
+    dev->qh->horiz_link = EHCI_LINK_TERMINATE;
+    dev->qh->next_qtd = EHCI_LINK_TERMINATE;
+    dev->qh->alt_next_qtd = EHCI_LINK_TERMINATE;
+    dev->qh->token = EHCI_QTD_HALTED;
+    if (dev->qtd != 0) {
+        dev->qtd[0].next = EHCI_LINK_TERMINATE;
+        dev->qtd[0].alt_next = EHCI_LINK_TERMINATE;
+        dev->qtd[0].token = EHCI_QTD_HALTED;
+    }
+    ehci_periodic_list_set_head();
+    ehci_dma_barrier();
 }
 
 int ehci_get_descriptor(struct ehci_msc_device *dev,

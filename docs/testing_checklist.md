@@ -6,6 +6,45 @@ This project currently uses three levels of verification:
 - QEMU smoke checks
 - Manual boot validation with `make run` or `make dev`
 
+## Stabilization Gates
+
+Use these named gates for the current stabilization effort. A stabilization
+task is not complete until the relevant gate passes on both x86_64 and i386, or
+the gap is explicitly documented as partial coverage.
+
+```sh
+make check-stabilization-base
+make check-stabilization-smoke
+make check-stabilization-mm
+make check-syscall-invalid
+make check-vfs-block-stress
+make check-stabilization-driver
+```
+
+`make check-stabilization` runs all current non-loop stabilization gates. Use
+`make check-boot-loop` for repeated boot validation; it defaults to 10
+x86_64/i386 iterations and can be adjusted with `BOOT_LOOP_COUNT=50` or
+`BOOT_LOOP_COUNT=100` for release-candidate runs.
+
+Current coverage notes:
+
+- `check-x86_64-mm-stress` runs `/cmd/mmstress pmm-vmm` and validates
+  MAP_FIXED/partial `munmap`, fault cleanup, invalid-pointer cleanup,
+  fork/COW cleanup, shared-mmap lifecycle behavior, PMM/VMM mmap pressure,
+  and child-exit page cleanup.
+- `/cmd/mmstress` defaults to the same strict-MM + PMM/VMM coverage. Use
+  `/cmd/mmstress strict-mm` for only the historical strict-MM set, and
+  `/cmd/mmstress pmm-vmm-only` for only the PMM/VMM pressure path.
+- Use `/cmd/mmstress soak [iterations]` or `/cmd/mmstress pmm-vmm-soak
+  [iterations]` for long PMM/VMM leak checks. The soak mode compares PMM
+  `free_pages` before and after every iteration and again at the end. The
+  default is 256 iterations; the current maximum is 10000.
+- `check-i386-mm-stress` combines strict-MM and full NEXBOX32 smoke so i386
+  process lifetime, fork/COW, mmap, shared mapping, and cleanup paths stay
+  covered.
+- Crash, hang, stale-pointer exposure, and data corruption found by these gates
+  are immediate bugs. Do not file them as deferrable technical debt.
+
 ## Fast Smoke Checks
 
 Run these first after structural refactors:
@@ -14,6 +53,7 @@ Run these first after structural refactors:
 make ARCH=x86_64 check
 make ARCH=i386 check
 make check-kernel
+make check-stabilization-base
 ```
 
 These checks currently verify that the kernel/userland artifacts build and that
@@ -25,9 +65,22 @@ test.
 Use these after i386 process, syscall, VFS, driver, MM, or applet changes:
 
 ```sh
+make check-x86_64-nexbox-full
+make check-x86_64-stress
 make check-i386-smoke
 make check-i386-nexbox32-full
+make check-i386-strict-mm
 ```
+
+`make check-x86_64-stress` repeatedly exercises the stable boot path, `dbg
+stability`, `/ram` runtime file creation/removal, and service
+list/info/start/duplicate-start/stop. Use it after service, VFS, syscall,
+scheduler, or block I/O recovery changes.
+
+Use `make check-syscall-invalid` after syscall validation changes. Use
+`make check-vfs-block-stress` after VFS, pseudo-fs, block query, mount, or
+runtime block-device lifetime changes. Use `make check-stabilization-driver`
+after driver probe, query, recovery, or backend smoke changes.
 
 Useful i386 TEST32 commands after boot:
 
@@ -196,6 +249,7 @@ These are good to run after memory-management or syscall changes:
 
 - invalid user pointer access still fails cleanly
 - `page_alloc` still returns a user page address, and `page_free` succeeds only when given that same user page address
+- `dbg stability` reports current credentials, the last syscall trace, and block device state without requiring extra debug capabilities
 - `wait`, `kill`, `fg`, and `bg` reject bad PIDs cleanly
 - the shell stays responsive after a failed `run`
 
@@ -215,3 +269,29 @@ Run the full boot checklist after:
 - shell changes
 - filesystem refactors
 - i386 boot/service glue, driver discovery, or syscall adapter refactors
+
+Run the stabilization gates after:
+
+- syscall boundary changes: `make check-syscall-invalid`
+- MM/process lifetime changes: `make check-stabilization-mm`
+- VFS/block/device lifetime changes: `make check-vfs-block-stress`
+- driver backend changes: `make check-stabilization-driver`
+- release-candidate validation: `make check-stabilization` plus
+  `make check-boot-loop BOOT_LOOP_COUNT=100`
+
+## Next Stabilization Debts
+
+Use this list to choose the next high-value hardening task:
+
+- Timer IRQ USB split: verify with `make check-stabilization-driver` and USB
+  HID/MSC manual smoke, then run `make check-boot-loop`.
+- Kernel stack guard and double-fault IST: verify with a deliberate debug-only
+  stack overflow/fault injection path and panic diagnostics.
+- `blockdev` async queue lock split: verify with `make check-vfs-block-stress`
+  and USB/rootfs rebind smoke.
+- Panic backtrace: verify by triggering a controlled kernel panic and checking
+  serial output for a stable frame chain.
+- Common lock/IRQ-safe rules: verify with lock-order assertions in debug builds
+  before any SMP work.
+- Memory poisoning/debug build: verify with PMM/VMM soak, invalid-free tests,
+  and `make check-stabilization-mm`.

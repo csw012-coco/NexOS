@@ -377,26 +377,35 @@ int ehci_finish_device_enumeration(struct ehci_msc_device *dev,
                 kprint("ehci: port%u hid mouse set idle failed\n", root_port);
             }
             memset(mouse->last_report, 0, sizeof(mouse->last_report));
+            /* Publish this slot before open builds the periodic schedule. */
+            g_ehci_hid_mouse_count++;
+            if (!ehci_hid_mouse_arm_interrupt(mouse)) {
+                /* open removes its schedule entry before returning failure. */
+                g_ehci_hid_mouse_count--;
+                kprint("ehci: port%u hid mouse interrupt arm failed\n", root_port);
+                return 0;
+            }
             mouse->present = 1u;
             if (mouse->xfer.hub_addr != 0u) {
-                kprint("ehci: hub%u port%u hidmouse%u addr=%u iface=%u in=%x mps=%u\n",
+                kprint("ehci: hub%u port%u hidmouse%u addr=%u iface=%u in=%x mps=%u interval=%u\n",
                        (uint32_t)mouse->xfer.hub_addr,
                        (uint32_t)mouse->xfer.hub_port,
-                       g_ehci_hid_mouse_count,
+                       g_ehci_hid_mouse_count - 1u,
                        (uint32_t)mouse->address,
                        (uint32_t)mouse->interface_number,
                        (uint32_t)mouse->interrupt_in_ep,
-                       (uint32_t)mouse->interrupt_in_mps);
+                       (uint32_t)mouse->interrupt_in_mps,
+                       (uint32_t)mouse->interrupt_in_interval);
             } else {
-                kprint("ehci: port%u hidmouse%u addr=%u iface=%u in=%x mps=%u\n",
+                kprint("ehci: port%u hidmouse%u addr=%u iface=%u in=%x mps=%u interval=%u\n",
                        root_port,
-                       g_ehci_hid_mouse_count,
+                       g_ehci_hid_mouse_count - 1u,
                        (uint32_t)mouse->address,
                        (uint32_t)mouse->interface_number,
                        (uint32_t)mouse->interrupt_in_ep,
-                       (uint32_t)mouse->interrupt_in_mps);
+                       (uint32_t)mouse->interrupt_in_mps,
+                       (uint32_t)mouse->interrupt_in_interval);
             }
-            g_ehci_hid_mouse_count++;
             return 1;
         }
     }
@@ -426,26 +435,35 @@ int ehci_finish_device_enumeration(struct ehci_msc_device *dev,
     }
     memset(kbd->last_report, 0, sizeof(kbd->last_report));
     kbd->report_fail_logged = 0u;
+    /* Publish this slot before open builds the periodic schedule. */
+    g_ehci_hid_keyboard_count++;
+    if (!ehci_hid_keyboard_arm_interrupt(kbd)) {
+        /* open removes its schedule entry before returning failure. */
+        g_ehci_hid_keyboard_count--;
+        kprint("ehci: port%u hid keyboard interrupt arm failed\n", root_port);
+        return 0;
+    }
     kbd->present = 1u;
     if (kbd->xfer.hub_addr != 0u) {
-        kprint("ehci: hub%u port%u hidkbd%u addr=%u iface=%u in=%x mps=%u\n",
+        kprint("ehci: hub%u port%u hidkbd%u addr=%u iface=%u in=%x mps=%u interval=%u\n",
                (uint32_t)kbd->xfer.hub_addr,
                (uint32_t)kbd->xfer.hub_port,
-               g_ehci_hid_keyboard_count,
+               g_ehci_hid_keyboard_count - 1u,
                (uint32_t)kbd->address,
                (uint32_t)kbd->interface_number,
                (uint32_t)kbd->interrupt_in_ep,
-               (uint32_t)kbd->interrupt_in_mps);
+               (uint32_t)kbd->interrupt_in_mps,
+               (uint32_t)kbd->interrupt_in_interval);
     } else {
-        kprint("ehci: port%u hidkbd%u addr=%u iface=%u in=%x mps=%u\n",
+        kprint("ehci: port%u hidkbd%u addr=%u iface=%u in=%x mps=%u interval=%u\n",
                root_port,
-               g_ehci_hid_keyboard_count,
+               g_ehci_hid_keyboard_count - 1u,
                (uint32_t)kbd->address,
                (uint32_t)kbd->interface_number,
                (uint32_t)kbd->interrupt_in_ep,
-               (uint32_t)kbd->interrupt_in_mps);
+               (uint32_t)kbd->interrupt_in_mps,
+               (uint32_t)kbd->interrupt_in_interval);
     }
-    g_ehci_hid_keyboard_count++;
     return 1;
 }
 
@@ -494,28 +512,28 @@ static int ehci_root_port_tracked(uint32_t port_index) {
     for (uint32_t i = 0u; i < g_ehci_msc_count && i < EHCI_MAX_MSC; i++) {
         struct ehci_msc_device *dev = &g_ehci_msc[i];
 
-        if (dev->present && dev->hub_addr == 0u && dev->root_port == (uint8_t)port_index) {
+        if (dev->present && dev->controller.op == g_ehci.op && dev->hub_addr == 0u && dev->root_port == (uint8_t)port_index) {
             return 1;
         }
     }
     for (uint32_t i = 0u; i < g_ehci_hub_count && i < EHCI_MAX_HUBS; i++) {
         struct ehci_msc_device *hub = &g_ehci_hubs[i];
 
-        if (hub->present && hub->hub_addr == 0u && hub->root_port == (uint8_t)port_index) {
+        if (hub->present && hub->controller.op == g_ehci.op && hub->hub_addr == 0u && hub->root_port == (uint8_t)port_index) {
             return 1;
         }
     }
     for (uint32_t i = 0u; i < g_ehci_hid_keyboard_count && i < EHCI_MAX_HID_KEYBOARDS; i++) {
         struct ehci_hid_keyboard *kbd = &g_ehci_hid_keyboards[i];
 
-        if (kbd->present && kbd->xfer.hub_addr == 0u && kbd->xfer.root_port == (uint8_t)port_index) {
+        if (kbd->present && kbd->xfer.controller.op == g_ehci.op && kbd->xfer.hub_addr == 0u && kbd->xfer.root_port == (uint8_t)port_index) {
             return 1;
         }
     }
     for (uint32_t i = 0u; i < g_ehci_hid_mouse_count && i < EHCI_MAX_HID_MICE; i++) {
         struct ehci_hid_mouse *mouse = &g_ehci_hid_mice[i];
 
-        if (mouse->present && mouse->xfer.hub_addr == 0u && mouse->xfer.root_port == (uint8_t)port_index) {
+        if (mouse->present && mouse->xfer.controller.op == g_ehci.op && mouse->xfer.hub_addr == 0u && mouse->xfer.root_port == (uint8_t)port_index) {
             return 1;
         }
     }
@@ -529,7 +547,7 @@ static void ehci_detach_hub_children(uint8_t hub_addr) {
     for (uint32_t i = 0u; i < g_ehci_msc_count && i < EHCI_MAX_MSC; i++) {
         struct ehci_msc_device *dev = &g_ehci_msc[i];
 
-        if (dev->present && dev->hub_addr == hub_addr) {
+        if (dev->present && dev->controller.op == g_ehci.op && dev->hub_addr == hub_addr) {
             if (blockdev_unregister(&dev->blockdev) != 0) {
                 continue;
             }
@@ -540,17 +558,15 @@ static void ehci_detach_hub_children(uint8_t hub_addr) {
     for (uint32_t i = 0u; i < g_ehci_hid_keyboard_count && i < EHCI_MAX_HID_KEYBOARDS; i++) {
         struct ehci_hid_keyboard *kbd = &g_ehci_hid_keyboards[i];
 
-        if (kbd->present && kbd->xfer.hub_addr == hub_addr) {
-            kbd->present = 0u;
-            memset(kbd->last_report, 0, sizeof(kbd->last_report));
+        if (kbd->present && kbd->xfer.controller.op == g_ehci.op && kbd->xfer.hub_addr == hub_addr) {
+            ehci_hid_keyboard_detach(kbd);
         }
     }
     for (uint32_t i = 0u; i < g_ehci_hid_mouse_count && i < EHCI_MAX_HID_MICE; i++) {
         struct ehci_hid_mouse *mouse = &g_ehci_hid_mice[i];
 
-        if (mouse->present && mouse->xfer.hub_addr == hub_addr) {
-            mouse->present = 0u;
-            memset(mouse->last_report, 0, sizeof(mouse->last_report));
+        if (mouse->present && mouse->xfer.controller.op == g_ehci.op && mouse->xfer.hub_addr == hub_addr) {
+            ehci_hid_mouse_detach(mouse);
         }
     }
 }
@@ -559,7 +575,7 @@ static void ehci_mark_root_port_detached(uint32_t port_index) {
     for (uint32_t i = 0u; i < g_ehci_msc_count && i < EHCI_MAX_MSC; i++) {
         struct ehci_msc_device *dev = &g_ehci_msc[i];
 
-        if (dev->present && dev->hub_addr == 0u && dev->root_port == (uint8_t)port_index) {
+        if (dev->present && dev->controller.op == g_ehci.op && dev->hub_addr == 0u && dev->root_port == (uint8_t)port_index) {
             if (blockdev_unregister(&dev->blockdev) != 0) {
                 continue;
             }
@@ -570,7 +586,7 @@ static void ehci_mark_root_port_detached(uint32_t port_index) {
     for (uint32_t i = 0u; i < g_ehci_hub_count && i < EHCI_MAX_HUBS; i++) {
         struct ehci_msc_device *hub = &g_ehci_hubs[i];
 
-        if (hub->present && hub->hub_addr == 0u && hub->root_port == (uint8_t)port_index) {
+        if (hub->present && hub->controller.op == g_ehci.op && hub->hub_addr == 0u && hub->root_port == (uint8_t)port_index) {
             ehci_detach_hub_children(hub->address);
             hub->present = 0u;
         }
@@ -578,17 +594,15 @@ static void ehci_mark_root_port_detached(uint32_t port_index) {
     for (uint32_t i = 0u; i < g_ehci_hid_keyboard_count && i < EHCI_MAX_HID_KEYBOARDS; i++) {
         struct ehci_hid_keyboard *kbd = &g_ehci_hid_keyboards[i];
 
-        if (kbd->present && kbd->xfer.hub_addr == 0u && kbd->xfer.root_port == (uint8_t)port_index) {
-            kbd->present = 0u;
-            memset(kbd->last_report, 0, sizeof(kbd->last_report));
+        if (kbd->present && kbd->xfer.controller.op == g_ehci.op && kbd->xfer.hub_addr == 0u && kbd->xfer.root_port == (uint8_t)port_index) {
+            ehci_hid_keyboard_detach(kbd);
         }
     }
     for (uint32_t i = 0u; i < g_ehci_hid_mouse_count && i < EHCI_MAX_HID_MICE; i++) {
         struct ehci_hid_mouse *mouse = &g_ehci_hid_mice[i];
 
-        if (mouse->present && mouse->xfer.hub_addr == 0u && mouse->xfer.root_port == (uint8_t)port_index) {
-            mouse->present = 0u;
-            memset(mouse->last_report, 0, sizeof(mouse->last_report));
+        if (mouse->present && mouse->xfer.controller.op == g_ehci.op && mouse->xfer.hub_addr == 0u && mouse->xfer.root_port == (uint8_t)port_index) {
+            ehci_hid_mouse_detach(mouse);
         }
     }
 }
@@ -620,6 +634,16 @@ static void ehci_hotplug_scan_ports(void) {
     }
 }
 
+static void ehci_hotplug_scan_controllers(void) {
+    struct ehci_regs saved = g_ehci;
+
+    for (uint32_t i = 0u; i < g_ehci_controller_count; i++) {
+        g_ehci = g_ehci_controllers[i];
+        ehci_hotplug_scan_ports();
+    }
+    g_ehci = saved;
+}
+
 void ehci_hotplug_poll(void) {
     uint32_t tick;
 
@@ -631,9 +655,9 @@ void ehci_hotplug_poll(void) {
         return;
     }
     g_ehci_last_hotplug_tick = tick;
-    ehci_hotplug_scan_ports();
+    ehci_hotplug_scan_controllers();
 }
 
 void ehci_hotplug_scan_now(void) {
-    ehci_hotplug_scan_ports();
+    ehci_hotplug_scan_controllers();
 }

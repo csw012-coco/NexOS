@@ -901,12 +901,19 @@ int nxfs_list_dir(struct nxfs_volume *vol,
         return -1;
     }
     blocks = nxfs_inode_block_count(dir);
+    NXFS_BOOT_TRACE("nxfs: list_dir begin inode=%u blocks=%u max=%u\n",
+                    inode_index,
+                    blocks,
+                    max_entries);
     for (uint32_t block_idx = 0; block_idx < blocks; block_idx++) {
         struct nxfs_dir_entry block_entries[NXFS_BLOCK_SIZE / sizeof(struct nxfs_dir_entry)];
 
+        NXFS_BOOT_TRACE("nxfs: list_dir block begin inode=%u block=%u\n", inode_index, block_idx);
         if (nxfs_read_inode_block(vol, dir, block_idx, block_entries) != 0) {
+            NXFS_BOOT_TRACE("nxfs: list_dir block failed inode=%u block=%u\n", inode_index, block_idx);
             return -1;
         }
+        NXFS_BOOT_TRACE("nxfs: list_dir block done inode=%u block=%u\n", inode_index, block_idx);
         for (uint32_t i = 0; i < NXFS_BLOCK_SIZE / sizeof(struct nxfs_dir_entry); i++) {
             if (block_entries[i].name[0] == '\0') {
                 continue;
@@ -918,6 +925,7 @@ int nxfs_list_dir(struct nxfs_volume *vol,
         }
     }
     *entry_count = total;
+    NXFS_BOOT_TRACE("nxfs: list_dir done inode=%u total=%u\n", inode_index, total);
     return 0;
 }
 
@@ -934,23 +942,38 @@ int nxfs_get_dir_entry(struct nxfs_volume *vol,
         return -1;
     }
     blocks = nxfs_inode_block_count(dir);
+    NXFS_BOOT_TRACE("nxfs: get_dir_entry begin inode=%u entry=%u blocks=%u\n",
+                    inode_index,
+                    entry_index,
+                    blocks);
     for (uint32_t block_idx = 0; block_idx < blocks; block_idx++) {
         struct nxfs_dir_entry block_entries[NXFS_BLOCK_SIZE / sizeof(struct nxfs_dir_entry)];
 
+        NXFS_BOOT_TRACE("nxfs: get_dir_entry block begin inode=%u block=%u\n", inode_index, block_idx);
         if (nxfs_read_inode_block(vol, dir, block_idx, block_entries) != 0) {
+            NXFS_BOOT_TRACE("nxfs: get_dir_entry block failed inode=%u block=%u\n", inode_index, block_idx);
             return -1;
         }
+        NXFS_BOOT_TRACE("nxfs: get_dir_entry block done inode=%u block=%u\n", inode_index, block_idx);
         for (uint32_t i = 0; i < NXFS_BLOCK_SIZE / sizeof(struct nxfs_dir_entry); i++) {
             if (block_entries[i].name[0] == '\0') {
                 continue;
             }
             if (total == entry_index) {
                 *entry_out = block_entries[i];
+                NXFS_BOOT_TRACE("nxfs: get_dir_entry done inode=%u entry=%u name=%s\n",
+                                inode_index,
+                                entry_index,
+                                entry_out->name);
                 return 0;
             }
             total++;
         }
     }
+    NXFS_BOOT_TRACE("nxfs: get_dir_entry miss inode=%u entry=%u total=%u\n",
+                    inode_index,
+                    entry_index,
+                    total);
     return -1;
 }
 
@@ -1131,6 +1154,55 @@ int nxfs_read_file_range(struct nxfs_volume *vol,
                                     &copy_start,
                                     &chunk)) {
             block_idx++;
+            continue;
+        }
+        if (copy_start == block_start && chunk == NXFS_BLOCK_SIZE) {
+            uint32_t run_blocks = 1u;
+            int prev_phys = phys;
+
+            while (block_idx + run_blocks < last_block &&
+                   run_blocks < NXFS_READ_RUN_MAX_BLOCKS &&
+                   done + run_blocks * NXFS_BLOCK_SIZE < buffer_size) {
+                uint32_t next_idx = block_idx + run_blocks;
+                uint32_t next_start = next_idx * NXFS_BLOCK_SIZE;
+                uint32_t next_end = next_start + NXFS_BLOCK_SIZE;
+                uint32_t next_copy_start;
+                uint32_t next_chunk;
+                int next_phys = nxfs_logical_to_physical(inode, next_idx);
+
+                if (next_phys != prev_phys + 1) {
+                    break;
+                }
+                if (!nxfs_calc_block_window(next_start,
+                                            next_end,
+                                            inode->size,
+                                            offset,
+                                            request_end,
+                                            &next_copy_start,
+                                            &next_chunk) ||
+                    next_copy_start != next_start ||
+                    next_chunk != NXFS_BLOCK_SIZE) {
+                    break;
+                }
+                prev_phys = next_phys;
+                run_blocks++;
+            }
+            if (nxfs_trace_file_read(inode, offset, buffer_size, block_idx)) {
+                NXFS_BOOT_TRACE("nxfs: file run l=%u p=%u blocks=%u lba=%lx dev=%s\n",
+                                block_idx,
+                                (uint32_t)phys,
+                                run_blocks,
+                                (uint64_t)vol->partition_lba + (uint32_t)phys,
+                                vol->bdev != 0 && vol->bdev->name != 0 ? vol->bdev->name : "(null)");
+            }
+            if (nxfs_read_blocks(vol, (uint32_t)phys, run_blocks, out + done) != 0) {
+                if (nxfs_trace_file_read(inode, offset, buffer_size, block_idx)) {
+                    NXFS_BOOT_TRACE("nxfs: file run fail l=%u blocks=%u\n", block_idx, run_blocks);
+                }
+                return -1;
+            }
+            done += run_blocks * NXFS_BLOCK_SIZE;
+            block_idx += run_blocks;
             continue;
         }
         if (nxfs_trace_file_read(inode, offset, buffer_size, block_idx)) {

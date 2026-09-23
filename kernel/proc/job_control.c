@@ -41,7 +41,8 @@ static void job_capture_stop_frame(const struct syscall_frame *frame, struct pro
     if (frame == 0 || proc == 0 ||
         g_bound_session->process.image_kind == PROCESS_IMAGE_NONE ||
         g_bound_session->process.pid != proc->pid ||
-        proc->state != PROCESS_STATE_RUNNING) {
+        proc->state != PROCESS_STATE_RUNNING ||
+        !hal_syscall_frame_is_user(frame)) {
         return;
     }
 
@@ -848,6 +849,32 @@ int job_tty_deliver_sigint(struct tty *tty) {
     return 1;
 }
 
+int job_deliver_sigint_to_pid(uint32_t pid) {
+    struct process *proc = 0;
+    struct job_runtime *runtime;
+
+    if (pid == 0u) {
+        return -NEX_ERR_INVAL;
+    }
+    if (g_user_session.process.image_kind != PROCESS_IMAGE_NONE &&
+        g_user_session.process.pid == pid) {
+        proc = &g_user_session.process;
+    } else {
+        runtime = job_find_runtime_by_pid(pid);
+        if (runtime != 0) {
+            proc = &runtime->session.process;
+        }
+    }
+    if (!job_process_is_active(proc)) {
+        return -NEX_ERR_SRCH;
+    }
+    if (job_process_ignores_sigint(proc)) {
+        return -NEX_ERR_ACCES;
+    }
+    process_mark_exit_pending(proc, 130);
+    return 1;
+}
+
 int job_tty_deliver_sigtstp(struct tty *tty, const struct syscall_frame *frame) {
     struct job_terminal_ref terminal;
     struct process *proc;
@@ -869,9 +896,13 @@ int job_tty_deliver_sigtstp(struct tty *tty, const struct syscall_frame *frame) 
         return 1;
     }
 
-    job_capture_stop_frame(frame, proc);
-
-    proc->state = PROCESS_STATE_STOPPED;
-    proc->wake_tick = 0;
+    if (hal_syscall_frame_is_user(frame)) {
+        job_capture_stop_frame(frame, proc);
+        proc->state = PROCESS_STATE_STOPPED;
+        proc->wake_tick = 0;
+    } else {
+        proc->stop_pending = 1u;
+        proc->wake_tick = 0;
+    }
     return 1;
 }

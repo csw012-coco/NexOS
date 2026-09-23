@@ -710,6 +710,10 @@ int profile_query(uint32_t index, uint32_t flags, struct syscall_profile_info *i
     return sys_query(SYS_QUERY_PROFILE, index, flags, info);
 }
 
+int stability_query(struct syscall_stability_info *info) {
+    return sys_query(SYS_QUERY_STABILITY, 0u, 0u, info);
+}
+
 int ac97_query(struct syscall_ac97_info *info) {
     return sys_query(SYS_QUERY_AC97, 0u, 0u, info);
 }
@@ -1310,8 +1314,8 @@ void yield(void) {
     (void)__nlibc32_syscall4(SYS_YIELD, 0u, 0u, 0u, 0u);
 }
 
-void sleep(uint32_t tick_count) {
-    (void)__nlibc32_syscall4(SYS_SLEEP, tick_count, 0u, 0u, 0u);
+void sleep(uint32_t ms) {
+    (void)__nlibc32_syscall4(SYS_SLEEP, ms, 0u, 0u, 0u);
 }
 
 uint64_t page_alloc(void) {

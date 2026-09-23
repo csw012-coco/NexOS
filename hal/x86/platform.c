@@ -1,6 +1,7 @@
 #include "hal/x86/platform.h"
 #include "arch/x86/x86_64/mm/pmm.h"
-#include "bootx/bootx.h"
+#include "block/blockdev.h"
+#include "janus/janus.h"
 #include "drivers/bus/acpi.h"
 #include "drivers/bus/ioapic.h"
 #include "drivers/bus/lapic.h"
@@ -10,7 +11,6 @@
 #include "kernel/public/mem/vmm.h"
 #include "kernel/public/proc/context.h"
 #include "kernel/public/sys/syscall.h"
-#include "kernel/public/sys/syscall_request.h"
 #include "kernel/internal/core/kernel_panic_internal.h"
 
 static volatile uint32_t g_hal_timer_ticks;
@@ -23,7 +23,7 @@ enum {
     HAL_MMIO_VIRT_LIMIT = 0xffffffff84000000ull
 };
 
-void hal_display_init(const struct bootx_console_info *console) {
+void hal_display_init(const struct janus_console_info *console) {
     framebuffer_display_init(console);
 }
 
@@ -52,7 +52,7 @@ void hal_display_service_pending(void) {
     }
 }
 
-void hal_display_load_font(const struct bootx_boot_info *boot_info) {
+void hal_display_load_font(const struct janus_boot_info *boot_info) {
     framebuffer_display_load_font_from_boot_modules(boot_info);
 }
 
@@ -64,7 +64,7 @@ void hal_platform_init(const struct hal_interrupt_handlers *handlers) {
     hal_x86_platform_init_impl(handlers);
 }
 
-int hal_pmm_init_from_boot(const struct bootx_boot_info *boot_info,
+int hal_pmm_init_from_boot(const struct janus_boot_info *boot_info,
                            uint64_t kernel_phys_addr) {
     return x86_64_pmm_init(boot_info, kernel_phys_addr);
 }
@@ -334,6 +334,10 @@ void hal_paging_log_panic_summary(const struct hal_boot_trace_ops *ops,
     ops->hex64(ctx, "ARCH WALK TAB1   : ", walk.pt_phys);
 }
 
+int hal_paging_guard_kernel_page(uint64_t virt_addr) {
+    return paging_guard_kernel_page(virt_addr);
+}
+
 int hal_process_context_init_user(struct process_context *context,
                                   uint64_t entry,
                                   uint64_t stack,
@@ -409,6 +413,7 @@ void hal_timer_init(uint32_t pit_hz) {
 
 void hal_timer_notify_tick(void) {
     g_hal_timer_ticks++;
+
     if (framebuffer_display_active()) {
         framebuffer_display_tick(g_hal_timer_ticks);
     }
@@ -518,6 +523,14 @@ void hal_display_enable_cursor(uint8_t start, uint8_t end) {
         return;
     }
     vga_enable_cursor(start, end);
+}
+
+void hal_display_disable_cursor(void) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_disable_cursor();
+        return;
+    }
+    vga_disable_cursor();
 }
 
 void hal_display_set_cursor(uint16_t row, uint16_t col) {
@@ -804,6 +817,14 @@ void hal_set_kernel_stack_top(uint64_t rsp0) {
     hal_x86_set_kernel_stack_top_impl(rsp0);
 }
 
+uint64_t hal_kernel_rsp0_guard_address(void) {
+    return gdt64_rsp0_guard_address();
+}
+
+uint64_t hal_double_fault_guard_address(void) {
+    return gdt64_double_fault_guard_address();
+}
+
 int hal_exception_frame_is_user(const struct exception_frame *frame) {
     return frame != 0 && (frame->cs & 0x3u) == 0x3u;
 }
@@ -885,21 +906,4 @@ uint64_t hal_syscall_frame_ip(const struct syscall_frame *frame) {
 
 uint64_t hal_syscall_frame_sp(const struct syscall_frame *frame) {
     return frame != 0 ? frame->stack_pointer : 0u;
-}
-
-void hal_syscall_decode_request(const struct syscall_frame *frame,
-                                struct kernel_syscall_request *request) {
-    if (frame == 0 || request == 0) {
-        return;
-    }
-    request->number = (uint32_t)frame->rax;
-    request->user_bits = 64u;
-    request->args[0] = frame->rbx;
-    request->args[1] = frame->rcx;
-    request->args[2] = frame->rdx;
-    request->args[3] = frame->rsi;
-    request->args[4] = frame->rdi;
-    request->args[5] = frame->rbp;
-    request->instruction_pointer = frame->instruction_pointer;
-    request->stack_pointer = frame->stack_pointer;
 }

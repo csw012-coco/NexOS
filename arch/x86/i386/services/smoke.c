@@ -31,7 +31,9 @@ int smoke_services_run_test32_strict_mm(void) {
     if (!config.ops->run_command("/cmd/test32 strict-mm", &process) ||
         process.state != PROCESS_STATE_EXITED ||
         process.exit_code != 0) {
-        kprint("test32: FAIL /cmd/test32 strict-mm status=%d\n",
+        kprint("test32: FAIL /cmd/test32 strict-mm pid=%u state=%u status=%d\n",
+               process.pid,
+               process.state,
                process.exit_code);
         return 0;
     }
@@ -95,8 +97,8 @@ int smoke_services_run_nexbox32_full(void) {
         "/cmd/nexbox grep arch=i386 /proc/cmdline",
         "/cmd/nexbox find /cmd ush",
         "/cmd/nexbox fatls",
-        "/cmd/nexbox fatread BOOT/BOOTX.CFG",
-        "/cmd/nexbox cat /boot/BOOT/BOOTX.CFG",
+        "/cmd/nexbox fatread BOOT/JANUS.CFG",
+        "/cmd/nexbox cat /boot/BOOT/JANUS.CFG",
         "/cmd/nexbox fdisk",
         "/cmd/nexbox fdisk 0",
         "/cmd/nexbox mkdir /ram/nexbox32-smoke.dir",

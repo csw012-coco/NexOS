@@ -20,6 +20,21 @@ enum {
     CMOS_STATUS_B_24H = 0x02u
 };
 
+enum {
+    CMOS_RTC_ERROR_NONE = 0u,
+    CMOS_RTC_ERROR_UPDATE_TIMEOUT = 1u,
+    CMOS_RTC_ERROR_UNSTABLE = 2u,
+    CMOS_RTC_ERROR_INVALID = 3u
+};
+
+static uint32_t g_cmos_query_count;
+static uint32_t g_cmos_stable_read_count;
+static uint32_t g_cmos_retry_count;
+static uint32_t g_cmos_update_timeout_count;
+static uint32_t g_cmos_unstable_count;
+static uint32_t g_cmos_invalid_count;
+static uint32_t g_cmos_last_error;
+
 static uint8_t cmos_read_register(uint8_t reg) {
     outb(CMOS_INDEX_PORT, (uint8_t)(0x80u | reg));
     return inb(CMOS_DATA_PORT);
@@ -154,6 +169,16 @@ static void cmos_fill_snapshot(struct cmos_rtc_info *out) {
     out->unix_time = out->valid ? cmos_unix_time(out) : 0u;
 }
 
+static void cmos_fill_stats(struct cmos_rtc_info *out) {
+    out->query_count = g_cmos_query_count;
+    out->stable_read_count = g_cmos_stable_read_count;
+    out->retry_count = g_cmos_retry_count;
+    out->update_timeout_count = g_cmos_update_timeout_count;
+    out->unstable_count = g_cmos_unstable_count;
+    out->invalid_count = g_cmos_invalid_count;
+    out->last_error = g_cmos_last_error;
+}
+
 static int cmos_same_snapshot(const struct cmos_rtc_info *a, const struct cmos_rtc_info *b) {
     return a->second == b->second &&
            a->minute == b->minute &&
@@ -190,29 +215,53 @@ int cmos_rtc_query(struct cmos_rtc_info *out) {
     out->month = 0u;
     out->year = 0u;
     out->unix_time = 0u;
+    g_cmos_query_count++;
+    g_cmos_last_error = CMOS_RTC_ERROR_NONE;
+    cmos_fill_stats(out);
 
     spins = 100000u;
     while (spins > 0u && cmos_is_updating()) {
         spins--;
     }
     if (spins == 0u) {
+        g_cmos_update_timeout_count++;
+        g_cmos_last_error = CMOS_RTC_ERROR_UPDATE_TIMEOUT;
         out->present = 1u;
         out->updating = 1u;
+        cmos_fill_stats(out);
         return 0;
     }
 
     for (uint32_t attempt = 0; attempt < 4u; attempt++) {
+        if (attempt != 0u) {
+            g_cmos_retry_count++;
+        }
         cmos_fill_snapshot(&first);
         cmos_fill_snapshot(&second);
         if (cmos_same_snapshot(&first, &second)) {
             *out = second;
             out->present = 1u;
             out->updating = 0u;
+            if (out->valid) {
+                g_cmos_stable_read_count++;
+            } else {
+                g_cmos_invalid_count++;
+                g_cmos_last_error = CMOS_RTC_ERROR_INVALID;
+            }
+            cmos_fill_stats(out);
             return 1;
         }
     }
+    g_cmos_unstable_count++;
     *out = second;
     out->present = 1u;
     out->updating = 0u;
+    if (!out->valid) {
+        g_cmos_invalid_count++;
+        g_cmos_last_error = CMOS_RTC_ERROR_INVALID;
+    } else {
+        g_cmos_last_error = CMOS_RTC_ERROR_UNSTABLE;
+    }
+    cmos_fill_stats(out);
     return 1;
 }

@@ -7,16 +7,23 @@ static inline void io_wait(void) {
     outb(0x80, 0);
 }
 
-void idt64_set_gate(uint8_t vector, void (*handler)(void), uint8_t type_attr) {
+void idt64_set_gate_ist(uint8_t vector,
+                        void (*handler)(void),
+                        uint8_t type_attr,
+                        uint8_t ist) {
     uint64_t address = (uint64_t)handler;
 
     idt[vector].offset_low = (uint16_t)(address & 0xffff);
     idt[vector].selector = 0x08;
-    idt[vector].ist = 0;
+    idt[vector].ist = ist & 0x7u;
     idt[vector].type_attr = type_attr;
     idt[vector].offset_mid = (uint16_t)((address >> 16) & 0xffff);
-    idt[vector].offset_high = (uint32_t)((address >> 32) & 0xffffffffu);
+    idt[vector].offset_high = (uint32_t)(address >> 32);
     idt[vector].zero = 0;
+}
+
+void idt64_set_gate(uint8_t vector, void (*handler)(void), uint8_t type_attr) {
+    idt64_set_gate_ist(vector, handler, type_attr, 0u);
 }
 
 void idt64_init(void) {

@@ -20,10 +20,9 @@ struct hal_irq_route {
     uint32_t gsi;
 };
 
-struct bootx_console_info;
-struct bootx_boot_info;
+struct janus_console_info;
+struct janus_boot_info;
 struct exception_frame;
-struct kernel_syscall_request;
 struct process_context;
 struct syscall_frame;
 struct surface;
@@ -78,7 +77,7 @@ enum {
 
 #if defined(__i386__)
 enum {
-    HAL_USER_DYNAMIC_PAGE_LIMIT = 256,
+    HAL_USER_DYNAMIC_PAGE_LIMIT = 1024,
     HAL_USER_ELF_BASE = 0x08000000ull,
     HAL_USER_ELF_LIMIT = 0x50000000ull,
     HAL_USER_ELF_STACK_TOP = 0xc0000000ull,
@@ -97,8 +96,8 @@ enum {
     HAL_USER_ELF_STACK_TOP = 0x0000008000800000ull,
     HAL_USER_ELF_STACK_SIZE = 0x10000ull,
     HAL_USER_ELF_STACK_INIT_OFFSET = 8ull,
-    HAL_USER_MMAP_BASE = 0x0000008000500000ull,
-    HAL_USER_MMAP_END = 0x0000008000700000ull,
+    HAL_USER_MMAP_BASE = 0x0000008001000000ull,
+    HAL_USER_MMAP_END = 0x0000008001800000ull,
     HAL_USER_ALLOC_BASE = 0x0000008000800000ull,
     HAL_USER_ALLOC_END = 0x0000008001000000ull
 };
@@ -111,10 +110,10 @@ enum {
 #define HAL_DISPLAY_CELL_COLOR_SHIFT 24u
 
 void hal_paging_init(uint64_t kernel_phys_addr);
-int hal_pmm_init_from_boot(const struct bootx_boot_info *boot_info,
+int hal_pmm_init_from_boot(const struct janus_boot_info *boot_info,
                            uint64_t kernel_phys_addr);
-void hal_display_load_font(const struct bootx_boot_info *boot_info);
-void hal_display_init(const struct bootx_console_info *console);
+void hal_display_load_font(const struct janus_boot_info *boot_info);
+void hal_display_init(const struct janus_console_info *console);
 int hal_display_enable_backbuffer(void);
 void hal_display_begin_update(void);
 void hal_display_end_update(void);
@@ -131,6 +130,7 @@ void hal_paging_allow_user_page(uint64_t addr);
 void hal_paging_allow_user_range(uint64_t start, uint64_t end);
 void hal_paging_set_supervisor_range(uint64_t start, uint64_t end);
 int hal_paging_map_page(uint64_t virt_addr, uint64_t phys_addr, int user_accessible, int writable);
+int hal_paging_guard_kernel_page(uint64_t virt_addr);
 int hal_paging_map_page_with_exec(uint64_t virt_addr,
                                   uint64_t phys_addr,
                                   int user_accessible,
@@ -182,6 +182,7 @@ void hal_display_write_cell(uint16_t row, uint16_t col, uint32_t value);
 void hal_display_clear_row(uint16_t row, uint8_t color);
 void hal_display_put_at(uint16_t row, uint16_t col, uint8_t color, char ch);
 void hal_display_enable_cursor(uint8_t start, uint8_t end);
+void hal_display_disable_cursor(void);
 void hal_display_set_cursor(uint16_t row, uint16_t col);
 uint16_t hal_display_text_columns(void);
 uint16_t hal_display_text_rows(void);
@@ -258,6 +259,8 @@ void hal_usermode_enter(uint64_t entry, uint64_t user_stack);
 void hal_usermode_resume(const struct syscall_frame *frame);
 uint64_t hal_kernel_stack_top(void);
 void hal_set_kernel_stack_top(uint64_t rsp0);
+uint64_t hal_kernel_rsp0_guard_address(void);
+uint64_t hal_double_fault_guard_address(void);
 int hal_exception_frame_is_user(const struct exception_frame *frame);
 uint64_t hal_exception_frame_ip(const struct exception_frame *frame);
 uint64_t hal_exception_frame_error_code(const struct exception_frame *frame);
@@ -267,5 +270,3 @@ void hal_exception_snapshot(const struct exception_frame *frame,
 int hal_syscall_frame_is_user(const struct syscall_frame *frame);
 uint64_t hal_syscall_frame_ip(const struct syscall_frame *frame);
 uint64_t hal_syscall_frame_sp(const struct syscall_frame *frame);
-void hal_syscall_decode_request(const struct syscall_frame *frame,
-                                struct kernel_syscall_request *request);

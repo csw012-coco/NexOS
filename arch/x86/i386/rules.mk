@@ -21,29 +21,29 @@ $(I386_BUILD)/platform_boot.o: $(ROOT)/arch/x86/i386/platform_boot.c $(ROOT)/arc
 		$(ROOT)/arch/x86/i386/mm/paging.h $(ROOT)/arch/x86/common/pic.h \
 		$(ROOT)/arch/x86/i386/mm/pmm.h $(ROOT)/arch/x86/i386/scheduler/scheduler.h \
 		$(ROOT)/kernel/public/core/early_boot.h \
-		$(BOOTX_DIR)/include/bootx.h | $(I386_BUILD)
+		$(JANUS_DIR)/include/janus.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 \
-		-I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 \
+		-I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/gdt.o: $(ROOT)/arch/x86/i386/gdt.c $(ROOT)/arch/x86/i386/gdt.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/idt.o: $(ROOT)/arch/x86/i386/idt.c $(ROOT)/arch/x86/i386/idt.h \
 		$(ROOT)/arch/x86/i386/gdt.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/keyboard.o: $(ROOT)/arch/x86/i386/keyboard.c \
 		$(ROOT)/arch/x86/i386/keyboard.h $(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/pic.o: $(ROOT)/arch/x86/common/pic.c $(ROOT)/arch/x86/common/pic.h \
 		$(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/arch_ops.o: $(ROOT)/arch/x86/common/arch_ops.c \
 		$(ROOT)/kernel/public/arch/arch_ops.h | $(I386_BUILD)
@@ -53,19 +53,19 @@ $(I386_BUILD)/arch_ops.o: $(ROOT)/arch/x86/common/arch_ops.c \
 $(I386_BUILD)/paging.o: $(ROOT)/arch/x86/i386/mm/paging.c \
 		$(ROOT)/arch/x86/i386/mm/paging.h $(ROOT)/arch/x86/i386/mm/pmm.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/pmm.o: $(ROOT)/arch/x86/i386/mm/pmm.c \
 		$(ROOT)/arch/x86/i386/mm/pmm.h $(ROOT)/arch/x86/i386/mm/paging.h \
-		$(BOOTX_DIR)/include/bootx.h | $(I386_BUILD)
+		$(JANUS_DIR)/include/janus.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 \
-		-I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 \
+		-I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/vmm_i386.o: $(ROOT)/arch/x86/i386/mm/vmm.c \
 		$(ROOT)/arch/x86/i386/mm/paging.h $(ROOT)/kernel/public/mem/vmm.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/scheduler.o: $(ROOT)/arch/x86/i386/scheduler/scheduler.c \
 		$(ROOT)/arch/x86/i386/scheduler/internal.h $(ROOT)/arch/x86/i386/idt.h \
@@ -73,19 +73,19 @@ $(I386_BUILD)/scheduler.o: $(ROOT)/arch/x86/i386/scheduler/scheduler.c \
 		$(ROOT)/kernel/internal/proc/process_types_internal.h \
 		$(ROOT)/kernel/internal/proc/process_internal_base.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/scheduler_fpu.o: $(ROOT)/arch/x86/i386/scheduler/fpu.c \
 		$(ROOT)/arch/x86/i386/scheduler/internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/scheduler_backend.o: $(ROOT)/arch/x86/i386/scheduler/backend.c \
 		$(ROOT)/arch/x86/i386/scheduler/internal.h \
 		$(ROOT)/arch/x86/i386/context.h \
 		$(ROOT)/arch/x86/i386/mm/paging.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/scheduler_mm_ops.o: $(ROOT)/arch/x86/i386/scheduler/mm_ops.c \
 		$(ROOT)/arch/x86/i386/scheduler/internal.h \
@@ -93,7 +93,7 @@ $(I386_BUILD)/scheduler_mm_ops.o: $(ROOT)/arch/x86/i386/scheduler/mm_ops.c \
 		$(ROOT)/arch/x86/i386/mm/pmm.h \
 		$(ROOT)/kernel/public/proc/process_mm_ops.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/scheduler_process_ops.o: $(ROOT)/arch/x86/i386/scheduler/process_ops.c \
 		$(ROOT)/arch/x86/i386/scheduler/internal.h \
@@ -102,7 +102,7 @@ $(I386_BUILD)/scheduler_process_ops.o: $(ROOT)/arch/x86/i386/scheduler/process_o
 		$(ROOT)/kernel/public/proc/process_scheduler_ops.h \
 		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/scheduler_run_ops.o: $(ROOT)/arch/x86/i386/scheduler/run_ops.c \
 		$(ROOT)/arch/x86/i386/scheduler/internal.h \
@@ -110,7 +110,7 @@ $(I386_BUILD)/scheduler_run_ops.o: $(ROOT)/arch/x86/i386/scheduler/run_ops.c \
 		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h \
 		$(ROOT)/kernel/internal/fs/file_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/scheduler_fault_ops.o: $(ROOT)/arch/x86/i386/scheduler/fault_ops.c \
 		$(ROOT)/arch/x86/i386/scheduler/internal.h \
@@ -118,20 +118,20 @@ $(I386_BUILD)/scheduler_fault_ops.o: $(ROOT)/arch/x86/i386/scheduler/fault_ops.c
 		$(ROOT)/arch/x86/i386/mm/pmm.h \
 		$(ROOT)/arch/x86/i386/user.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/scheduler_stats_i386.o: $(ROOT)/arch/x86/i386/scheduler/stats.c \
 		$(ROOT)/arch/x86/i386/scheduler/internal.h \
 		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h \
 		$(ROOT)/kernel/public/proc/sched_policy.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/process32.o: $(ROOT)/arch/x86/i386/process/process.c \
 		$(ROOT)/arch/x86/i386/process/process.h \
 		$(ROOT)/kernel/public/proc/process_user_backend.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/process32_user_backend.o: $(ROOT)/arch/x86/i386/process/user_backend.c \
 		$(ROOT)/arch/x86/i386/process/process.h \
@@ -140,21 +140,21 @@ $(I386_BUILD)/process32_user_backend.o: $(ROOT)/arch/x86/i386/process/user_backe
 		$(ROOT)/arch/x86/i386/scheduler/internal.h \
 		$(ROOT)/kernel/public/proc/process_scheduler_ops.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/process32_exec.o: $(ROOT)/arch/x86/i386/process/exec.c \
 		$(ROOT)/arch/x86/i386/process/internal.h \
 		$(ROOT)/kernel/internal/proc/process_program_registry_internal.h \
 		$(ROOT)/kernel/public/proc/process.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/process32_elf_backend.o: $(ROOT)/arch/x86/i386/process/elf_backend.c \
 		$(ROOT)/arch/x86/i386/process/internal.h \
 		$(ROOT)/arch/x86/i386/mm/paging.h \
 		$(ROOT)/arch/x86/i386/user.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/process32_address_space.o: $(ROOT)/arch/x86/i386/process/address_space.c \
 		$(ROOT)/kernel/internal/proc/process_internal_base.h \
@@ -167,7 +167,7 @@ $(I386_BUILD)/process_current_i386.o: $(ROOT)/arch/x86/i386/process/current.c \
 		$(ROOT)/arch/x86/i386/scheduler/internal.h \
 		$(ROOT)/kernel/internal/proc/process_lifecycle_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/context.o: $(ROOT)/arch/x86/i386/context.c \
 		$(ROOT)/arch/x86/i386/context.h $(ROOT)/arch/x86/i386/idt.h \
@@ -183,7 +183,7 @@ $(I386_BUILD)/user.o: $(ROOT)/arch/x86/i386/user.c \
 		$(ROOT)/arch/x86/i386/user.h $(ROOT)/arch/x86/i386/mm/paging.h \
 		$(ROOT)/arch/x86/i386/mm/pmm.h $(ROOT)/fs/early_vfs.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/arch/x86/i386 -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/arch/x86/i386 -c $< -o $@
 
 $(I386_BUILD)/i386_ops.o: $(ROOT)/arch/x86/i386/ops.c \
 		$(ROOT)/arch/x86/i386/idt.h $(ROOT)/arch/x86/i386/mm/paging.h \
@@ -194,49 +194,63 @@ $(I386_BUILD)/i386_ops.o: $(ROOT)/arch/x86/i386/ops.c \
 $(I386_BUILD)/early_boot.o: $(ROOT)/kernel/core/early_boot.c \
 		$(ROOT)/kernel/public/core/early_boot.h \
 		$(ROOT)/kernel/public/core/early_console.h $(ROOT)/hal/early.h \
-		$(ROOT)/lib/string.h $(BOOTX_DIR)/include/bootx.h | $(I386_BUILD)
+		$(ROOT)/lib/string.h $(JANUS_DIR)/include/janus.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/hal_early.o: $(ROOT)/hal/early.c $(ROOT)/hal/early.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/early_console.o: $(ROOT)/kernel/core/early_console.c \
 		$(ROOT)/kernel/public/core/early_console.h $(ROOT)/hal/early.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/early_kprint.o: $(ROOT)/kernel/core/early_kprint.c \
 		$(ROOT)/kernel/public/core/early_kprint.h \
 		$(ROOT)/kernel/public/core/early_console.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/kprint.o: $(ROOT)/kernel/core/kprint.c \
 		$(ROOT)/kernel/public/core/kprint.h $(ROOT)/drivers/serial/uart.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/boot_log.o: $(ROOT)/kernel/core/boot_log.c \
 		$(ROOT)/kernel/internal/core/boot_log_internal.h \
-		$(ROOT)/kernel/public/core/kprint.h $(BOOTX_DIR)/include/bootx.h | $(I386_BUILD)
+		$(ROOT)/kernel/public/core/kprint.h $(JANUS_DIR)/include/janus.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/boot_state.o: $(ROOT)/kernel/core/boot_state.c \
 		$(ROOT)/kernel/internal/core/boot_state_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
+
+$(I386_BUILD)/kernel_root.o: $(ROOT)/kernel/core/kernel_root.c \
+		$(ROOT)/kernel/internal/core/kernel_boot_internal.h \
+		$(ROOT)/drivers/storage/ata.h $(ROOT)/drivers/usb/ehci.h \
+		$(ROOT)/drivers/usb/xhci.h $(ROOT)/fs/vfs.h $(ROOT)/hal/hal.h \
+		$(ROOT)/kernel/public/core/kprint.h $(ROOT)/lib/string.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
+
+$(I386_BUILD)/kernel_config.o: $(ROOT)/kernel/core/kernel_config.c \
+		$(ROOT)/kernel/internal/core/kernel_config_internal.h \
+		$(ROOT)/fs/vfs.h $(ROOT)/lib/string.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/early_runtime_hooks.o: $(ROOT)/kernel/core/early_runtime_hooks.c | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/kernel_init_flow.o: $(ROOT)/kernel/core/kernel_init_flow.c \
 		$(ROOT)/kernel/public/core/kernel_init_flow.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/div64.o: $(ROOT)/user/libc32/std/div64.c | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
@@ -298,7 +312,7 @@ $(I386_BUILD)/tty_virtual.o: $(ROOT)/kernel/core/tty_virtual.c \
 
 $(I386_BUILD)/graphics_service.o: $(ROOT)/kernel/core/graphics_service.c \
 		$(ROOT)/kernel/internal/core/graphics_service_internal.h \
-		$(ROOT)/hal/hal.h $(BOOTX_DIR)/include/bootx.h | $(I386_BUILD)
+		$(ROOT)/hal/hal.h $(JANUS_DIR)/include/janus.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
@@ -626,7 +640,7 @@ $(I386_BUILD)/address_space_core.o: $(ROOT)/kernel/mem/address_space_core.c \
 $(I386_BUILD)/pmm_core.o: $(ROOT)/kernel/mem/pmm.c \
 		$(ROOT)/kernel/public/mem/pmm.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/vmm_transfer.o: $(ROOT)/kernel/mem/vmm_transfer.c \
 		$(ROOT)/kernel/internal/mem/vmm_transfer.h | $(I386_BUILD)
@@ -743,7 +757,7 @@ $(I386_BUILD)/pc_speaker.o: $(ROOT)/drivers/audio/pc_speaker.c \
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
 $(I386_BUILD)/framebuffer.o: $(ROOT)/drivers/video/framebuffer.c \
-		$(ROOT)/drivers/video/framebuffer.h $(BOOTX_DIR)/include/bootx.h | $(I386_BUILD)
+		$(ROOT)/drivers/video/framebuffer.h $(JANUS_DIR)/include/janus.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
 	$(Q)$(I386_CC) $(I386_CFLAGS) -c $< -o $@
 
@@ -760,70 +774,70 @@ $(I386_BUILD)/mouse.o: $(ROOT)/drivers/input/mouse.c \
 
 $(I386_BUILD)/usb_%.o: $(ROOT)/drivers/usb/usb_%.c | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/ehci%.o: $(ROOT)/drivers/usb/ehci%.c \
 		$(ROOT)/drivers/usb/ehci_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/ehci.o: $(ROOT)/drivers/usb/ehci.c \
 		$(ROOT)/drivers/usb/ehci_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/xhci%.o: $(ROOT)/drivers/usb/xhci%.c \
 		$(ROOT)/drivers/usb/xhci_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/xhci.o: $(ROOT)/drivers/usb/xhci.c \
 		$(ROOT)/drivers/usb/xhci_internal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/pci.o: $(ROOT)/drivers/bus/pci.c $(ROOT)/drivers/bus/pci.h \
 		$(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/acpi.o: $(ROOT)/drivers/bus/acpi.c $(ROOT)/drivers/bus/acpi.h \
 		$(ROOT)/hal/hal.h $(ROOT)/kernel/public/core/kprint.h \
 		$(ROOT)/lib/string.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/lapic.o: $(ROOT)/drivers/bus/lapic.c $(ROOT)/drivers/bus/lapic.h \
 		$(ROOT)/drivers/bus/acpi.h $(ROOT)/hal/hal.h \
 		$(ROOT)/kernel/public/core/kprint.h $(ROOT)/lib/string.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/ioapic.o: $(ROOT)/drivers/bus/ioapic.c $(ROOT)/drivers/bus/ioapic.h \
 		$(ROOT)/drivers/bus/acpi.h $(ROOT)/hal/hal.h \
 		$(ROOT)/kernel/public/core/kprint.h $(ROOT)/lib/string.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/cmos.o: $(ROOT)/drivers/rtc/cmos.c $(ROOT)/drivers/rtc/cmos.h \
 		$(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/ramdisk.o: $(ROOT)/drivers/storage/ramdisk.c \
 		$(ROOT)/drivers/storage/ramdisk.h $(ROOT)/block/blockdev.h \
-		$(BOOTX_DIR)/include/bootx.h | $(I386_BUILD)
+		$(JANUS_DIR)/include/janus.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/block_event.o: $(ROOT)/block/block_event.c $(ROOT)/block/block_event.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/blockdev.o: $(ROOT)/block/blockdev.c $(ROOT)/block/blockdev.h \
 		$(ROOT)/block/block_event.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/net_event.o: $(ROOT)/drivers/net/net_event.c \
 		$(ROOT)/drivers/net/net_event.h \
@@ -836,54 +850,54 @@ $(I386_BUILD)/rtl8139.o: $(ROOT)/drivers/net/rtl8139.c \
 		$(ROOT)/drivers/bus/pci.h $(ROOT)/hal/hal.h \
 		$(ROOT)/kernel/public/mem/pmm.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/uart.o: $(ROOT)/drivers/serial/uart.c $(ROOT)/drivers/serial/uart.h \
 		$(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/ata.o: $(ROOT)/drivers/storage/ata.c $(ROOT)/drivers/storage/ata.h \
 		$(ROOT)/drivers/bus/pci.h $(ROOT)/block/blockdev.h $(ROOT)/hal/hal.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/ahci.o: $(ROOT)/drivers/storage/ahci.c $(ROOT)/drivers/storage/ahci.h \
 		$(ROOT)/drivers/bus/pci.h $(ROOT)/block/blockdev.h $(ROOT)/hal/hal.h \
 		$(ROOT)/kernel/public/mem/pmm.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/device_backend_stubs.o: $(ROOT)/drivers/i386/device_backend_stubs.c \
 		$(ROOT)/drivers/audio/ac97.h $(ROOT)/drivers/audio/hda.h \
 		$(ROOT)/drivers/net/rtl8139.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/fat32_%.o: $(ROOT)/fs/fat32_%.c $(ROOT)/fs/fat32_internal.h \
 		$(ROOT)/fs/fat32.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/fat32.o: $(ROOT)/fs/fat32.c $(ROOT)/fs/fat32_internal.h \
 		$(ROOT)/fs/fat32.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/nxfs.o: $(ROOT)/fs/nxfs.c $(ROOT)/fs/nxfs_internal.h \
 		$(ROOT)/fs/nxfs.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/nxfs_io.o: $(ROOT)/fs/nxfs_io.c $(ROOT)/fs/nxfs_internal.h \
 		$(ROOT)/fs/nxfs.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/early_vfs.o: $(ROOT)/fs/early_vfs.c $(ROOT)/fs/early_vfs.h \
 		$(ROOT)/fs/fat32.h $(ROOT)/block/blockdev.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/vfs.o: $(ROOT)/fs/vfs.c $(ROOT)/fs/vfs_internal.h \
 		$(ROOT)/fs/vfs.h | $(I386_BUILD)
@@ -943,15 +957,15 @@ $(I386_BUILD)/hal_i386.o: $(ROOT)/hal/i386/platform.c $(ROOT)/hal/hal.h \
 
 $(I386_BUILD)/io.o: $(ROOT)/arch/x86/common/io.c $(ROOT)/arch/x86/common/io.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/parse.o: $(ROOT)/lib/parse.c $(ROOT)/lib/parse.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_BUILD)/string.o: $(ROOT)/lib/string.c $(ROOT)/lib/string.h | $(I386_BUILD)
 	$(call log_cmd,CC32,$@)
-	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -c $< -o $@
+	$(Q)$(I386_CC) $(I386_CFLAGS) -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -c $< -o $@
 
 $(I386_KERNEL): $(I386_OBJS) $(ROOT)/arch/x86/i386/linker.ld
 	$(call log_cmd,LD32,$@)
@@ -1149,6 +1163,42 @@ $(I386_APP_USER): $(I386_CRT0) $(I386_BUILD)/user_app32.o \
 	$(call log_cmd,LD32,$@)
 	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
 		-o $@ $(I386_CRT0) $(I386_BUILD)/user_app32.o $(I386_NLIBC)
+
+$(I386_BUILD)/prism32.o: $(ROOT)/user/apps/elf/prism.c \
+		$(ROOT)/user/libc32/include/nlibc.h \
+		$(ROOT)/user/libc32/include/nexos/prism.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_PRISM_USER): $(I386_CRT0) $(I386_BUILD)/prism32.o \
+		$(I386_NLIBC) $(ROOT)/user/i386/test32.ld
+	$(call log_cmd,LD32,$@)
+	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
+		-o $@ $(I386_CRT0) $(I386_BUILD)/prism32.o $(I386_NLIBC)
+
+$(I386_BUILD)/desktop32.o: $(ROOT)/user/apps/elf/desktop.c \
+		$(ROOT)/user/libc32/include/nlibc.h \
+		$(ROOT)/user/libc32/include/nexos/prism.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_DESKTOP_USER): $(I386_CRT0) $(I386_BUILD)/desktop32.o \
+		$(I386_NLIBC) $(ROOT)/user/i386/test32.ld
+	$(call log_cmd,LD32,$@)
+	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
+		-o $@ $(I386_CRT0) $(I386_BUILD)/desktop32.o $(I386_NLIBC)
+
+$(I386_BUILD)/prismsmoke32.o: $(ROOT)/user/apps/elf/prismsmoke.c \
+		$(ROOT)/user/libc32/include/nlibc.h \
+		$(ROOT)/user/libc32/include/nexos/prism.h | $(I386_BUILD)
+	$(call log_cmd,CC32,$@)
+	$(Q)$(I386_CC) $(I386_USER_CFLAGS) -c $< -o $@
+
+$(I386_PRISM_SMOKE_USER): $(I386_CRT0) $(I386_BUILD)/prismsmoke32.o \
+		$(I386_NLIBC) $(ROOT)/user/i386/test32.ld
+	$(call log_cmd,LD32,$@)
+	$(Q)$(I386_LD) $(I386_LDFLAGS) -T $(ROOT)/user/i386/test32.ld \
+		-o $@ $(I386_CRT0) $(I386_BUILD)/prismsmoke32.o $(I386_NLIBC)
 
 $(I386_BUILD)/user_nexbox_lite.o: $(ROOT)/user/i386/nexbox_lite.c \
 		$(ROOT)/user/libc32/include/nlibc.h | $(I386_BUILD)
@@ -1442,7 +1492,7 @@ app32: $(I386_CRT0) $(I386_NLIBC) | $(I386_BUILD)
 		-o $(I386_BUILD)/$(OUT) $(I386_CRT0) \
 		$(I386_BUILD)/app32_oneoff.o $(I386_NLIBC)
 
-check-i386-elf: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER) $(I386_APP_USER) $(I386_NEXBOX_USER) $(I386_NEXBOX_SUBSET_USER) $(I386_USH_USER)
+check-i386-elf: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER) $(I386_APP_USER) $(I386_NEXBOX_USER) $(I386_NEXBOX_SUBSET_USER) $(I386_USH_USER) $(I386_PRISM_USER) $(I386_DESKTOP_USER) $(I386_PRISM_SMOKE_USER)
 	$(call log_cmd,CHECK,$<)
 	$(Q)readelf -h $< | grep -q 'Class:.*ELF32'
 	$(Q)readelf -h $< | grep -q 'Machine:.*Intel 80386'
@@ -1461,20 +1511,28 @@ check-i386-elf: $(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER)
 	$(Q)readelf -h $(I386_NEXBOX_USER) | grep -q 'Class:.*ELF32'
 	$(Q)readelf -h $(I386_NEXBOX_USER) | grep -q 'Machine:.*Intel 80386'
 	$(Q)readelf -h $(I386_USH_USER) | grep -q 'Machine:.*Intel 80386'
+	$(Q)readelf -h $(I386_PRISM_USER) | grep -q 'Class:.*ELF32'
+	$(Q)readelf -h $(I386_PRISM_USER) | grep -q 'Machine:.*Intel 80386'
+	$(Q)readelf -h $(I386_DESKTOP_USER) | grep -q 'Class:.*ELF32'
+	$(Q)readelf -h $(I386_DESKTOP_USER) | grep -q 'Machine:.*Intel 80386'
+	$(Q)readelf -h $(I386_PRISM_SMOKE_USER) | grep -q 'Class:.*ELF32'
+	$(Q)readelf -h $(I386_PRISM_SMOKE_USER) | grep -q 'Machine:.*Intel 80386'
 	$(Q)echo "i386 boot/x ELF32 kernel checks passed"
 
-check-i386-boot: check-host-tools-image check-host-tools-qemu-i386 check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-boot: check-host-tools-image check-host-tools-qemu-i386 check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32,$(I386_IMAGE))
-	$(Q)rm -f $(I386_BOOT_LOG)
+	$(Q)rm -f $(I386_BOOT_LOG) $(I386_BOOT_SMOKE_IMAGE)
+	$(Q)cp $(I386_IMAGE) $(I386_BOOT_SMOKE_IMAGE)
+	$(Q)mcopy -o -i $(I386_BOOT_SMOKE_IMAGE)@@1048576 \
+		$(I386_JANUS_SMOKE_CONFIG) ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
-			timeout $(I386_BOOT_TIMEOUT)s $(I386_QEMU) -m 128M \
-				-display none -no-reboot -no-shutdown \
+			timeout $(I386_BOOT_TIMEOUT)s $(I386_QEMU) -enable-kvm -m 256M \
+				-display vnc=127.0.0.1:77 -no-reboot -no-shutdown \
 				-debugcon file:$(I386_BOOT_LOG) \
 				-global isa-debugcon.iobase=0xe9 \
-				-serial null \
+				-serial none \
 				$(QEMU_NET) \
-				-drive if=ide,index=0,media=disk,format=raw,file=$(I386_IMAGE) \
-				-drive if=ide,index=1,media=disk,format=raw,file=$(NXFS_IMAGE); \
+				-drive if=ide,index=0,media=disk,format=raw,file=$(I386_BOOT_SMOKE_IMAGE); \
 		status=$$?; \
 		if [ $$status -ne 0 ] && [ $$status -ne 124 ]; then \
 			echo "i386 QEMU boot failed with status $$status"; \
@@ -1485,8 +1543,8 @@ check-i386-boot: check-host-tools-image check-host-tools-qemu-i386 check-i386-el
 	$(Q)grep -q 'kernel: services online' $(I386_BOOT_LOG)
 	$(Q)grep -q 'rtl8139: controller' $(I386_BOOT_LOG)
 	$(Q)grep -q 'block.*RAMDISK IMG' $(I386_BOOT_LOG)
-	$(Q)grep -q 'ramdisk: FAT32 /ram mounted' $(I386_BOOT_LOG)
-	$(Q)grep -q 'kernel: init starting /system/init' $(I386_BOOT_LOG)
+	$(Q)grep -q 'mount: target=/ram fs=FAT32' $(I386_BOOT_LOG)
+	$(Q)grep -q 'kernel: init starting path=/system/init' $(I386_BOOT_LOG)
 	$(Q)echo "i386 QEMU boot smoke passed ($(I386_BOOT_LOG))"
 
 check-i386: check-host-tools-i386 check-i386-elf

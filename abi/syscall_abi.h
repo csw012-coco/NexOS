@@ -368,7 +368,8 @@ enum syscall_query_kind {
     SYS_QUERY_PROFILE = 20,
     SYS_QUERY_FD = 21,
     SYS_QUERY_FB = 22,
-    SYS_QUERY_VM = 23
+    SYS_QUERY_VM = 23,
+    SYS_QUERY_STABILITY = 24
 };
 
 enum syscall_query_flags {
@@ -596,9 +597,11 @@ enum syscall_gui_keycode {
     SYS_KEY_SLASH,
     SYS_KEY_LEFT_ALT,
     SYS_KEY_RIGHT_ALT,
+    SYS_KEY_HANGUL,
     SYS_KEY_F1,
     SYS_KEY_F2,
-    SYS_KEY_F3
+    SYS_KEY_F3,
+    SYS_KEY_F4
 };
 
 enum syscall_gui_mouse_buttons {
@@ -626,6 +629,10 @@ struct syscall_gui_event {
     uint8_t shift;
     uint8_t ctrl;
     uint8_t alt;
+    uint8_t extended;
+    uint8_t caps_lock;
+    uint8_t num_lock;
+    uint8_t scroll_lock;
 };
 
 struct syscall_gui_event_poll {
@@ -666,6 +673,32 @@ struct syscall_block_info {
     uint32_t writable;
     uint64_t block_count;
     char name[16];
+};
+
+struct syscall_stability_info {
+    uint32_t current_pid;
+    uint32_t current_uid;
+    uint32_t current_gid;
+    uint32_t current_caps;
+    uint32_t last_syscall_valid;
+    uint32_t last_syscall_returned;
+    uint32_t last_syscall_pid;
+    uint32_t last_syscall_number;
+    uint64_t last_syscall_arg0;
+    uint64_t last_syscall_arg1;
+    uint64_t last_syscall_arg2;
+    uint64_t last_syscall_arg3;
+    uint64_t last_syscall_ip;
+    uint64_t last_syscall_sp;
+    uint64_t last_syscall_result;
+    uint32_t block_count;
+    uint32_t block_failure_count;
+    uint32_t block_consecutive_failures;
+    int32_t block_last_error;
+    uint32_t block_state;
+    uint32_t block_index;
+    char block_name[32];
+    char block_last_error_reason[32];
 };
 
 struct syscall_partition_info {
@@ -802,6 +835,12 @@ struct syscall_ac97_info {
     uint32_t codec_id;
     uint32_t global_status;
     uint32_t global_control;
+    uint32_t state;
+    uint32_t reset_count;
+    uint32_t play_count;
+    uint32_t error_count;
+    uint32_t last_error;
+    uint32_t last_stream_status;
 };
 
 struct syscall_hda_info {
@@ -829,6 +868,11 @@ struct syscall_hda_info {
     uint32_t corb_size;
     uint32_t rirb_size;
     uint32_t codec_mask;
+    uint32_t state;
+    uint32_t reset_attempts;
+    uint32_t codec_detect_attempts;
+    uint32_t error_count;
+    uint32_t last_error;
 };
 
 struct syscall_rtl8139_info {
@@ -857,6 +901,14 @@ struct syscall_rtl8139_info {
     uint32_t capr;
     uint32_t cbr;
     uint32_t rx_read_offset;
+    uint32_t state;
+    uint32_t reset_count;
+    uint32_t tx_count;
+    uint32_t rx_count;
+    uint32_t irq_count;
+    uint32_t error_count;
+    uint32_t last_error;
+    uint32_t last_isr;
 };
 
 struct syscall_rtl8139_rx_info {
@@ -937,6 +989,13 @@ struct syscall_rtc_info {
     uint32_t month;
     uint32_t year;
     uint32_t unix_time;
+    uint32_t query_count;
+    uint32_t stable_read_count;
+    uint32_t retry_count;
+    uint32_t update_timeout_count;
+    uint32_t unstable_count;
+    uint32_t invalid_count;
+    uint32_t last_error;
 };
 
 struct syscall_machine_info {

@@ -5,6 +5,14 @@ void kernel_runtime_display_service_pending(void) {
     hal_display_service_pending();
 }
 
+void kernel_runtime_display_present(void) {
+    hal_display_present();
+}
+
+uint32_t kernel_runtime_timer_hz(void) {
+    return hal_timer_hz();
+}
+
 void kernel_runtime_wait_for_interrupt(void) {
     hal_cpu_wait_for_interrupt();
 }

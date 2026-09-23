@@ -2,6 +2,9 @@
 #include "hal/hal.h"
 #include "lib/string.h"
 
+#define VMM_USER_MIN 0x1000ull
+#define VMM_USER_MAX 0x0000800000000000ull
+
 enum {
     VMM_PAGE_SIZE = 4096u,
     VMM_USER_STRING_MAX = 255u,
@@ -11,6 +14,12 @@ enum {
     VMM_FLAG_USER = 0x4u
 };
 
+static int vmm_is_canonical(uint64_t addr) {
+    uint64_t upper = addr >> 48;
+
+    return upper == 0u || upper == 0xffffu;
+}
+
 static uint64_t vmm_align_down(uint64_t value, uint64_t align) {
     return value & ~(align - 1u);
 }
@@ -19,31 +28,49 @@ static uint64_t vmm_align_up(uint64_t value, uint64_t align) {
     return (value + align - 1u) & ~(align - 1u);
 }
 
-static int vmm_user_range_valid(uint64_t user_addr, uint32_t size, uint64_t *start_out, uint64_t *end_out) {
+static int vmm_user_range_valid(uint64_t user_addr,
+                                uint32_t size,
+                                uint64_t *start_out,
+                                uint64_t *end_out) {
     uint64_t end;
 
-    if (user_addr == 0) {
+    if (user_addr < VMM_USER_MIN ||
+        user_addr >= VMM_USER_MAX ||
+        !vmm_is_canonical(user_addr)) {
         return 0;
     }
-    if (size == 0) {
+
+    if (size == 0u) {
         if (start_out != 0) {
             *start_out = user_addr;
         }
+
         if (end_out != 0) {
             *end_out = user_addr;
         }
+
         return 1;
     }
-    end = user_addr + (uint64_t)size;
-    if (end < user_addr) {
+
+    if ((uint64_t)size > UINT64_MAX - user_addr) {
         return 0;
     }
+
+    end = user_addr + (uint64_t)size;
+
+    if (end > VMM_USER_MAX) {
+        return 0;
+    }
+
     if (start_out != 0) {
         *start_out = vmm_align_down(user_addr, VMM_PAGE_SIZE);
     }
+
     if (end_out != 0) {
-        *end_out = vmm_align_down(end - 1u, VMM_PAGE_SIZE) + VMM_PAGE_SIZE;
+        *end_out = vmm_align_down(end - 1u, VMM_PAGE_SIZE)
+                 + VMM_PAGE_SIZE;
     }
+
     return 1;
 }
 
@@ -168,11 +195,25 @@ void vmm_set_supervisor_range(uint64_t start, uint64_t end) {
 }
 
 int vmm_map(uint64_t virt_addr, uint64_t phys_addr, uint32_t perms) {
-    int user_accessible = (perms & VMM_PERM_USER) != 0;
-    int writable = (perms & VMM_PERM_WRITE) != 0;
-    int executable = (perms & VMM_PERM_EXEC) != 0;
+    int user_accessible;
+    int writable;
+    int executable;
 
-    return hal_paging_map_page_with_exec(virt_addr, phys_addr, user_accessible, writable, executable);
+    if ((virt_addr & (VMM_PAGE_SIZE - 1u)) != 0u ||
+        (phys_addr & (VMM_PAGE_SIZE - 1u)) != 0u) {
+        return 0;
+    }
+
+    user_accessible = (perms & VMM_PERM_USER) != 0;
+    writable = (perms & VMM_PERM_WRITE) != 0;
+    executable = (perms & VMM_PERM_EXEC) != 0;
+
+    return hal_paging_map_page_with_exec(
+        virt_addr,
+        phys_addr,
+        user_accessible,
+        writable,
+        executable);
 }
 
 int vmm_unmap(uint64_t virt_addr, uint64_t *phys_addr) {

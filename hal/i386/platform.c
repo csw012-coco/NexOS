@@ -5,6 +5,7 @@
 #include "arch/x86/i386/mm/pmm.h"
 #include "arch/x86/common/pic.h"
 #include "arch/x86/common/io.h"
+#include "block/blockdev.h"
 #include "drivers/bus/acpi.h"
 #include "drivers/bus/ioapic.h"
 #include "drivers/bus/lapic.h"
@@ -13,7 +14,6 @@
 #include "kernel/internal/core/kernel_panic_internal.h"
 #include "kernel/internal/mem/vmm_diag.h"
 #include "kernel/public/sys/syscall.h"
-#include "kernel/public/sys/syscall_request.h"
 
 enum {
     VGA_COLUMNS = 80,
@@ -44,11 +44,11 @@ static uint16_t display_cell_to_vga(uint32_t cell) {
     return (uint16_t)(((uint16_t)color << 8) | ch);
 }
 
-void hal_display_init(const struct bootx_console_info *console) {
+void hal_display_init(const struct janus_console_info *console) {
     framebuffer_display_init(console);
 }
 
-void hal_display_load_font(const struct bootx_boot_info *boot_info) {
+void hal_display_load_font(const struct janus_boot_info *boot_info) {
     framebuffer_display_load_font_from_boot_modules(boot_info);
 }
 
@@ -135,6 +135,15 @@ void hal_display_enable_cursor(uint8_t start, uint8_t end) {
     outb(VGA_CRTC_DATA, (uint8_t)((inb(VGA_CRTC_DATA) & 0xc0u) | start));
     outb(VGA_CRTC_INDEX, 0x0b);
     outb(VGA_CRTC_DATA, (uint8_t)((inb(VGA_CRTC_DATA) & 0xe0u) | end));
+}
+
+void hal_display_disable_cursor(void) {
+    if (framebuffer_display_active()) {
+        framebuffer_display_disable_cursor();
+        return;
+    }
+    outb(VGA_CRTC_INDEX, 0x0a);
+    outb(VGA_CRTC_DATA, (uint8_t)(inb(VGA_CRTC_DATA) | 0x20u));
 }
 
 void hal_display_set_cursor(uint16_t row, uint16_t col) {
@@ -327,9 +336,9 @@ void hal_timer_init(uint32_t pit_hz) {
 
 void hal_timer_notify_tick(void) {
     timer_ticks++;
+
     if (framebuffer_display_active()) {
         framebuffer_display_tick(timer_ticks);
-        framebuffer_display_service_pending();
     }
 }
 
@@ -390,7 +399,7 @@ int hal_paging_enabled(void) {
     return i386_paging_enabled();
 }
 
-int hal_pmm_init_from_boot(const struct bootx_boot_info *boot_info,
+int hal_pmm_init_from_boot(const struct janus_boot_info *boot_info,
                            uint64_t kernel_phys_addr) {
     (void)kernel_phys_addr;
     return i386_pmm_init(boot_info);
@@ -735,21 +744,4 @@ uint64_t hal_syscall_frame_ip(const struct syscall_frame *frame) {
 
 uint64_t hal_syscall_frame_sp(const struct syscall_frame *frame) {
     return frame != 0 ? frame->stack_pointer : 0u;
-}
-
-void hal_syscall_decode_request(const struct syscall_frame *frame,
-                                struct kernel_syscall_request *request) {
-    if (frame == 0 || request == 0) {
-        return;
-    }
-    request->number = (uint32_t)frame->rax;
-    request->user_bits = 32u;
-    request->args[0] = frame->rbx;
-    request->args[1] = frame->rcx;
-    request->args[2] = frame->rdx;
-    request->args[3] = frame->rsi;
-    request->args[4] = frame->rdi;
-    request->args[5] = frame->rbp;
-    request->instruction_pointer = frame->instruction_pointer;
-    request->stack_pointer = frame->stack_pointer;
 }

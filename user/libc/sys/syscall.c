@@ -74,8 +74,8 @@ int mq_send(mqd_t queue, const void *data, size_t size, int flags) {
     struct syscall_mq_buffer buffer;
     int64_t result;
 
-    if (data == 0 || size == 0 || size > SYS_MQ_MESSAGE_MAX) {
-        return -1;
+    if (queue <= 0 || data == 0 || size == 0 || size > SYS_MQ_MESSAGE_MAX) {
+        return -NEX_ERR_INVAL;
     }
     buffer.data_addr = (uint64_t)(uintptr_t)data;
     buffer.size = (uint32_t)size;
@@ -86,8 +86,14 @@ int mq_send(mqd_t queue, const void *data, size_t size, int flags) {
                                    (uint64_t)(uintptr_t)&buffer,
                                    0,
                                    0);
-        if (result != 0 || (flags & IPC_NONBLOCK)) {
-            return result > 0 ? 0 : -1;
+        if (result > 0) {
+            return 0;
+        }
+        if (result < 0) {
+            return (int)result;
+        }
+        if ((flags & IPC_NONBLOCK) != 0) {
+            return -NEX_ERR_AGAIN;
         }
         yield();
     }
@@ -97,8 +103,8 @@ int mq_receive(mqd_t queue, void *data, size_t capacity, int flags) {
     struct syscall_mq_buffer buffer;
     int64_t result;
 
-    if (data == 0 || capacity == 0) {
-        return -1;
+    if (queue <= 0 || data == 0 || capacity == 0) {
+        return -NEX_ERR_INVAL;
     }
     buffer.data_addr = (uint64_t)(uintptr_t)data;
     buffer.size = (uint32_t)capacity;
@@ -109,8 +115,14 @@ int mq_receive(mqd_t queue, void *data, size_t capacity, int flags) {
                                    (uint64_t)(uintptr_t)&buffer,
                                    0,
                                    0);
-        if (result != 0 || (flags & IPC_NONBLOCK)) {
-            return result > 0 ? (int)buffer.size : -1;
+        if (result > 0) {
+            return (int)buffer.size;
+        }
+        if (result < 0) {
+            return (int)result;
+        }
+        if ((flags & IPC_NONBLOCK) != 0) {
+            return -NEX_ERR_AGAIN;
         }
         yield();
     }
@@ -487,6 +499,10 @@ int profile_query(uint32_t index, uint32_t flags, struct syscall_profile_info *i
     return sys_query(SYS_QUERY_PROFILE, index, flags, info);
 }
 
+int stability_query(struct syscall_stability_info *info) {
+    return sys_query(SYS_QUERY_STABILITY, 0, 0, info);
+}
+
 int exec(const char *name) {
     int rc = (int)syscall4(SYS_EXEC,
                            (uint64_t)(uintptr_t)name,
@@ -565,8 +581,8 @@ void yield(void) {
     (void)syscall4(SYS_YIELD, 0, 0, 0, 0);
 }
 
-void sleep(uint32_t tick_count) {
-    (void)syscall4(SYS_SLEEP, tick_count, 0, 0, 0);
+void sleep(uint32_t ms) {
+    (void)syscall4(SYS_SLEEP, ms, 0, 0, 0);
 }
 
 int reboot(void) {

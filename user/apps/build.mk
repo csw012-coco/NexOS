@@ -8,6 +8,7 @@ USER_ELF_C_SRCS := \
 	user/apps/elf/keydemo.c \
 	user/apps/elf/yielddemo.c \
 	user/apps/elf/badptr.c \
+	user/apps/elf/mmstress.c \
 	user/apps/elf/pfdemo.c \
 	user/apps/elf/gpfdemo.c \
 	user/apps/elf/uddemo.c \
@@ -18,6 +19,9 @@ USER_ELF_C_SRCS := \
 	user/apps/elf/nexbox/applets/fs/cmd_ls_shared.c \
 	user/apps/elf/wdemo.c \
 	user/apps/elf/guidemo.c \
+	user/apps/elf/prism.c \
+	user/apps/elf/desktop.c \
+	user/apps/elf/prismsmoke.c \
 	user/apps/elf/forth.c \
 	user/apps/elf/ush/ush.c \
 	user/apps/elf/ush/ush_editor.c \
@@ -79,13 +83,14 @@ USER_ELF_C_SRCS := \
 
 USER_ELF_C_OBJS := $(addprefix $(BUILD)/,$(USER_ELF_C_SRCS:.c=.o))
 
-USER_ELF_BINS := $(BUILD)/DOOM.ELF $(BUILD)/IPCDEMO.ELF $(BUILD)/IMGVIEW.ELF $(BUILD)/NCC.ELF $(BUILD)/HELLO.ELF $(BUILD)/SECTEST.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/GUIDEMO.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
+USER_ELF_BINS := $(BUILD)/DOOM.ELF $(BUILD)/IPCDEMO.ELF $(BUILD)/IMGVIEW.ELF $(BUILD)/NCC.ELF $(BUILD)/HELLO.ELF $(BUILD)/SECTEST.ELF $(BUILD)/KEYDEMO.ELF $(BUILD)/YIELDDEMO.ELF $(BUILD)/BADPTR.ELF $(BUILD)/MMSTRESS.ELF $(BUILD)/PFDEMO.ELF $(BUILD)/GPFDEMO.ELF $(BUILD)/UDDEMO.ELF $(BUILD)/DEDEMO.ELF $(BUILD)/SLEEPDEMO.ELF $(BUILD)/CATDEMO.ELF $(BUILD)/LSDEMO.ELF $(BUILD)/WDEMO.ELF $(BUILD)/GUIDEMO.ELF $(BUILD)/PRISM.ELF $(BUILD)/DESKTOP.ELF $(BUILD)/PRISMSMOKE.ELF $(BUILD)/FORTH.ELF $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF
 
 HELLO_ELF_OBJS := $(BUILD)/user/apps/elf/hello.o
 SECTEST_ELF_OBJS := $(BUILD)/user/apps/elf/sectest.o
 KEYDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/keydemo.o
 YIELDDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/yielddemo.o
 BADPTR_ELF_OBJS := $(BUILD)/user/apps/elf/badptr.o
+MMSTRESS_ELF_OBJS := $(BUILD)/user/apps/elf/mmstress.o
 PFDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/pfdemo.o
 GPFDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/gpfdemo.o
 UDDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/uddemo.o
@@ -95,6 +100,9 @@ CATDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/cat.o
 LSDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/ls.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
 WDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/wdemo.o
 GUIDEMO_ELF_OBJS := $(BUILD)/user/apps/elf/guidemo.o
+PRISM_ELF_OBJS := $(BUILD)/user/apps/elf/prism.o
+DESKTOP_ELF_OBJS := $(BUILD)/user/apps/elf/desktop.o
+PRISMSMOKE_ELF_OBJS := $(BUILD)/user/apps/elf/prismsmoke.o
 FORTH_ELF_OBJS := $(BUILD)/user/apps/elf/forth.o
 USH_ELF_OBJS := $(BUILD)/user/apps/elf/ush/ush.o $(BUILD)/user/apps/elf/ush/ush_editor.o $(BUILD)/user/apps/elf/ush/ush_script_runner.o $(BUILD)/user/apps/elf/ush/ush_startup.o $(BUILD)/user/apps/elf/ush/ush_vars.o $(BUILD)/user/apps/elf/ush/ush_vars_alias.o $(BUILD)/user/apps/elf/ush/ush_vars_expand.o $(BUILD)/user/apps/elf/ush/ush_vars_function.o $(BUILD)/user/apps/elf/ush/ush_vars_script.o $(BUILD)/user/apps/elf/ush/ush_vars_store.o $(BUILD)/user/apps/elf/ush/ush_vars_util.o $(BUILD)/user/apps/elf/ush/ush_exec.o $(BUILD)/user/apps/elf/ush/ush_exec_applets.o $(BUILD)/user/apps/elf/ush/ush_exec_builtin.o $(BUILD)/user/apps/elf/ush/ush_exec_dispatch.o $(BUILD)/user/apps/elf/ush/ush_exec_external.o $(BUILD)/user/apps/elf/ush/ush_exec_fs.o $(BUILD)/user/apps/elf/ush/ush_exec_media.o $(BUILD)/user/apps/elf/ush/ush_exec_parse.o $(BUILD)/user/apps/elf/ush/ush_exec_pipeline.o $(BUILD)/user/apps/elf/ush/ush_exec_redir.o $(BUILD)/user/apps/elf/ush/ush_exec_resolve.o $(BUILD)/user/apps/elf/ush/ush_exec_script.o $(BUILD)/user/apps/elf/ush/ush_exec_spawn.o $(BUILD)/user/apps/elf/ush/ush_exec_stdio.o $(BUILD)/user/apps/elf/ush/ush_exec_util.o $(BUILD)/user/apps/elf/ush/ush_parse.o
 NEXBOX_ELF_OBJS := $(BUILD)/user/apps/elf/nexbox/core/cmdsuite.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_dispatch.o $(BUILD)/user/apps/elf/nexbox/core/cmdsuite_action.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_basic.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text_events.o $(BUILD)/user/apps/elf/nexbox/applets/text/cmdsuite_text_table.o $(BUILD)/user/apps/elf/nexbox/applets/audio/cmdsuite_audio.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_arp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_dns.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_dhcp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_tcp.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_http.o $(BUILD)/user/apps/elf/nexbox/applets/net/cmdsuite_net_rtl8139.o $(BUILD)/user/apps/elf/nexbox/applets/editor/cmdsuite_editor.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_fdisk.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_tools.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_block.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage_cpio.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmdsuite_storage.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_session.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_service.o $(BUILD)/user/apps/elf/nexbox/applets/system/service_policy.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_nexctl.o $(BUILD)/user/apps/elf/nexbox/applets/system/cmdsuite_sysinfo.o $(BUILD)/user/apps/elf/nexbox/applets/proc/cmdsuite_proc.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug.o $(BUILD)/user/apps/elf/nexbox/applets/debug/cmdsuite_debug_doctor.o $(BUILD)/user/apps/elf/nexbox/applets/asm/cmdsuite_asm.o $(BUILD)/user/apps/elf/nexbox/applets/fs/cmd_ls_shared.o
@@ -111,6 +119,7 @@ $(eval $(call define_user_elf,SECTEST.ELF,$(SECTEST_ELF_OBJS)))
 $(eval $(call define_user_elf,KEYDEMO.ELF,$(KEYDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,YIELDDEMO.ELF,$(YIELDDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,BADPTR.ELF,$(BADPTR_ELF_OBJS)))
+$(eval $(call define_user_elf,MMSTRESS.ELF,$(MMSTRESS_ELF_OBJS)))
 $(eval $(call define_user_elf,PFDEMO.ELF,$(PFDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,GPFDEMO.ELF,$(GPFDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,UDDEMO.ELF,$(UDDEMO_ELF_OBJS)))
@@ -120,6 +129,9 @@ $(eval $(call define_user_elf,CATDEMO.ELF,$(CATDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,LSDEMO.ELF,$(LSDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,WDEMO.ELF,$(WDEMO_ELF_OBJS)))
 $(eval $(call define_user_elf,GUIDEMO.ELF,$(GUIDEMO_ELF_OBJS)))
+$(eval $(call define_user_elf,PRISM.ELF,$(PRISM_ELF_OBJS)))
+$(eval $(call define_user_elf,DESKTOP.ELF,$(DESKTOP_ELF_OBJS)))
+$(eval $(call define_user_elf,PRISMSMOKE.ELF,$(PRISMSMOKE_ELF_OBJS)))
 $(eval $(call define_user_elf,FORTH.ELF,$(FORTH_ELF_OBJS)))
 $(eval $(call define_user_elf,USH.ELF,$(USH_ELF_OBJS)))
 $(eval $(call define_user_elf,NEXBOX.ELF,$(NEXBOX_ELF_OBJS)))

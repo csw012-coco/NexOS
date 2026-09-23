@@ -100,7 +100,7 @@ int bg(uint32_t pid);
 int reboot(void);
 uint32_t ticks(void);
 void yield(void);
-void sleep(uint32_t tick_count);
+void sleep(uint32_t ms);
 uint64_t page_alloc(void);
 int page_free(uint64_t user_page_addr);
 __attribute__((noreturn)) void _exit(int status);

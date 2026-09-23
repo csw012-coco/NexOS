@@ -9,17 +9,17 @@ GNU Unifont
 
 File:
 
-  font.hex
+  font.bdf
 
 Origin:
 
-  GNU Unifont 17.0.04, unifont_all-17.0.04.hex.gz
-  https://unifoundry.com/pub/unifont/unifont-17.0.04/font-builds/unifont_all-17.0.04.hex.gz
+  GNU Unifont 18.0.01 BDF
+  https://unifoundry.com/unifont/
 
 Verification:
 
-  SHA256(font.hex) =
-  5cefdaf25843d13510d50b3b7f787bf5b3ffa4911c33e2d3b7079c13b6c38110
+  SHA256(font.bdf) =
+  8c3c5ce5fb524eec5bacbc91b5ddfde81641e2cfc015521e95107b77570368e3
 
 License:
 
@@ -27,7 +27,7 @@ License:
   License version 1.1 and under GPL version 2 or later with the GNU font
   embedding exception.
 
-  The full license text from the GNU Unifont 17.0.04 distribution is
+  The full license text from the GNU Unifont distribution is
   included in LICENSES/LICENSE.GNU-Unifont.
 
 Doomgeneric / Doom Userland Port

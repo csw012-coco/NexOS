@@ -9,7 +9,7 @@ enum {
     WM_GFX_BATCH_CAPACITY = SYS_GFX_BATCH_MAX_COMMANDS
 };
 
-static struct syscall_gfx_batch_entry g_wm_gfx_batch[WM_GFX_BATCH_CAPACITY];
+static prism_kernel_gfx_batch_entry g_wm_gfx_batch[WM_GFX_BATCH_CAPACITY];
 static uint32_t g_wm_blit_badge[WM_BLIT_BADGE_WIDTH * WM_BLIT_BADGE_HEIGHT];
 
 struct wm_window {
@@ -181,7 +181,7 @@ static void wm_close_window(struct wm_state *wm, int id) {
 }
 
 static void wm_handle_mouse(struct wm_state *wm,
-                            const struct syscall_gui_event *event,
+                            const prism_kernel_input_event *event,
                             uint32_t screen_w,
                             uint32_t screen_h) {
     uint32_t old_buttons = wm->last_buttons;
@@ -226,17 +226,17 @@ static void wm_handle_mouse(struct wm_state *wm,
 }
 
 static void draw_desktop(uint32_t width, uint32_t height) {
-    gfx_clear(0x0b1020u);
+    prism_kernel_display_clear(0x0b1020u);
     for (uint32_t x = 0; x < width; x += 40u) {
-        gfx_draw_line((int32_t)x, 30, (int32_t)x, (int32_t)height - 39, 0x17213au);
+        prism_kernel_display_draw_line((int32_t)x, 30, (int32_t)x, (int32_t)height - 39, 0x17213au);
     }
     for (uint32_t y = 30; y < height - 38u; y += 40u) {
-        gfx_draw_line(0, (int32_t)y, (int32_t)width - 1, (int32_t)y, 0x17213au);
+        prism_kernel_display_draw_line(0, (int32_t)y, (int32_t)width - 1, (int32_t)y, 0x17213au);
     }
-    gfx_fill_rect(0, 0, width, 30u, 0x111827u);
-    gfx_fill_rect(0, (int32_t)height - 38, width, 38u, 0x111827u);
-    gfx_fill_rect(128, 8, 70u, 14u, 0xfbbf24u);
-    gfx_fill_rect(214, 8, 86u, 14u, 0x34d399u);
+    prism_kernel_display_fill_rect(0, 0, width, 30u, 0x111827u);
+    prism_kernel_display_fill_rect(0, (int32_t)height - 38, width, 38u, 0x111827u);
+    prism_kernel_display_fill_rect(128, 8, 70u, 14u, 0xfbbf24u);
+    prism_kernel_display_fill_rect(214, 8, 86u, 14u, 0x34d399u);
 }
 
 static void draw_window(const struct wm_window *win, int focused, uint32_t frame) {
@@ -245,27 +245,27 @@ static void draw_window(const struct wm_window *win, int focused, uint32_t frame
     int32_t x = win->x;
     int32_t y = win->y;
 
-    gfx_fill_rect(x + 7, y + 9, win->width, win->height, shade);
-    gfx_fill_rect(x, y, win->width, win->height, win->body);
-    gfx_fill_rect(x, y, win->width, WM_TITLEBAR_HEIGHT, focused ? win->accent : 0x334155u);
-    gfx_draw_rect(x, y, win->width, win->height, border);
-    gfx_fill_rect(x + 8, y + 6, WM_CLOSE_SIZE, WM_CLOSE_SIZE, 0xef4444u);
-    gfx_draw_line(x + 11, y + 9, x + 17, y + 15, 0xfff1f2u);
-    gfx_draw_line(x + 17, y + 9, x + 11, y + 15, 0xfff1f2u);
-    gfx_fill_rect(x + 30, y + 8, win->width > 118u ? win->width - 94u : 24u, 8u, 0xdbeafeu);
+    prism_kernel_display_fill_rect(x + 7, y + 9, win->width, win->height, shade);
+    prism_kernel_display_fill_rect(x, y, win->width, win->height, win->body);
+    prism_kernel_display_fill_rect(x, y, win->width, WM_TITLEBAR_HEIGHT, focused ? win->accent : 0x334155u);
+    prism_kernel_display_draw_rect(x, y, win->width, win->height, border);
+    prism_kernel_display_fill_rect(x + 8, y + 6, WM_CLOSE_SIZE, WM_CLOSE_SIZE, 0xef4444u);
+    prism_kernel_display_draw_line(x + 11, y + 9, x + 17, y + 15, 0xfff1f2u);
+    prism_kernel_display_draw_line(x + 17, y + 9, x + 11, y + 15, 0xfff1f2u);
+    prism_kernel_display_fill_rect(x + 30, y + 8, win->width > 118u ? win->width - 94u : 24u, 8u, 0xdbeafeu);
 
-    gfx_fill_rect(x + 16, y + 42, win->width - 32u, 16u, 0xcbd5e1u);
-    gfx_fill_rect(x + 16, y + 70, (win->width - 44u) / 2u, 34u, win->content);
-    gfx_fill_rect(x + 30 + (int32_t)((win->width - 44u) / 2u), y + 70, (win->width - 48u) / 2u, 34u, 0xffffffu);
-    gfx_draw_line(x + 18,
-                  y + (int32_t)win->height - 24,
-                  x + (int32_t)win->width - 18,
-                  y + 44 + (int32_t)(frame % 18u),
-                  0x334155u);
-    gfx_fill_circle(x + (int32_t)win->width - 34,
-                    y + (int32_t)win->height - 34,
-                    12u + (frame % 5u),
-                    focused ? 0xf97316u : 0x94a3b8u);
+    prism_kernel_display_fill_rect(x + 16, y + 42, win->width - 32u, 16u, 0xcbd5e1u);
+    prism_kernel_display_fill_rect(x + 16, y + 70, (win->width - 44u) / 2u, 34u, win->content);
+    prism_kernel_display_fill_rect(x + 30 + (int32_t)((win->width - 44u) / 2u), y + 70, (win->width - 48u) / 2u, 34u, 0xffffffu);
+    prism_kernel_display_draw_line(x + 18,
+                                   y + (int32_t)win->height - 24,
+                                   x + (int32_t)win->width - 18,
+                                   y + 44 + (int32_t)(frame % 18u),
+                                   0x334155u);
+    prism_kernel_display_fill_circle(x + (int32_t)win->width - 34,
+                                     y + (int32_t)win->height - 34,
+                                     12u + (frame % 5u),
+                                     focused ? 0xf97316u : 0x94a3b8u);
 }
 
 static void draw_taskbar(const struct wm_state *wm, uint32_t width, uint32_t height) {
@@ -280,8 +280,8 @@ static void draw_taskbar(const struct wm_state *wm, uint32_t width, uint32_t hei
             continue;
         }
         fill = wm->focused == (int)i ? win->accent : 0x334155u;
-        gfx_fill_rect(x, (int32_t)height - 27, 52u, 16u, fill);
-        gfx_draw_rect(x, (int32_t)height - 27, 52u, 16u, 0xe5e7ebu);
+        prism_kernel_display_fill_rect(x, (int32_t)height - 27, 52u, 16u, fill);
+        prism_kernel_display_draw_rect(x, (int32_t)height - 27, 52u, 16u, 0xe5e7ebu);
         x += 62;
     }
 }
@@ -290,10 +290,10 @@ static void draw_pointer(int32_t x, int32_t y, int pressed) {
     uint32_t fill = pressed ? 0xf97316u : 0xe0f2feu;
     uint32_t outline = pressed ? 0xffedd5u : 0x0284c7u;
 
-    gfx_fill_circle(x, y, 6u, fill);
-    gfx_draw_circle(x, y, 9u, outline);
-    gfx_draw_line(x - 14, y, x + 14, y, outline);
-    gfx_draw_line(x, y - 14, x, y + 14, outline);
+    prism_kernel_display_fill_circle(x, y, 6u, fill);
+    prism_kernel_display_draw_circle(x, y, 9u, outline);
+    prism_kernel_display_draw_line(x - 14, y, x + 14, y, outline);
+    prism_kernel_display_draw_line(x, y - 14, x, y + 14, outline);
 }
 
 static void wm_draw(const struct wm_state *wm, uint32_t width, uint32_t height, uint32_t frame) {
@@ -310,8 +310,8 @@ static void wm_draw(const struct wm_state *wm, uint32_t width, uint32_t height, 
 }
 
 int main(int argc, char **argv) {
-    struct syscall_gfx_info info;
-    struct syscall_gui_event event;
+    prism_kernel_display_info info;
+    prism_kernel_input_event event;
     struct wm_state wm;
     uint32_t frame = 0u;
     int running = 1;
@@ -319,11 +319,11 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
 
-    if (gfx_info(&info) != 0 || info.width == 0u || info.height == 0u) {
+    if (prism_kernel_display_info_query(&info) != 0 || info.width == 0u || info.height == 0u) {
         eprintf("guidemo: framebuffer graphics unavailable\n");
         return 1;
     }
-    if (gui_input_grab() != 0) {
+    if (prism_kernel_input_grab() != 0) {
         eprintf("guidemo: could not acquire exclusive input focus\n");
         return 1;
     }
@@ -331,7 +331,7 @@ int main(int argc, char **argv) {
     wm_init(&wm, info.width, info.height);
     printf("guidemo: window manager prototype, drag titlebars, click close, Tab cycles focus, Esc exits\n");
     while (running) {
-        while (gui_poll_event(&event) == SYS_GUI_EVENT_READY) {
+        while (prism_kernel_input_poll(0, &event) == PRISM_KERNEL_EVENT_READY) {
             if (event.type == SYS_GUI_EVENT_MOUSE) {
                 wm_handle_mouse(&wm, &event, info.width, info.height);
             } else if (event.type == SYS_GUI_EVENT_KEY && event.pressed) {
@@ -347,26 +347,26 @@ int main(int argc, char **argv) {
         if (!running) {
             break;
         }
-        if (gfx_batch_begin(g_wm_gfx_batch, WM_GFX_BATCH_CAPACITY) != 0) {
+        if (prism_kernel_gfx_batch_begin(g_wm_gfx_batch, WM_GFX_BATCH_CAPACITY) != 0) {
             eprintf("guidemo: could not begin graphics batch\n");
             break;
         }
         wm_draw(&wm, info.width, info.height, frame);
-        if (gfx_batch_submit(0u) != 0 ||
-            gfx_blit(g_wm_blit_badge,
-                     WM_BLIT_BADGE_WIDTH * sizeof(uint32_t),
-                     16,
-                     8,
-                     WM_BLIT_BADGE_WIDTH,
-                     WM_BLIT_BADGE_HEIGHT) != 0 ||
-            gfx_present() != 0) {
+        if (prism_kernel_gfx_batch_submit(0) != 0 ||
+            prism_kernel_display_blit_xrgb8888(g_wm_blit_badge,
+                                               WM_BLIT_BADGE_WIDTH * sizeof(uint32_t),
+                                               16,
+                                               8,
+                                               WM_BLIT_BADGE_WIDTH,
+                                               WM_BLIT_BADGE_HEIGHT) != 0 ||
+            prism_kernel_display_present() != 0) {
             eprintf("guidemo: rendering failed\n");
             break;
         }
         sleep(2u);
         frame++;
     }
-    (void)gui_input_release();
+    (void)prism_kernel_input_release();
     printf("guidemo done\n");
     return 0;
 }

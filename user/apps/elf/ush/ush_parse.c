@@ -137,7 +137,7 @@ static int parse_token_local(const char *text,
         *quoted_out = quoted;
     }
     *pos_io = pos;
-    return out_len != 0;
+    return out_len != 0 || quoted;
 }
 
 static void ush_command_spec_reset(struct ush_command_spec *spec) {

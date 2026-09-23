@@ -210,6 +210,23 @@ int ioapic_enable_irq(uint8_t irq) {
     return 1;
 }
 
+int ioapic_enable_isa_default_irqs(void) {
+    int enabled = 0;
+
+    enabled += ioapic_enable_irq(0u);
+    enabled += ioapic_enable_irq(1u);
+    return enabled;
+}
+
+int ioapic_enable_all_isa_irqs(void) {
+    int enabled = 0;
+
+    for (uint8_t irq = 0u; irq < 16u; irq++) {
+        enabled += ioapic_enable_irq(irq);
+    }
+    return enabled;
+}
+
 int ioapic_irq_enabled(uint8_t irq) {
     if (irq >= 16u) {
         return 0;
@@ -231,7 +248,18 @@ int ioapic_configure_from_cmdline(const char *cmdline) {
         if (*cmdline == '\0') {
             break;
         }
-        if (ioapic_token_matches_local(cmdline, "ioapic.keyboard=1", 17u) ||
+        if (ioapic_token_matches_local(cmdline, "ioapic=off", 10u) ||
+            ioapic_token_matches_local(cmdline, "noioapic", 8u)) {
+            return 0;
+        }
+        if (ioapic_token_matches_local(cmdline, "ioapic=auto", 11u) ||
+            ioapic_token_matches_local(cmdline, "ioapic=1", 8u)) {
+            enabled += ioapic_enable_isa_default_irqs();
+        } else if (ioapic_token_matches_local(cmdline, "ioapic=all", 10u)) {
+            enabled += ioapic_enable_all_isa_irqs();
+        } else if (ioapic_token_matches_local(cmdline, "ioapic.timer=1", 15u)) {
+            enabled += ioapic_enable_irq(0u);
+        } else if (ioapic_token_matches_local(cmdline, "ioapic.keyboard=1", 17u) ||
             ioapic_token_matches_local(cmdline, "ioapic=keyboard", 15u)) {
             enabled += ioapic_enable_irq(1u);
         } else if (starts_with(cmdline, "ioapic.irq=") &&

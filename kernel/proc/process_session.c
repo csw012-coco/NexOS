@@ -134,7 +134,7 @@ void session_prepare_user_return_context(struct process_session *session,
 int session_prepare_user_frame_return(struct process_session *session,
                                       struct user_page_mapping *mappings,
                                       const struct syscall_frame *frame) {
-    const struct process *proc;
+    struct process *proc;
     uint64_t frame_ip;
     uint64_t frame_sp;
     uint64_t phys;
@@ -158,6 +158,15 @@ int session_prepare_user_frame_return(struct process_session *session,
         return 0;
     }
     if (!session_bind_user_context(session, mappings)) {
+        return 0;
+    }
+    if (proc->stop_pending) {
+        proc->saved_frame = *frame;
+        proc->saved_frame.rax = 0;
+        proc->has_saved_frame = 1u;
+        proc->stop_pending = 0u;
+        proc->state = PROCESS_STATE_STOPPED;
+        proc->wake_tick = 0u;
         return 0;
     }
     g_current_user_raw_entry = proc->entry;
@@ -212,7 +221,8 @@ static int session_prepare_active_slice(struct process_session *session,
     current_cpu_user_state()->active_sessions[active_index] = session;
     current_cpu_user_state()->active_mappings[active_index] = mappings;
     nested_kernel_rsp =
-        (uint64_t)(uintptr_t)&current_cpu_user_state()->nested_kernel_stacks[current_cpu_user_state()->nested_kernel_stack_depth][sizeof(current_cpu_user_state()->nested_kernel_stacks[0])];
+        (uint64_t)(uintptr_t)&current_cpu_user_state()->
+            nested_kernel_stacks[active_index].stack[NOS_KERNEL_STACK_SIZE];
     current_cpu_user_state()->nested_kernel_stack_depth++;
     hal_set_kernel_stack_top(nested_kernel_rsp);
     return 1;
@@ -262,12 +272,11 @@ void session_finish(struct process_session *session, struct user_page_mapping *m
 
     if (session->address_space.user_root != 0) {
         user_root = session->address_space.user_root;
-        if (!vmm_switch_root_or_fail(user_root)) {
-            return;
+        if (vmm_switch_root_or_fail(user_root)) {
+            addrspace_release_dynamic_pages();
         }
-        addrspace_release_dynamic_pages();
-        if (!vmm_switch_root_or_fail(session->address_space.kernel_root)) {
-            return;
+        if (session->address_space.kernel_root != 0) {
+            (void)vmm_switch_root_or_fail(session->address_space.kernel_root);
         }
         session->address_space.user_root = 0;
         vmm_destroy_user_root(user_root);

@@ -172,6 +172,23 @@ int cmd_rtl8139(void) {
     write_str(" prog_if=");
     write_hex_u32(info.prog_if);
     write_str("\n");
+    write_str("state=");
+    write_dec(info.state);
+    write_str(" resets=");
+    write_dec(info.reset_count);
+    write_str(" tx=");
+    write_dec(info.tx_count);
+    write_str(" rx=");
+    write_dec(info.rx_count);
+    write_str(" irq=");
+    write_dec(info.irq_count);
+    write_str(" errors=");
+    write_dec(info.error_count);
+    write_str(" last_error=");
+    write_dec(info.last_error);
+    write_str(" last_isr=");
+    write_hex_u32(info.last_isr);
+    write_str("\n");
     return 0;
 }
 

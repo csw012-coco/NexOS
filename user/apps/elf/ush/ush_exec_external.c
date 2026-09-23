@@ -27,27 +27,6 @@ static void ush_report_exec_direct_failure(const char *command, int rc) {
     eprintf("%d\n", rc);
 }
 
-static int ush_build_nexbox_applet_command(const char *line,
-                                           const char *token,
-                                           const char *after_token,
-                                           char *out,
-                                           uint32_t out_size) {
-    const char *rest;
-
-    if (line == NULL || token == NULL || out == NULL || out_size == 0) {
-        return 0;
-    }
-    if (streq_local(token, "nexbox") || streq_local(token, "nexbox32")) {
-        copy_line_local(out, "/cmd/nexbox", out_size);
-        rest = skip_spaces_local(after_token);
-        if (rest != NULL && rest[0] != '\0') {
-            return ush_build_prefixed_command("/cmd/nexbox", rest, out, out_size);
-        }
-        return out[0] != '\0';
-    }
-    return ush_build_prefixed_command("/cmd/nexbox", line, out, out_size);
-}
-
 static int ush_try_search_shebang_command(const char *line,
                                           const char *search_command,
                                           int background) {
@@ -147,34 +126,6 @@ int ush_try_external_command(char *cwd, const char *line, int background, int *h
         }
         return 1;
     }
-    if (ush_is_nexbox32_applet_name(token) &&
-        ush_build_nexbox_applet_command(line,
-                                        token,
-                                        cursor,
-                                        search_command,
-                                        sizeof(search_command))) {
-        rc = ush_spawn_command_local(search_command, SYS_SPAWN_ELF, background);
-        if (rc == 0) {
-            if (handled_out != NULL) {
-                *handled_out = 1;
-            }
-            return background ? 0 : ush_last_foreground_status_local();
-        }
-        ush_report_exec_direct_failure(search_command, rc);
-        if (handled_out != NULL) {
-            *handled_out = 1;
-        }
-        return 1;
-    }
-
-    rc = ush_spawn_command_local(line, SYS_SPAWN_AUTO, background);
-    if (rc == 0) {
-        if (handled_out != NULL) {
-            *handled_out = 1;
-        }
-        return background ? 0 : ush_last_foreground_status_local();
-    }
-
     if (ush_build_cmd_search_command_lower(line, search_command, sizeof(search_command))) {
         rc = ush_spawn_command_local(search_command, SYS_SPAWN_ELF, background);
         if (rc == 0) {

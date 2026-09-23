@@ -1,7 +1,6 @@
 #include "abi/syscall_abi.h"
 #include "kernel/internal/fs/file_internal.h"
 #include "kernel/internal/proc/process_lifecycle_internal.h"
-#include "kernel/public/core/tty.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/proc/process_scheduler_ops.h"
 #include "kernel/public/proc/sched_policy.h"
@@ -92,10 +91,6 @@ void i386_scheduler_task_init(struct scheduler_task *task,
     process_lifecycle_clear_wait(&task->process);
     i386_scheduler_backend_init_user_context(task, entry, stack, id);
     task->process.pid = scheduler_next_pid++;
-    if (scheduler_console_handle != 0) {
-        tty_set_foreground_pid((struct tty *)scheduler_console_handle,
-                               task->process.pid);
-    }
     if (name == 0 || name[0] == '\0') {
         name = prefix;
     }

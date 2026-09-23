@@ -7,7 +7,13 @@ enum {
     PS2_COMMAND = 0x64,
     PS2_STATUS_OUTPUT_FULL = 0x01,
     PS2_STATUS_INPUT_FULL = 0x02,
+    PS2_COMMAND_DISABLE_FIRST_PORT = 0xad,
+    PS2_COMMAND_ENABLE_FIRST_PORT = 0xae,
+    PS2_COMMAND_READ_CONFIG = 0x20,
+    PS2_COMMAND_WRITE_CONFIG = 0x60,
     PS2_COMMAND_WRITE_OUTPUT = 0xd2,
+    PS2_CONFIG_IRQ1 = 0x01,
+    PS2_CONFIG_TRANSLATION = 0x40,
     KEY_QUEUE_SIZE = 32,
     PS2_WAIT_LIMIT = 100000
 };
@@ -45,6 +51,21 @@ static int ps2_wait_input_empty(void) {
     return 0;
 }
 
+static int ps2_wait_output_full(void) {
+    for (uint32_t i = 0; i < PS2_WAIT_LIMIT; i++) {
+        if ((inb(PS2_STATUS) & PS2_STATUS_OUTPUT_FULL) != 0u) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void ps2_discard_output(void) {
+    while ((inb(PS2_STATUS) & PS2_STATUS_OUTPUT_FULL) != 0u) {
+        (void)inb(PS2_DATA);
+    }
+}
+
 static void keyboard_queue_push(uint8_t scancode) {
     uint32_t next = (key_head + 1u) % KEY_QUEUE_SIZE;
     uint8_t code = (uint8_t)(scancode & 0x7fu);
@@ -63,14 +84,43 @@ static void keyboard_queue_push(uint8_t scancode) {
 }
 
 void i386_keyboard_init(void) {
+    uint8_t config;
+
     key_head = 0;
     key_tail = 0;
     key_irq_count = 0;
     key_dropped = 0;
 
-    while ((inb(PS2_STATUS) & PS2_STATUS_OUTPUT_FULL) != 0u) {
-        (void)inb(PS2_DATA);
+    if (!ps2_wait_input_empty()) {
+        return;
     }
+    outb(PS2_COMMAND, PS2_COMMAND_DISABLE_FIRST_PORT);
+    ps2_discard_output();
+
+    if (!ps2_wait_input_empty()) {
+        return;
+    }
+    outb(PS2_COMMAND, PS2_COMMAND_READ_CONFIG);
+    if (!ps2_wait_output_full()) {
+        return;
+    }
+    config = inb(PS2_DATA);
+    config = (uint8_t)(config | PS2_CONFIG_IRQ1 | PS2_CONFIG_TRANSLATION);
+
+    if (!ps2_wait_input_empty()) {
+        return;
+    }
+    outb(PS2_COMMAND, PS2_COMMAND_WRITE_CONFIG);
+    if (!ps2_wait_input_empty()) {
+        return;
+    }
+    outb(PS2_DATA, config);
+
+    if (!ps2_wait_input_empty()) {
+        return;
+    }
+    outb(PS2_COMMAND, PS2_COMMAND_ENABLE_FIRST_PORT);
+    ps2_discard_output();
 }
 
 void i386_keyboard_handle_irq(void) {

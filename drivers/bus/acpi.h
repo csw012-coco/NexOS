@@ -45,6 +45,7 @@ struct acpi_status {
     uint64_t lapic_addr_override;
 };
 
+void acpi_set_rsdp_override(uint64_t rsdp_phys);
 int acpi_init(void);
 int acpi_poweroff(void);
 int acpi_reset(void);

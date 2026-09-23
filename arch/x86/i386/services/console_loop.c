@@ -5,7 +5,7 @@
 
 void shared_services_run(void) {
     char line[TTY_LINE_MAX + 1u];
-    struct tty *tty = shared_services_active_tty();
+    struct tty *tty;
 
     if (command_services_autostart_shell()) {
         for (;;) {
@@ -17,7 +17,15 @@ void shared_services_run(void) {
         struct keyboard_event event;
 
         __asm__ volatile("sti; hlt" : : : "memory");
+        tty = shared_services_active_tty();
+        if (tty == 0) {
+            continue;
+        }
         while (input_services_pop_keyboard_event(&event)) {
+            tty = shared_services_active_tty();
+            if (tty == 0) {
+                break;
+            }
             tty_feed_key_event(tty, &event);
         }
         if (tty_has_line(tty)) {

@@ -20,6 +20,13 @@ struct cmos_rtc_info {
     uint8_t month;
     uint16_t year;
     uint32_t unix_time;
+    uint32_t query_count;
+    uint32_t stable_read_count;
+    uint32_t retry_count;
+    uint32_t update_timeout_count;
+    uint32_t unstable_count;
+    uint32_t invalid_count;
+    uint32_t last_error;
 };
 
 int cmos_rtc_query(struct cmos_rtc_info *out);

@@ -5,6 +5,7 @@
 #include "kernel/public/proc/process.h"
 
 struct tty;
+struct vfs;
 
 struct boot_user_init_ops {
     int (*run_test_pair)(struct process_snapshot *process0,
@@ -27,6 +28,10 @@ struct boot_user_init_config {
     const char *shell_start_log;
     const char *shell_fail_log;
     const char *shell_exit_log;
+    struct vfs *shell_vfs;
+    const char *shell_init_path;
+    int shell_probe_init_path;
+    const char *shell_pre_start_log;
     int verbose_selftest;
 };
 

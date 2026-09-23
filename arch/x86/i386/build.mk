@@ -12,6 +12,9 @@ I386_NEXBOX_FULL_USER := $(I386_BUILD)/NEXBOX32_FULL.ELF
 I386_NEXBOX_FULL_LOG := $(I386_BUILD)/nexbox32-full-link.log
 I386_USH_USER := $(I386_BUILD)/USH32.ELF
 I386_DOOM_USER := $(I386_BUILD)/DOOM32.ELF
+I386_PRISM_USER := $(I386_BUILD)/PRISM32.ELF
+I386_DESKTOP_USER := $(I386_BUILD)/DESKTOP32.ELF
+I386_PRISM_SMOKE_USER := $(I386_BUILD)/PRISMSMOKE32.ELF
 I386_NLIBC := $(I386_BUILD)/libnlibc32.a
 I386_CRT0 := $(I386_BUILD)/libc32_crt0.o
 I386_IMAGE := $(IMAGE_DIR)/NexOS-i386.img
@@ -20,6 +23,8 @@ I386_ROOT_FS_IMAGE := $(I386_BUILD)/root.nxfs
 I386_CMD_SUITE_WRAPPER_DIR := $(BUILD)/cmd-wrappers-i386
 I386_AUDIO_SMOKE_WAV := $(I386_BUILD)/audio-smoke.wav
 I386_BOOT_LOG := $(I386_BUILD)/boot-smoke.log
+I386_BOOT_SMOKE_IMAGE := $(I386_BUILD)/NexOS-i386-boot-smoke.img
+I386_JANUS_SMOKE_CONFIG := $(I386_BUILD)/janus-i386-smoke.cfg
 I386_NEXBOX_FULL_BOOT_LOG := $(I386_BUILD)/nexbox32-full-smoke.log
 I386_STRICT_MM_BOOT_LOG := $(I386_BUILD)/strict-mm-smoke.log
 I386_GFX_EDITOR_BOOT_LOG := $(I386_BUILD)/gfx-editor-smoke.log
@@ -32,14 +37,15 @@ I386_BACKEND_EHCI_HID_BOOT_LOG := $(I386_BUILD)/backend-ehci-hid-smoke.log
 I386_BACKEND_XHCI_HID_BOOT_LOG := $(I386_BUILD)/backend-xhci-hid-smoke.log
 I386_BACKEND_RTL8139_BOOT_LOG := $(I386_BUILD)/backend-rtl8139-smoke.log
 
-I386_BOOTX_CONFIG := $(ROOT)/config/bootx-i386.cfg
+I386_JANUS_CONFIG := $(ROOT)/config/janus-i386.cfg
+I386_JANUS_CONFIG_RENDERED := $(I386_BUILD)/janus-i386.generated.cfg
 I386_QEMU ?= qemu-system-i386
-I386_BOOT_TIMEOUT ?= 16
+I386_BOOT_TIMEOUT ?= 24
 I386_CFLAGS := -m32 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
 	-mno-mmx -mno-sse -mno-sse2 -fno-tree-vectorize \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables -ffunction-sections \
 	-fdata-sections -Wall -Wextra -O2 \
-	-I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include/include
+	-I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include/include
 I386_LDFLAGS := -m elf_i386 -nostdlib -static --gc-sections
 I386_USER_CFLAGS := -I$(ROOT)/user/libc32/include \
 	$(I386_CFLAGS) -fno-builtin

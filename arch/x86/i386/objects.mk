@@ -5,6 +5,8 @@ I386_COMMON_OBJS := \
 	$(I386_BUILD)/kprint.o \
 	$(I386_BUILD)/boot_log.o \
 	$(I386_BUILD)/boot_state.o \
+	$(I386_BUILD)/kernel_root.o \
+	$(I386_BUILD)/kernel_config.o \
 	$(I386_BUILD)/early_boot.o \
 	$(I386_BUILD)/early_runtime_hooks.o \
 	$(I386_BUILD)/kernel_init_flow.o \

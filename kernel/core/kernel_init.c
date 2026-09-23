@@ -1,6 +1,6 @@
 #include <stdint.h>
 #include "hal/hal.h"
-#include "bootx/bootx.h"
+#include "janus/janus.h"
 #include "drivers/serial/uart.h"
 #include "fs/vfs.h"
 #include "kernel/internal/core/kernel_boot_internal.h"
@@ -25,6 +25,17 @@ extern void invalid_opcode_stub(void);
 extern void general_protection_stub(void);
 extern void page_fault_stub(void);
 
+static uint16_t kernel_boot_trace_puts_at(struct tty *shell_tty,
+                                          uint16_t row,
+                                          uint16_t col,
+                                          const char *text,
+                                          uint16_t width) {
+    while (text != 0 && *text != '\0' && col < width) {
+        tty_put_at(shell_tty, row, col++, *text++, 0x0f);
+    }
+    return col;
+}
+
 static void kernel_boot_trace(struct tty *shell_tty, uint16_t *boot_trace_row, const char *text) {
     uint16_t row;
     uint16_t col = 0;
@@ -44,10 +55,7 @@ static void kernel_boot_trace(struct tty *shell_tty, uint16_t *boot_trace_row, c
         return;
     }
     tty_clear_row(shell_tty, row, 0x0f);
-    while (*text != '\0' && col < width) {
-        tty_put_at(shell_tty, row, col, *text++, 0x0f);
-        col++;
-    }
+    (void)kernel_boot_trace_puts_at(shell_tty, row, col, text, width);
     if (*boot_trace_row + 1u < rows) {
         (*boot_trace_row)++;
     }
@@ -77,15 +85,49 @@ static void kernel_boot_trace_hex64(struct tty *shell_tty,
         return;
     }
     tty_clear_row(shell_tty, row, 0x0f);
-    while (*label != '\0' && col < width) {
-        tty_put_at(shell_tty, row, col++, *label++, 0x0f);
-    }
+    col = kernel_boot_trace_puts_at(shell_tty, row, col, label, width);
     if (col < width) {
         tty_put_at(shell_tty, row, col++, ' ', 0x0f);
     }
     for (shift = 60; shift >= 0 && col < width; shift -= 4) {
         tty_put_at(shell_tty, row, col++, digits[(value >> shift) & 0xf], 0x0f);
     }
+    if (*boot_trace_row + 1u < rows) {
+        (*boot_trace_row)++;
+    }
+}
+
+static void kernel_boot_trace_text_path(struct tty *shell_tty,
+                                        uint16_t *boot_trace_row,
+                                        const char *prefix,
+                                        const char *path) {
+    uint16_t row;
+    uint16_t col = 0;
+    uint16_t width = console_width();
+    uint16_t rows = console_rows();
+
+    if (shell_tty == 0 || boot_trace_row == 0 || prefix == 0 || path == 0) {
+        return;
+    }
+    row = *boot_trace_row;
+    if (kprint_is_ready()) {
+        kprint("%s path=%s%s\n", prefix, path[0] == '/' ? "" : "/", path);
+        *boot_trace_row = tty_cursor_row(shell_tty);
+        return;
+    }
+    if (row >= rows) {
+        return;
+    }
+    tty_clear_row(shell_tty, row, 0x0f);
+    col = kernel_boot_trace_puts_at(shell_tty, row, col, prefix, width);
+    if (col < width) {
+        tty_put_at(shell_tty, row, col++, ' ', 0x0f);
+    }
+    col = kernel_boot_trace_puts_at(shell_tty, row, col, "path=", width);
+    if (path[0] != '/' && col < width) {
+        tty_put_at(shell_tty, row, col++, '/', 0x0f);
+    }
+    (void)kernel_boot_trace_puts_at(shell_tty, row, col, path, width);
     if (*boot_trace_row + 1u < rows) {
         (*boot_trace_row)++;
     }
@@ -183,7 +225,7 @@ static int kernel_probe_init_path(struct vfs *vfs,
 
 struct vfs *kernel_init_core_services(struct tty *shell_tty,
                                       volatile uint32_t *timer_ticks,
-                                      const struct bootx_boot_info *boot_info) {
+                                      const struct janus_boot_info *boot_info) {
     if (shell_tty == 0 || timer_ticks == 0) {
         return 0;
     }
@@ -215,7 +257,7 @@ void kernel_init_interrupts(void) {
 int kernel_try_run_init(struct vfs *vfs,
                         struct tty *shell_tty,
                         uint16_t *boot_trace_row,
-                        const struct bootx_boot_info *boot_info) {
+                        const struct janus_boot_info *boot_info) {
     char init_path[NOS_PATH_BUFFER_SIZE];
     struct vfs_node init_probe_node;
     uint32_t init_probe_bytes = 0;
@@ -287,7 +329,7 @@ int kernel_try_run_init(struct vfs *vfs,
     } else {
         kernel_boot_trace(shell_tty, boot_trace_row, "kernel: ring3 smoke skip");
     }
-    kernel_boot_trace(shell_tty, boot_trace_row, init_path);
+    kernel_boot_trace_text_path(shell_tty, boot_trace_row, "kernel: init", init_path);
     if (kernel_probe_init_path(vfs,
                                init_path,
                                &init_probe_node,
@@ -315,7 +357,7 @@ int kernel_try_run_init(struct vfs *vfs,
                                        sizeof(init_path));
                 init_probe_open_ok = 1;
                 kernel_boot_trace(shell_tty, boot_trace_row, "kernel: init fallback");
-                kernel_boot_trace(shell_tty, boot_trace_row, init_path);
+                kernel_boot_trace_text_path(shell_tty, boot_trace_row, "kernel: init", init_path);
                 break;
             }
         }
@@ -341,12 +383,12 @@ int kernel_try_run_init(struct vfs *vfs,
                           boot_trace_row,
                           "kernel: serial shell managed by service");
     }
-    kernel_boot_trace(shell_tty, boot_trace_row, "kernel: init starting");
-    kernel_boot_trace(shell_tty, boot_trace_row, init_path);
+    kernel_boot_trace_text_path(shell_tty, boot_trace_row, "kernel: init starting", init_path);
     started = process_exec(vfs, init_path, 0, PROCESS_EXEC_AUTO);
-    kernel_boot_trace(shell_tty, boot_trace_row, started
-                          ? "kernel: init complete"
-                          : "kernel: init returned fail");
+    kernel_boot_trace_text_path(shell_tty,
+                                boot_trace_row,
+                                started ? "kernel: init complete" : "kernel: init failed",
+                                init_path);
     if (!started) {
         uint32_t error = process_last_error();
         struct kernel_boot_trace_ctx trace_ctx = {

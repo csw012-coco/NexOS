@@ -8,6 +8,7 @@
 #include "drivers/storage/ata.h"
 #include "drivers/storage/ramdisk.h"
 #include "drivers/net/rtl8139.h"
+#include "drivers/input/keyboard.h"
 #include "fs/fat32.h"
 #include "fs/nxfs.h"
 #include "fs/vfs_internal.h"
@@ -49,12 +50,61 @@ struct tty *shared_services_active_tty(void) {
     return shared_services_tty;
 }
 
+int shared_services_handle_tty_switch(const struct keyboard_event *event) {
+    uint32_t tty_index = TTY_VIRTUAL_COUNT;
+
+    if (event == 0 || !event->pressed || !event->alt) {
+        return 0;
+    }
+    if (event->keycode == KEYBOARD_KEY_F1) {
+        tty_index = 0u;
+    } else if (event->keycode == KEYBOARD_KEY_F2) {
+        tty_index = 1u;
+    } else if (event->keycode == KEYBOARD_KEY_F3) {
+        tty_index = 2u;
+    } else if (event->shift && event->keycode == KEYBOARD_KEY_1) {
+        tty_index = 0u;
+    } else if (event->shift && event->keycode == KEYBOARD_KEY_2) {
+        tty_index = 1u;
+    } else if (event->shift && event->keycode == KEYBOARD_KEY_3) {
+        tty_index = 2u;
+    }
+    if (tty_index >= TTY_VIRTUAL_COUNT || !tty_switch_active(tty_index)) {
+        return 0;
+    }
+    input_focus_clear();
+    shared_services_tty = tty_active();
+    if (shared_services_tty != 0) {
+        kprint_set_tty(shared_services_tty);
+        process_scheduler_set_console_handle(shared_services_tty);
+    }
+    return 1;
+}
+
 int kernel_runtime_run_with_irqs_enabled(int (*fn)(void *ctx), void *ctx) {
     return fn != 0 ? fn(ctx) : 0;
 }
 
+void kernel_runtime_display_service_pending(void) {
+    hal_display_service_pending();
+}
+
+void kernel_runtime_display_present(void) {
+    hal_display_present();
+}
+
+uint32_t kernel_runtime_timer_hz(void) {
+    return hal_timer_hz();
+}
+
+void kernel_runtime_wait_for_interrupt(void) {
+    hal_cpu_wait_for_interrupt();
+}
+
 int input_focus_grab(uint32_t pid) {
-    if (pid == 0u || !job_current_process_foreground_allowed()) {
+    if (pid == 0u ||
+        (shared_services_input_focus_pid != 0u &&
+         shared_services_input_focus_pid != pid)) {
         return 0;
     }
     shared_services_input_focus_pid = pid;
@@ -113,7 +163,7 @@ struct shared_services_memmap_entry {
 
 static const struct shared_services_memmap_entry *shared_services_memmap;
 static uint32_t shared_services_memmap_count;
-static const struct bootx_boot_info *shared_services_boot_info;
+static const struct janus_boot_info *shared_services_boot_info;
 static struct syscall_boot_info shared_services_boot_info_query;
 static struct syscall_framebuffer_info shared_services_fb_info;
 static const char *shared_services_cmdline;
@@ -135,7 +185,7 @@ static int shared_services_init_driver_model_step(void *context);
 static int shared_services_init_backend_smoke_step(void *context);
 
 static void shared_services_gfx_init_from_framebuffer_info(const struct syscall_framebuffer_info *fb_info) {
-    struct bootx_console_info console;
+    struct janus_console_info console;
 
     if (fb_info == 0 || fb_info->present == 0u || fb_info->width == 0u ||
         fb_info->height == 0u || fb_info->pitch == 0u || fb_info->bpp == 0u) {
@@ -144,7 +194,7 @@ static void shared_services_gfx_init_from_framebuffer_info(const struct syscall_
     for (uint32_t i = 0u; i < sizeof(console); i++) {
         ((uint8_t *)&console)[i] = 0u;
     }
-    console.type = BOOTX_CONSOLE_FRAMEBUFFER;
+    console.type = JANUS_CONSOLE_FRAMEBUFFER;
     console.framebuffer_addr = fb_info->addr;
     console.width = fb_info->width;
     console.height = fb_info->height;
@@ -164,7 +214,7 @@ static void shared_services_gfx_init_from_framebuffer_info(const struct syscall_
 
 void shared_services_query_init(const struct syscall_boot_info *boot_info,
                                 const struct syscall_framebuffer_info *fb_info,
-                                const struct bootx_boot_info *raw_boot_info,
+                                const struct janus_boot_info *raw_boot_info,
                                 uint32_t cmdline,
                                 uint32_t memmap,
                                 uint32_t memmap_count) {
@@ -197,7 +247,7 @@ void shared_services_query_init(const struct syscall_boot_info *boot_info,
     syscall_common_request_core_query_state_init(
         0,
         raw_boot_info,
-        (const struct bootx_memmap_entry *)(uintptr_t)memmap,
+        (const struct janus_memmap_entry *)(uintptr_t)memmap,
         memmap_count);
     shared_services_cmdline = cmdline != 0u ? (const char *)(uintptr_t)cmdline : "";
     boot_flags_init(shared_services_cmdline);
@@ -326,15 +376,23 @@ static void shared_services_mount_ramdisk(void) {
     vfs_copy_name(shared_services_vfs.mounts[slot].name,
                   sizeof(shared_services_vfs.mounts[slot].name),
                   "ram");
-    boot_services_log("ramdisk: FAT32 /ram mounted");
+    kernel_boot_log_mount("/ram", "FAT32");
 }
 
 static int shared_services_mount_nxfs_root(struct block_device *boot_disk) {
     struct blockdev_partition partition;
+    uint32_t part_count = boot_disk != 0 ? blockdev_partition_count(boot_disk) : 0u;
 
     if (boot_disk == 0 ||
         blockdev_partition_get(boot_disk, 1u, &partition) != 0 ||
         nxfs_mount(&shared_services_vfs.nxfs, boot_disk, (uint32_t)partition.start_lba) != 0) {
+        kprint("root: NXFS fallback failed parts=%u state=%u removing=%u protected=%u cache=%u cached=%u\n",
+               part_count,
+               boot_disk != 0 ? (uint32_t)boot_disk->state : 0u,
+               boot_disk != 0 ? (uint32_t)boot_disk->removing : 0u,
+               boot_disk != 0 ? (uint32_t)boot_disk->rootfs_protected : 0u,
+               boot_disk != 0 ? (uint32_t)boot_disk->partition_cache_valid : 0u,
+               boot_disk != 0 ? boot_disk->partition_count : 0u);
         return 0;
     }
     shared_services_vfs.root_kind = VFS_MOUNT_NXFS;
@@ -346,7 +404,7 @@ static int shared_services_mount_nxfs_root(struct block_device *boot_disk) {
 static void shared_services_log_boot_info(void) {
     kernel_boot_log_system("i386");
     if (shared_services_boot_info != 0) {
-        kprint("bootx: magic=%x version=%u size=%u\n",
+        kprint("janus: magic=%x version=%u size=%u\n",
                shared_services_boot_info->hdr.magic,
                (uint32_t)shared_services_boot_info->hdr.version,
                (uint32_t)shared_services_boot_info->hdr.size);
@@ -404,18 +462,6 @@ static void shared_services_log_pci_ide_info(void) {
                ide.bar4);
     } else {
         kprint("pci: ide controller not found\n");
-    }
-}
-
-static void shared_services_log_ata_info(void) {
-    struct ata_device *primary = ata_get_primary_master();
-
-    if (primary != 0 && primary->present != 0u) {
-        kprint("ata: primary master sectors=%u model=%s\n",
-               primary->sector_count,
-               primary->model);
-    } else {
-        kprint("ata: primary master not found\n");
     }
 }
 
@@ -838,9 +884,12 @@ int shared_services_init(void) {
     syscall_common_request_core_query_state_init(
         &shared_services_vfs,
         shared_services_boot_info,
-        (const struct bootx_memmap_entry *)(uintptr_t)shared_services_memmap,
+        (const struct janus_memmap_entry *)(uintptr_t)shared_services_memmap,
         shared_services_memmap_count);
     boot_services_log("kernel: block devices");
+    driver_services_init_builtins(dev_selftest ||
+                                  boot_flags_full_smoke_enabled() ||
+                                  boot_flags_driver_smoke_enabled());
     ramdisk_init_from_boot_modules(shared_services_boot_info);
     shared_services_log_pci_ide_info();
     (void)acpi_init();
@@ -859,9 +908,10 @@ int shared_services_init(void) {
     shared_services_log_ac97_info();
     shared_services_log_hda_info();
     shared_services_log_rtl8139_info();
-    shared_services_log_ata_info();
+    kernel_log_ata_info();
     shared_services_log_block_devices();
     boot_services_log("kernel: pci/ide/ata");
+    boot_services_log("kernel: tty/process/vfs");
     boot_disk = blockdev_get(0u);
     if (boot_disk == 0 ||
         blockdev_partition_get(boot_disk, 0u, &partition) != 0 ||
@@ -875,11 +925,23 @@ int shared_services_init(void) {
     shared_services_vfs.root_kind = VFS_MOUNT_FAT32;
     shared_services_vfs.root_slot = 0u;
     blockdev_set_rootfs_protected(boot_disk, 1u);
-    if (shared_services_mount_nxfs_root(boot_disk)) {
-        boot_services_log("root: NXFS / mounted");
-    }
+    kprint("root: boot disk protected state=%u protected=%u cache=%u cached=%u\n",
+           (uint32_t)boot_disk->state,
+           (uint32_t)boot_disk->rootfs_protected,
+           (uint32_t)boot_disk->partition_cache_valid,
+           boot_disk->partition_count);
+    kernel_boot_log_mount("/boot", "FAT32");
     shared_services_mount_ramdisk();
-    boot_services_log("kernel: tty/process/vfs");
+    kprint("root: after ramdisk state=%u protected=%u cache=%u cached=%u\n",
+           (uint32_t)boot_disk->state,
+           (uint32_t)boot_disk->rootfs_protected,
+           (uint32_t)boot_disk->partition_cache_valid,
+           boot_disk->partition_count);
+    if (kernel_apply_root_cmdline(&shared_services_vfs, shared_services_boot_info) > 0) {
+        boot_services_log("kernel: root cmdline applied");
+    } else if (shared_services_mount_nxfs_root(boot_disk)) {
+        kernel_boot_log_mount("/", "NXFS");
+    }
     if (dev_selftest) {
         if (!tty_selftest_input()) {
             tty_write_str(shared_services_tty, "TTY input self-test failed\n", 0x0cu);
@@ -892,7 +954,7 @@ int shared_services_init(void) {
         boot_services_log("tty: utf8/hangul edit selftest OK");
     }
     if (shared_services_vfs.root_kind == VFS_MOUNT_FAT32) {
-        boot_services_log("root: FAT32 / mounted");
+        kernel_boot_log_mount("/", "FAT32");
     }
     if (!kernel_init_flow_run(shared_services_init_steps,
                               (uint32_t)(sizeof(shared_services_init_steps) /

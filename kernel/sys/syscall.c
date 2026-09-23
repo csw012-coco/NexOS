@@ -2,16 +2,13 @@
 #include "kernel/public/sys/syscall.h"
 #include "kernel/internal/sys/syscall_common_request_core.h"
 #include "kernel/internal/sys/syscall_native_request_core.h"
-#include "kernel/internal/core/runtime_internal.h"
 #include "kernel/internal/proc/process_types_internal.h"
+#include "kernel/public/arch/arch_ops.h"
 #include "kernel/public/core/tty.h"
-#include "hal/hal.h"
 
 volatile uint32_t *g_syscall_ticks;
 struct vfs *g_syscall_vfs;
-const struct bootx_boot_info *g_syscall_boot_info;
-
-struct syscall_trace g_last_syscall_trace;
+const struct janus_boot_info *g_syscall_boot_info;
 
 static uint64_t syscall_result_value_for_action(const struct kernel_syscall_result *result) {
     if (result == 0) {
@@ -34,8 +31,8 @@ static uint64_t syscall_result_value_for_action(const struct kernel_syscall_resu
 void syscall_init(struct tty *tty,
                   volatile uint32_t *timer_ticks,
                   struct vfs *vfs,
-                  const struct bootx_boot_info *boot_info,
-                  const struct bootx_memmap_entry *memmap,
+                  const struct janus_boot_info *boot_info,
+                  const struct janus_memmap_entry *memmap,
                   uint32_t memmap_count) {
     (void)tty;
     g_syscall_ticks = timer_ticks;
@@ -51,27 +48,36 @@ uint64_t syscall_dispatch(struct syscall_frame *frame) {
     struct kernel_syscall_request request = {0};
     struct kernel_syscall_result result = {0};
     const struct process *trace_proc = process_current();
+    int trace_enabled = 1;
 
 #define SYSCALL_RETURN(value) do { \
         uint64_t syscall_result__ = (uint64_t)(value); \
-        g_last_syscall_trace.result = syscall_result__; \
-        g_last_syscall_trace.returned = syscall_result__ != SYSCALL_EXIT_TO_KERNEL; \
-        kernel_runtime_display_service_pending(); \
+        if (trace_enabled) { \
+            g_last_syscall_trace.result = syscall_result__; \
+            g_last_syscall_trace.returned = syscall_result__ != SYSCALL_EXIT_TO_KERNEL; \
+        } \
         return syscall_result__; \
     } while (0)
 
-    hal_syscall_decode_request(frame, &request);
-    g_last_syscall_trace.valid = 1u;
-    g_last_syscall_trace.number = request.number;
-    g_last_syscall_trace.arg0 = kernel_syscall_arg_u64(&request, 0);
-    g_last_syscall_trace.arg1 = kernel_syscall_arg_u64(&request, 1);
-    g_last_syscall_trace.arg2 = kernel_syscall_arg_u64(&request, 2);
-    g_last_syscall_trace.arg3 = kernel_syscall_arg_u64(&request, 3);
-    g_last_syscall_trace.instruction_pointer = request.instruction_pointer;
-    g_last_syscall_trace.stack_pointer = request.stack_pointer;
-    g_last_syscall_trace.result = 0;
-    g_last_syscall_trace.returned = 0u;
-    g_last_syscall_trace.pid = trace_proc != 0 ? trace_proc->pid : 0u;
+    if (arch == 0 || arch->syscall_decode == 0) {
+        SYSCALL_RETURN(0);
+    }
+    arch->syscall_decode(frame, &request);
+    trace_enabled = !(request.number == SYS_QUERY &&
+                      kernel_syscall_arg_u32(&request, 0) == SYS_QUERY_STABILITY);
+    if (trace_enabled) {
+        g_last_syscall_trace.valid = 1u;
+        g_last_syscall_trace.number = request.number;
+        g_last_syscall_trace.arg0 = kernel_syscall_arg_u64(&request, 0);
+        g_last_syscall_trace.arg1 = kernel_syscall_arg_u64(&request, 1);
+        g_last_syscall_trace.arg2 = kernel_syscall_arg_u64(&request, 2);
+        g_last_syscall_trace.arg3 = kernel_syscall_arg_u64(&request, 3);
+        g_last_syscall_trace.instruction_pointer = request.instruction_pointer;
+        g_last_syscall_trace.stack_pointer = request.stack_pointer;
+        g_last_syscall_trace.result = 0;
+        g_last_syscall_trace.returned = 0u;
+        g_last_syscall_trace.pid = trace_proc != 0 ? trace_proc->pid : 0u;
+    }
 
     if (syscall_native_dispatch_request(&request, frame, &result)) {
         SYSCALL_RETURN(syscall_result_value_for_action(&result));

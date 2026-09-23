@@ -33,7 +33,7 @@ void hal_x86_platform_init_impl(const struct hal_interrupt_handlers *handlers) {
     if (handlers != 0) {
         idt64_set_gate(0, handlers->divide_error, 0x8e);
         idt64_set_gate(6, handlers->invalid_opcode, 0x8e);
-        idt64_set_gate(8, handlers->double_fault, 0x8e);
+        idt64_set_gate_ist(8, handlers->double_fault, 0x8e, 1u); // vector 8에만 IST1 지정
         idt64_set_gate(13, handlers->general_protection_fault, 0x8e);
         idt64_set_gate(14, handlers->page_fault, 0x8e);
         idt64_set_gate(0x40, handlers->syscall, 0xef);

@@ -1,4 +1,4 @@
-#include "bootx.h"
+#include "janus.h"
 #include "paging.h"
 #include "pmm.h"
 
@@ -13,7 +13,7 @@ static uint32_t i386_pmm_phys32_or_invalid(uint64_t phys) {
 }
 
 static void i386_pmm_scan_highest_address(
-    const struct bootx_memmap_entry *memmap,
+    const struct janus_memmap_entry *memmap,
     uint32_t memmap_count) {
     highest_address = 0u;
     for (uint32_t i = 0u; i < memmap_count; i++) {
@@ -22,7 +22,7 @@ static void i386_pmm_scan_highest_address(
         uint64_t end;
         uint32_t end32;
 
-        if (memmap[i].type != BOOTX_MEMMAP_USABLE ||
+        if (memmap[i].type != JANUS_MEMMAP_USABLE ||
             length == 0u ||
             base >= 0x100000000ull) {
             continue;
@@ -38,15 +38,15 @@ static void i386_pmm_scan_highest_address(
     }
 }
 
-int i386_pmm_init(const struct bootx_boot_info *boot_info) {
-    const struct bootx_memmap_entry *memmap;
+int i386_pmm_init(const struct janus_boot_info *boot_info) {
+    const struct janus_memmap_entry *memmap;
 
     if (boot_info == 0 ||
         boot_info->memmap == 0 ||
         boot_info->memmap_count == 0u) {
         return 0;
     }
-    memmap = (const struct bootx_memmap_entry *)boot_info->memmap;
+    memmap = (const struct janus_memmap_entry *)boot_info->memmap;
     i386_pmm_scan_highest_address(memmap, boot_info->memmap_count);
     pmm_init(memmap, boot_info->memmap_count, 0u, 0u);
     pmm_reserve_range(0u, I386_PAGING_IDENTITY_LIMIT);

@@ -48,8 +48,8 @@ static int sysinfo_memory_totals_local(uint64_t *total_out,
 
     while (memmap_query(entries, &mem) > 0) {
         total += mem.length;
-        if (mem.type == BOOTX_MEMMAP_USABLE ||
-            mem.type == BOOTX_MEMMAP_BOOTLOADER_RECLAIMABLE) {
+        if (mem.type == JANUS_MEMMAP_USABLE ||
+            mem.type == JANUS_MEMMAP_BOOTLOADER_RECLAIMABLE) {
             usable += mem.length;
         } else {
             reserved += mem.length;

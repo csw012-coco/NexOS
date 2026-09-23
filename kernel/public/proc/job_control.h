@@ -60,6 +60,8 @@ int job_serial_current_process_foreground_allowed(void);
 int job_tty_foreground_is_shell(struct tty *tty);
 /* Returns 1 if delivered or -NEX_ERR_* if no signal was delivered. */
 int job_tty_deliver_sigint(struct tty *tty);
+/* Returns 1 if delivered to a live pid or -NEX_ERR_*. IRQ-safe: marks exit pending only. */
+int job_deliver_sigint_to_pid(uint32_t pid);
 /* Returns 1 if delivered or -NEX_ERR_* if no signal was delivered. */
 int job_tty_deliver_sigtstp(struct tty *tty, const struct syscall_frame *frame);
 int job_tty_wake_waiting_processes(struct tty *tty);

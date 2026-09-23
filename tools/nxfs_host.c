@@ -107,26 +107,7 @@ static uint32_t host_file_block_count_or_die(FILE *fp, const char *path) {
 }
 
 static void host_zero_blocks_or_die(uint32_t total_blocks) {
-    uint8_t zero[NXFS_BLOCK_SIZE];
-
-    memset(zero, 0, sizeof(zero));
-
-    if (fseek(g_disk, 0, SEEK_SET) != 0) {
-        perror("nxfs_host: fseek");
-        exit(EXIT_FAILURE);
-    }
-
-    for (uint32_t i = 0; i < total_blocks; i++) {
-        if (fwrite(zero, NXFS_BLOCK_SIZE, 1, g_disk) != 1) {
-            perror("nxfs_host: fwrite");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    if (fflush(g_disk) != 0) {
-        perror("nxfs_host: fflush");
-        exit(EXIT_FAILURE);
-    }
+    (void)total_blocks;
 }
 
 int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *buffer) {
@@ -263,14 +244,20 @@ static void mkfs_local(const char *file) {
     }
 
     /*
-     * For a newly-created file, extend it to the default size.
-     * For an existing truncated file, rewrite exactly that many blocks.
+     * A full image wipe is intentionally skipped here. mkfs only needs to
+     * initialize the superblock, bitmap blocks, inode table, and root directory;
+     * zeroing every data block turns large partitions into a very slow O(n)
+     * write loop.
      */
-    host_zero_blocks_or_die(total_blocks);
-
     inode_bytes = NXFS_MAX_INODES * sizeof(struct nxfs_inode);
     inode_blocks = (inode_bytes + NXFS_BLOCK_SIZE - 1u) / NXFS_BLOCK_SIZE;
     bitmap_blocks = (total_blocks + (NXFS_BLOCK_SIZE * 8u) - 1u) / (NXFS_BLOCK_SIZE * 8u);
+
+    for (uint32_t b = 0; b < bitmap_blocks; b++) {
+        uint8_t bitmap[NXFS_BLOCK_SIZE];
+        memset(bitmap, 0, sizeof(bitmap));
+        write_block_local(1u + b, bitmap);
+    }
 
     g_super.magic = NXFS_MAGIC;
     g_super.total_blocks = total_blocks;
@@ -966,6 +953,17 @@ static void uuid_local(const char *image) {
 }
 
 int main(int argc, char **argv) {
+    const char *program = strrchr(argv[0], '/');
+
+    program = program != NULL ? program + 1 : argv[0];
+    if (strcmp(program, "mkfs.nxfs") == 0) {
+        if (argc != 2) {
+            fprintf(stderr, "usage: %s <image>\n", argv[0]);
+            return 1;
+        }
+        mkfs_local(argv[1]);
+        return 0;
+    }
     if (argc < 3) {
         fprintf(stderr, "usage: %s mkfs <image>\n", argv[0]);
         fprintf(stderr, "       %s mkdir <image> <path>\n", argv[0]);

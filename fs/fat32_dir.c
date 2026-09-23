@@ -1,5 +1,10 @@
 #include "fs/fat32_internal.h"
 
+enum {
+    FAT32_DIR_SCAN_SECTORS_MAX = 8u,
+    FAT32_DIRENTS_PER_SECTOR = FAT32_SECTOR_SIZE / sizeof(struct fat32_dirent)
+};
+
 uint32_t fat32_dir_first_cluster(struct fat32_volume *vol, const struct fat32_file *dir) {
     if (vol == 0) {
         return 0;
@@ -19,7 +24,7 @@ int fat32_list_directory(struct fat32_volume *vol,
     uint32_t out_count = 0;
     uint32_t raw_index = 0;
     struct fat32_lfn_state lfn_state;
-    uint8_t dir_sector[512];
+    uint8_t dir_chunk[FAT32_SECTOR_SIZE * FAT32_DIR_SCAN_SECTORS_MAX];
 
     if (vol == 0 || !vol->mounted || entries == 0 || entry_count == 0) {
         return -1;
@@ -32,43 +37,47 @@ int fat32_list_directory(struct fat32_volume *vol,
     cluster = fat32_dir_first_cluster(vol, dir);
     while (fat32_cluster_is_data(vol, cluster)) {
         uint32_t cluster_lba = fat32_cluster_lba(vol, cluster);
-        for (uint32_t sec = 0; sec < vol->sectors_per_cluster; sec++) {
-            struct fat32_dirent *dirents;
+        for (uint32_t sec = 0; sec < vol->sectors_per_cluster;) {
+            uint32_t sector_count = fat32_min_u32(vol->sectors_per_cluster - sec, FAT32_DIR_SCAN_SECTORS_MAX);
 
-            if (fat32_read_sector(vol, cluster_lba + sec, dir_sector) != 0) {
+            if (fat32_read_sectors(vol, cluster_lba + sec, sector_count, dir_chunk) != 0) {
                 return -1;
             }
-            dirents = (struct fat32_dirent *)dir_sector;
-            for (uint32_t i = 0; i < 16; i++) {
-                if (fat32_is_end_of_dirent(&dirents[i])) {
+            for (uint32_t entry_index = 0; entry_index < sector_count * FAT32_DIRENTS_PER_SECTOR; entry_index++) {
+                struct fat32_dirent *dirent = &((struct fat32_dirent *)dir_chunk)[entry_index];
+                uint32_t sector_offset = entry_index / FAT32_DIRENTS_PER_SECTOR;
+                uint32_t dirent_offset = (entry_index % FAT32_DIRENTS_PER_SECTOR) * sizeof(struct fat32_dirent);
+
+                if (fat32_is_end_of_dirent(dirent)) {
                     *entry_count = out_count;
                     return 0;
                 }
-                if (fat32_is_deleted_dirent(&dirents[i])) {
+                if (fat32_is_deleted_dirent(dirent)) {
                     fat32_lfn_state_reset(&lfn_state);
                     raw_index++;
                     continue;
                 }
-                if (fat32_is_lfn_dirent(&dirents[i])) {
-                    (void)fat32_lfn_capture(&lfn_state, (const struct fat32_lfn_dirent *)&dirents[i]);
+                if (fat32_is_lfn_dirent(dirent)) {
+                    (void)fat32_lfn_capture(&lfn_state, (const struct fat32_lfn_dirent *)dirent);
                     raw_index++;
                     continue;
                 }
-                if (fat32_is_volume_dirent(&dirents[i])) {
+                if (fat32_is_volume_dirent(dirent)) {
                     fat32_lfn_state_reset(&lfn_state);
                     raw_index++;
                     continue;
                 }
                 if (out_count < max_entries &&
-                    fat32_fill_file_from_dirent(&dirents[i], &lfn_state, &entries[out_count])) {
+                    fat32_fill_file_from_dirent(dirent, &lfn_state, &entries[out_count])) {
                     entries[out_count].dirent_index = raw_index;
-                    entries[out_count].dirent_lba = cluster_lba + sec;
-                    entries[out_count].dirent_offset = i * sizeof(struct fat32_dirent);
+                    entries[out_count].dirent_lba = cluster_lba + sec + sector_offset;
+                    entries[out_count].dirent_offset = dirent_offset;
                     out_count++;
                 }
                 fat32_lfn_state_reset(&lfn_state);
                 raw_index++;
             }
+            sec += sector_count;
         }
         if (fat32_next_cluster(vol, cluster, &cluster) != 0) {
             return -1;
@@ -86,7 +95,7 @@ int fat32_find_in_directory(struct fat32_volume *vol,
     uint32_t cluster;
     uint32_t raw_index = 0;
     struct fat32_lfn_state lfn_state;
-    uint8_t dir_sector[512];
+    uint8_t dir_chunk[FAT32_SECTOR_SIZE * FAT32_DIR_SCAN_SECTORS_MAX];
 
     if (vol == 0 || !vol->mounted || name == 0 || out == 0) {
         return -1;
@@ -99,42 +108,46 @@ int fat32_find_in_directory(struct fat32_volume *vol,
     cluster = fat32_dir_first_cluster(vol, dir);
     while (fat32_cluster_is_data(vol, cluster)) {
         uint32_t cluster_lba = fat32_cluster_lba(vol, cluster);
-        for (uint32_t sec = 0; sec < vol->sectors_per_cluster; sec++) {
-            struct fat32_dirent *dirents;
+        for (uint32_t sec = 0; sec < vol->sectors_per_cluster;) {
+            uint32_t sector_count = fat32_min_u32(vol->sectors_per_cluster - sec, FAT32_DIR_SCAN_SECTORS_MAX);
 
-            if (fat32_read_sector(vol, cluster_lba + sec, dir_sector) != 0) {
+            if (fat32_read_sectors(vol, cluster_lba + sec, sector_count, dir_chunk) != 0) {
                 return -1;
             }
-            dirents = (struct fat32_dirent *)dir_sector;
-            for (uint32_t i = 0; i < 16; i++) {
-                if (fat32_is_end_of_dirent(&dirents[i])) {
+            for (uint32_t entry_index = 0; entry_index < sector_count * FAT32_DIRENTS_PER_SECTOR; entry_index++) {
+                struct fat32_dirent *dirent = &((struct fat32_dirent *)dir_chunk)[entry_index];
+                uint32_t sector_offset = entry_index / FAT32_DIRENTS_PER_SECTOR;
+                uint32_t dirent_offset = (entry_index % FAT32_DIRENTS_PER_SECTOR) * sizeof(struct fat32_dirent);
+
+                if (fat32_is_end_of_dirent(dirent)) {
                     return -1;
                 }
-                if (fat32_is_deleted_dirent(&dirents[i])) {
+                if (fat32_is_deleted_dirent(dirent)) {
                     fat32_lfn_state_reset(&lfn_state);
                     raw_index++;
                     continue;
                 }
-                if (fat32_is_lfn_dirent(&dirents[i])) {
-                    (void)fat32_lfn_capture(&lfn_state, (const struct fat32_lfn_dirent *)&dirents[i]);
+                if (fat32_is_lfn_dirent(dirent)) {
+                    (void)fat32_lfn_capture(&lfn_state, (const struct fat32_lfn_dirent *)dirent);
                     raw_index++;
                     continue;
                 }
-                if (fat32_is_volume_dirent(&dirents[i])) {
+                if (fat32_is_volume_dirent(dirent)) {
                     fat32_lfn_state_reset(&lfn_state);
                     raw_index++;
                     continue;
                 }
-                if (fat32_match_dirent_name(&dirents[i], &lfn_state, name)) {
-                    fat32_fill_file_from_dirent(&dirents[i], &lfn_state, out);
+                if (fat32_match_dirent_name(dirent, &lfn_state, name)) {
+                    fat32_fill_file_from_dirent(dirent, &lfn_state, out);
                     out->dirent_index = raw_index;
-                    out->dirent_lba = cluster_lba + sec;
-                    out->dirent_offset = i * sizeof(struct fat32_dirent);
+                    out->dirent_lba = cluster_lba + sec + sector_offset;
+                    out->dirent_offset = dirent_offset;
                     return 0;
                 }
                 fat32_lfn_state_reset(&lfn_state);
                 raw_index++;
             }
+            sec += sector_count;
         }
         if (fat32_next_cluster(vol, cluster, &cluster) != 0) {
             return -1;
@@ -178,6 +191,7 @@ int fat32_short_name_exists(struct fat32_volume *vol,
                                    const struct fat32_file *dir,
                                    const uint8_t raw_name[11]) {
     uint32_t cluster;
+    uint8_t dir_chunk[FAT32_SECTOR_SIZE * FAT32_DIR_SCAN_SECTORS_MAX];
 
     if (vol == 0 || !vol->mounted || raw_name == 0) {
         return 0;
@@ -186,14 +200,15 @@ int fat32_short_name_exists(struct fat32_volume *vol,
     while (fat32_cluster_is_data(vol, cluster)) {
         uint32_t cluster_lba = fat32_cluster_lba(vol, cluster);
 
-        for (uint32_t sec = 0; sec < vol->sectors_per_cluster; sec++) {
+        for (uint32_t sec = 0; sec < vol->sectors_per_cluster;) {
+            uint32_t sector_count = fat32_min_u32(vol->sectors_per_cluster - sec, FAT32_DIR_SCAN_SECTORS_MAX);
             struct fat32_dirent *dirents;
 
-            if (fat32_read_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
+            if (fat32_read_sectors(vol, cluster_lba + sec, sector_count, dir_chunk) != 0) {
                 return 0;
             }
-            dirents = (struct fat32_dirent *)vol->sector_buffer;
-            for (uint32_t i = 0; i < 16u; i++) {
+            dirents = (struct fat32_dirent *)dir_chunk;
+            for (uint32_t i = 0; i < sector_count * FAT32_DIRENTS_PER_SECTOR; i++) {
                 if (fat32_is_end_of_dirent(&dirents[i])) {
                     return 0;
                 }
@@ -215,6 +230,7 @@ int fat32_short_name_exists(struct fat32_volume *vol,
                     }
                 }
             }
+            sec += sector_count;
         }
         if (fat32_next_cluster(vol, cluster, &cluster) != 0) {
             return 0;
@@ -245,6 +261,7 @@ int fat32_locate_free_dirent_span(struct fat32_volume *vol,
     uint32_t cluster;
     uint32_t raw_index = 0;
     uint32_t run = 0;
+    uint8_t dir_chunk[FAT32_SECTOR_SIZE * FAT32_DIR_SCAN_SECTORS_MAX];
 
     if (vol == 0 || !vol->mounted || needed == 0u || lbas_out == 0 || offsets_out == 0 || raw_index_out == 0) {
         return -1;
@@ -257,17 +274,18 @@ int fat32_locate_free_dirent_span(struct fat32_volume *vol,
     while (fat32_cluster_is_data(vol, cluster)) {
         uint32_t cluster_lba = fat32_cluster_lba(vol, cluster);
 
-        for (uint32_t sec = 0; sec < vol->sectors_per_cluster; sec++) {
+        for (uint32_t sec = 0; sec < vol->sectors_per_cluster;) {
+            uint32_t sector_count = fat32_min_u32(vol->sectors_per_cluster - sec, FAT32_DIR_SCAN_SECTORS_MAX);
             struct fat32_dirent *dirents;
 
-            if (fat32_read_sector(vol, cluster_lba + sec, vol->sector_buffer) != 0) {
+            if (fat32_read_sectors(vol, cluster_lba + sec, sector_count, dir_chunk) != 0) {
                 return -1;
             }
-            dirents = (struct fat32_dirent *)vol->sector_buffer;
-            for (uint32_t i = 0; i < 16u; i++, raw_index++) {
+            dirents = (struct fat32_dirent *)dir_chunk;
+            for (uint32_t i = 0; i < sector_count * FAT32_DIRENTS_PER_SECTOR; i++, raw_index++) {
                 if (fat32_is_end_of_dirent(&dirents[i]) || fat32_is_deleted_dirent(&dirents[i])) {
-                    lbas_out[run] = cluster_lba + sec;
-                    offsets_out[run] = i * sizeof(struct fat32_dirent);
+                    lbas_out[run] = cluster_lba + sec + (i / FAT32_DIRENTS_PER_SECTOR);
+                    offsets_out[run] = (i % FAT32_DIRENTS_PER_SECTOR) * sizeof(struct fat32_dirent);
                     run++;
                     if (run >= needed) {
                         *raw_index_out = raw_index - needed + 1u;
@@ -277,6 +295,7 @@ int fat32_locate_free_dirent_span(struct fat32_volume *vol,
                 }
                 run = 0;
             }
+            sec += sector_count;
         }
         if (fat32_next_cluster(vol, cluster, &cluster) != 0) {
             return -1;

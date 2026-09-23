@@ -10,18 +10,26 @@
 enum {
     FRAMEBUFFER_CURSOR_DISABLED = 0,
     FRAMEBUFFER_CURSOR_ENABLED = 1,
+    FRAMEBUFFER_FONT_MODULE_NONE = 0,
+    FRAMEBUFFER_FONT_MODULE_HEX = 1,
+    FRAMEBUFFER_FONT_MODULE_BDF = 2,
     FRAMEBUFFER_FONT_WIDTH = 8,
     FRAMEBUFFER_FONT_HEIGHT = 16,
     FRAMEBUFFER_FONT_HEIGHT_SMALL = 8,
     FRAMEBUFFER_CURSOR_UNDERLINE_ROWS = 2,
-    FRAMEBUFFER_CURSOR_BLINK_TICKS = 50,
+    FRAMEBUFFER_CURSOR_BLINK_MS = 500,
     FRAMEBUFFER_GLYPH_CACHE_SIZE = 2048,
+    FRAMEBUFFER_LOADED_GLYPH_CAPACITY = 65536,
     FRAMEBUFFER_FONT_INDEX_PAGES = 0x1100,
     FRAMEBUFFER_MOUSE_CURSOR_WIDTH = 12,
     FRAMEBUFFER_MOUSE_CURSOR_HEIGHT = 18,
     FRAMEBUFFER_MOUSE_CURSOR_PIXELS = FRAMEBUFFER_MOUSE_CURSOR_WIDTH * FRAMEBUFFER_MOUSE_CURSOR_HEIGHT,
     FRAMEBUFFER_DIRTY_RECT_MAX = 32,
     FRAMEBUFFER_PRESENT_HZ = 60
+};
+
+enum {
+    FRAMEBUFFER_DISPLAY_COALESCE_FORCED_PRESENT = 1
 };
 
 struct framebuffer_dirty_rect {
@@ -34,6 +42,12 @@ struct framebuffer_dirty_rect {
 struct framebuffer_cached_glyph {
     uint32_t codepoint;
     uint8_t valid;
+    uint8_t width;
+    uint16_t rows[FRAMEBUFFER_FONT_HEIGHT];
+};
+
+struct framebuffer_loaded_glyph {
+    uint32_t codepoint;
     uint8_t width;
     uint16_t rows[FRAMEBUFFER_FONT_HEIGHT];
 };
@@ -66,9 +80,22 @@ struct framebuffer_display_state {
     uint16_t cursor_row;
     uint16_t cursor_col;
     uint32_t cursor_blink_ticks;
-    uint32_t present_accumulator;
+    uint8_t cursor_update_pending;
     uint8_t present_pending;
     uint32_t dirty_count;
+    uint32_t present_requests;
+    uint32_t service_requests;
+    uint32_t flush_count;
+    uint32_t skipped_flush_count;
+    uint32_t coalesced_present_count;
+    uint32_t dirty_mark_count;
+    uint32_t dirty_merge_count;
+    uint32_t copied_rect_count;
+    uint64_t copied_bytes;
+    uint32_t last_present_tick;
+    uint32_t last_flush_tick;
+    uint32_t last_flush_rects;
+    uint32_t last_skip_reason;
     struct framebuffer_dirty_rect dirty_rects[FRAMEBUFFER_DIRTY_RECT_MAX];
     uint8_t mouse_cursor_enabled;
     uint8_t mouse_cursor_visible;
@@ -86,9 +113,15 @@ struct framebuffer_display_state {
 static struct framebuffer_display_state g_framebuffer_display;
 static uint8_t g_framebuffer_active_font[256 * FRAMEBUFFER_FONT_HEIGHT];
 static struct framebuffer_cached_glyph g_framebuffer_glyph_cache[FRAMEBUFFER_GLYPH_CACHE_SIZE];
+static struct framebuffer_loaded_glyph *g_framebuffer_loaded_glyphs;
+static uint32_t g_framebuffer_loaded_glyph_capacity;
 static uint32_t g_framebuffer_glyph_cache_next;
+static uint32_t g_framebuffer_loaded_glyph_count;
+static uint8_t g_framebuffer_loaded_glyphs_sorted;
 static const char *g_framebuffer_font_module_text;
 static uint32_t g_framebuffer_font_module_size;
+static uint8_t g_framebuffer_font_module_format;
+static uint8_t g_framebuffer_bdf_ascent;
 static uint32_t g_framebuffer_font_page_offsets[FRAMEBUFFER_FONT_INDEX_PAGES];
 static uint8_t g_framebuffer_font_page_valid[FRAMEBUFFER_FONT_INDEX_PAGES];
 static uint32_t g_framebuffer_profile_present;
@@ -127,6 +160,8 @@ static uint32_t framebuffer_blank_cell(uint8_t color) {
 
 static void framebuffer_glyph_cache_clear(void) {
     g_framebuffer_glyph_cache_next = 0;
+    g_framebuffer_loaded_glyph_count = 0;
+    g_framebuffer_loaded_glyphs_sorted = 1u;
     for (uint32_t i = 0; i < FRAMEBUFFER_GLYPH_CACHE_SIZE; i++) {
         g_framebuffer_glyph_cache[i].valid = 0;
     }
@@ -186,6 +221,14 @@ static uint64_t framebuffer_dirty_rect_area(const struct framebuffer_dirty_rect 
     return (uint64_t)(rect->x1 - rect->x0) * (uint64_t)(rect->y1 - rect->y0);
 }
 
+static void framebuffer_note_skip(struct framebuffer_display_state *state, uint32_t reason) {
+    if (state == 0) {
+        return;
+    }
+    state->skipped_flush_count++;
+    state->last_skip_reason = reason;
+}
+
 static struct framebuffer_dirty_rect framebuffer_dirty_rect_union(
     const struct framebuffer_dirty_rect *a,
     const struct framebuffer_dirty_rect *b) {
@@ -210,6 +253,8 @@ static void framebuffer_mark_dirty(struct framebuffer_display_state *state,
     if (state == 0 || width == 0u || height == 0u || x >= state->width || y >= state->height) {
         return;
     }
+    state->present_pending = 1u;
+
     x1 = x + width;
     y1 = y + height;
     if (x1 > state->width || x1 < x) {
@@ -226,6 +271,7 @@ static void framebuffer_mark_dirty(struct framebuffer_display_state *state,
     dirty.y0 = y;
     dirty.x1 = x1;
     dirty.y1 = y1;
+    state->dirty_mark_count++;
 
     for (uint32_t i = 0; i < state->dirty_count;) {
         struct framebuffer_dirty_rect *current = &state->dirty_rects[i];
@@ -249,6 +295,7 @@ static void framebuffer_mark_dirty(struct framebuffer_display_state *state,
         }
         state->dirty_count--;
         state->dirty_rects[i] = state->dirty_rects[state->dirty_count];
+        state->dirty_merge_count++;
     }
 
     if (state->dirty_count < FRAMEBUFFER_DIRTY_RECT_MAX) {
@@ -279,6 +326,7 @@ static void framebuffer_mark_dirty(struct framebuffer_display_state *state,
         }
     }
     state->dirty_rects[best_index] = best_union;
+    state->dirty_merge_count++;
 }
 
 static void framebuffer_flush_dirty(struct framebuffer_display_state *state) {
@@ -287,11 +335,28 @@ static void framebuffer_flush_dirty(struct framebuffer_display_state *state) {
     uint64_t bytes = 0u;
     uint64_t start;
 
-    if (state == 0 || state->update_depth != 0u) {
+    if (state == 0) {
         return;
     }
-    if (!state->backbuffer_enabled || state->dirty_count == 0u ||
-        state->front_base == 0 || state->base == 0) {
+    if (!state->active) {
+        framebuffer_note_skip(state, FRAMEBUFFER_FLUSH_SKIP_INACTIVE);
+        return;
+    }
+    if (state->update_depth != 0u) {
+        framebuffer_note_skip(state, FRAMEBUFFER_FLUSH_SKIP_UPDATE_DEPTH);
+        return;
+    }
+    if (!state->backbuffer_enabled) {
+        framebuffer_note_skip(state, FRAMEBUFFER_FLUSH_SKIP_NO_BACKBUFFER);
+        state->dirty_count = 0u;
+        return;
+    }
+    if (state->dirty_count == 0u) {
+        framebuffer_note_skip(state, FRAMEBUFFER_FLUSH_SKIP_NO_DIRTY);
+        return;
+    }
+    if (state->front_base == 0 || state->base == 0) {
+        framebuffer_note_skip(state, FRAMEBUFFER_FLUSH_SKIP_BAD_BASE);
         state->dirty_count = 0u;
         return;
     }
@@ -326,6 +391,12 @@ static void framebuffer_flush_dirty(struct framebuffer_display_state *state) {
         }
     }
     state->dirty_count = 0u;
+    state->flush_count++;
+    state->copied_rect_count += rect_count;
+    state->copied_bytes += bytes;
+    state->last_flush_tick = hal_timer_current_ticks();
+    state->last_flush_rects = rect_count;
+    state->last_skip_reason = FRAMEBUFFER_FLUSH_SKIP_NONE;
     kernel_profile_record(g_framebuffer_profile_present,
                           kernel_profile_clock() - start,
                           bytes);
@@ -852,6 +923,169 @@ static int framebuffer_parse_hex_font_line(const char *line,
     return framebuffer_parse_hex_glyph(line + digits + 1u, len - digits - 1u, width, rows);
 }
 
+static int framebuffer_line_starts_with(const char *line,
+                                        uint32_t len,
+                                        const char *prefix) {
+    uint32_t i = 0;
+
+    if (line == 0 || prefix == 0) {
+        return 0;
+    }
+    while (prefix[i] != '\0') {
+        if (i >= len || line[i] != prefix[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return 1;
+}
+
+static int framebuffer_line_eq(const char *line, uint32_t len, const char *text) {
+    uint32_t i = 0;
+
+    if (line == 0 || text == 0) {
+        return 0;
+    }
+    while (i < len && text[i] != '\0') {
+        if (line[i] != text[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return i == len && text[i] == '\0';
+}
+
+static int framebuffer_parse_bdf_int_token(const char *text,
+                                           uint32_t len,
+                                           uint32_t *offset,
+                                           int32_t *value) {
+    uint32_t i;
+    int32_t sign = 1;
+    int32_t result = 0;
+    uint8_t have_digit = 0;
+
+    if (text == 0 || offset == 0 || value == 0) {
+        return 0;
+    }
+    i = *offset;
+    while (i < len && (text[i] == ' ' || text[i] == '\t')) {
+        i++;
+    }
+    if (i < len && text[i] == '-') {
+        sign = -1;
+        i++;
+    }
+    while (i < len && text[i] >= '0' && text[i] <= '9') {
+        result = result * 10 + (int32_t)(text[i] - '0');
+        have_digit = 1u;
+        i++;
+    }
+    if (have_digit == 0u) {
+        return 0;
+    }
+    *offset = i;
+    *value = result * sign;
+    return 1;
+}
+
+static int framebuffer_parse_bdf_encoding_line(const char *line,
+                                               uint32_t len,
+                                               uint32_t *codepoint) {
+    uint32_t offset = 8u;
+    int32_t value = 0;
+
+    if (!framebuffer_line_starts_with(line, len, "ENCODING") ||
+        !framebuffer_parse_bdf_int_token(line, len, &offset, &value) ||
+        value < 0 || value > 0x10ffff) {
+        return 0;
+    }
+    *codepoint = (uint32_t)value;
+    return 1;
+}
+
+static int framebuffer_parse_bdf_dwidth_line(const char *line,
+                                             uint32_t len,
+                                             uint8_t *width) {
+    uint32_t offset = 6u;
+    int32_t value = 0;
+
+    if (!framebuffer_line_starts_with(line, len, "DWIDTH") ||
+        !framebuffer_parse_bdf_int_token(line, len, &offset, &value) ||
+        value <= 0) {
+        return 0;
+    }
+    *width = value > 8 ? 16u : 8u;
+    return 1;
+}
+
+static int framebuffer_parse_bdf_ascent_line(const char *line,
+                                             uint32_t len,
+                                             uint8_t *ascent) {
+    uint32_t offset = 11u;
+    int32_t value = 0;
+
+    if (!framebuffer_line_starts_with(line, len, "FONT_ASCENT") ||
+        !framebuffer_parse_bdf_int_token(line, len, &offset, &value) ||
+        value <= 0) {
+        return 0;
+    }
+    *ascent = value > FRAMEBUFFER_FONT_HEIGHT ? FRAMEBUFFER_FONT_HEIGHT : (uint8_t)value;
+    return 1;
+}
+
+static int framebuffer_parse_bdf_bbx_line(const char *line,
+                                          uint32_t len,
+                                          uint8_t *bitmap_width,
+                                          uint8_t *bitmap_height,
+                                          int8_t *x_offset,
+                                          int8_t *y_offset) {
+    uint32_t offset = 3u;
+    int32_t values[4];
+
+    if (!framebuffer_line_starts_with(line, len, "BBX")) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < 4u; i++) {
+        if (!framebuffer_parse_bdf_int_token(line, len, &offset, &values[i])) {
+            return 0;
+        }
+    }
+    if (values[0] <= 0 || values[0] > 16 || values[1] <= 0) {
+        return 0;
+    }
+    *bitmap_width = (uint8_t)values[0];
+    *bitmap_height = values[1] > 64 ? 64u : (uint8_t)values[1];
+    *x_offset = values[2] < -16 ? -16 : (values[2] > 16 ? 16 : (int8_t)values[2]);
+    *y_offset = values[3] < -32 ? -32 : (values[3] > 32 ? 32 : (int8_t)values[3]);
+    return 1;
+}
+
+static int framebuffer_parse_bdf_bitmap_row(const char *line,
+                                            uint32_t len,
+                                            uint8_t width,
+                                            uint16_t *bits) {
+    uint32_t bytes_per_row;
+    uint16_t result = 0;
+
+    if (line == 0 || bits == 0 || width == 0u || width > 16u) {
+        return 0;
+    }
+    bytes_per_row = (width + 7u) / 8u;
+    if (len < bytes_per_row * 2u) {
+        return 0;
+    }
+    for (uint32_t byte = 0; byte < bytes_per_row; byte++) {
+        uint8_t value = 0;
+
+        if (!framebuffer_parse_hex_byte(line + byte * 2u, &value)) {
+            return 0;
+        }
+        result = (uint16_t)((result << 8) | value);
+    }
+    *bits = result;
+    return 1;
+}
+
 static int framebuffer_module_name_eq(const char name[12], const char *target) {
     char padded[11];
     uint32_t i = 0;
@@ -892,10 +1126,17 @@ static void framebuffer_font_reset_to_builtin(void) {
     }
     g_framebuffer_font_module_text = 0;
     g_framebuffer_font_module_size = 0;
+    g_framebuffer_font_module_format = FRAMEBUFFER_FONT_MODULE_NONE;
+    g_framebuffer_bdf_ascent = 14u;
     framebuffer_glyph_cache_clear();
 }
 
-static int framebuffer_try_load_hex_font_module(const struct bootx_module *module) {
+static int framebuffer_store_loaded_glyph(uint32_t codepoint,
+                                          uint8_t width,
+                                          const uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]);
+static int framebuffer_loaded_glyph_storage_init(void);
+
+static int framebuffer_try_load_hex_font_module(const struct janus_module *module) {
     const char *text;
     uint32_t offset = 0;
     int loaded_any = 0;
@@ -907,6 +1148,7 @@ static int framebuffer_try_load_hex_font_module(const struct bootx_module *modul
     text = (const char *)(uintptr_t)module->address;
     g_framebuffer_font_module_text = text;
     g_framebuffer_font_module_size = module->size;
+    g_framebuffer_font_module_format = FRAMEBUFFER_FONT_MODULE_HEX;
     framebuffer_glyph_cache_clear();
 
     while (offset < module->size) {
@@ -930,6 +1172,7 @@ static int framebuffer_try_load_hex_font_module(const struct bootx_module *modul
                                             rows)) {
             uint32_t page = codepoint >> 8;
 
+            loaded_any = 1;
             if (page < FRAMEBUFFER_FONT_INDEX_PAGES && g_framebuffer_font_page_valid[page] == 0u) {
                 g_framebuffer_font_page_valid[page] = 1u;
                 g_framebuffer_font_page_offsets[page] = line_start;
@@ -951,11 +1194,258 @@ static int framebuffer_try_load_hex_font_module(const struct bootx_module *modul
     return loaded_any;
 }
 
+static int framebuffer_parse_bdf_glyph_at(uint32_t start_offset,
+                                          uint32_t *codepoint,
+                                          uint8_t *width,
+                                          uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]) {
+    const char *text = g_framebuffer_font_module_text;
+    uint32_t offset = start_offset;
+    uint8_t have_encoding = 0;
+    uint8_t have_bbx = 0;
+    uint8_t in_bitmap = 0;
+    uint8_t glyph_width = 8;
+    uint8_t bitmap_width = 8;
+    uint8_t bitmap_height = FRAMEBUFFER_FONT_HEIGHT;
+    uint8_t bitmap_row = 0;
+    int8_t x_offset = 0;
+    int8_t y_offset = 0;
+    int32_t dest_start_row = 0;
+    uint32_t parsed_codepoint = 0;
+
+    if (text == 0 || codepoint == 0 || width == 0 || rows == 0 ||
+        offset >= g_framebuffer_font_module_size) {
+        return 0;
+    }
+    for (uint32_t row = 0; row < FRAMEBUFFER_FONT_HEIGHT; row++) {
+        rows[row] = 0;
+    }
+    while (offset < g_framebuffer_font_module_size) {
+        uint32_t line_start = offset;
+        uint32_t line_end;
+
+        while (offset < g_framebuffer_font_module_size && text[offset] != '\n') {
+            offset++;
+        }
+        line_end = offset;
+        if (line_end > line_start && text[line_end - 1u] == '\r') {
+            line_end--;
+        }
+        if (framebuffer_line_starts_with(text + line_start, line_end - line_start, "STARTCHAR")) {
+            if (line_start != start_offset) {
+                return 0;
+            }
+        } else if (framebuffer_parse_bdf_encoding_line(text + line_start,
+                                                       line_end - line_start,
+                                                       &parsed_codepoint)) {
+            have_encoding = 1u;
+        } else if (framebuffer_parse_bdf_dwidth_line(text + line_start,
+                                                     line_end - line_start,
+                                                     &glyph_width)) {
+        } else if (framebuffer_parse_bdf_bbx_line(text + line_start,
+                                                  line_end - line_start,
+                                                  &bitmap_width,
+                                                  &bitmap_height,
+                                                  &x_offset,
+                                                  &y_offset)) {
+            if (glyph_width == 8u && bitmap_width > 8u) {
+                glyph_width = 16u;
+            }
+            dest_start_row = (int32_t)g_framebuffer_bdf_ascent - ((int32_t)y_offset + bitmap_height);
+            have_bbx = 1u;
+        } else if (framebuffer_line_starts_with(text + line_start, line_end - line_start, "BITMAP")) {
+            if (have_bbx == 0u) {
+                return 0;
+            }
+            in_bitmap = 1u;
+            bitmap_row = 0;
+        } else if (framebuffer_line_eq(text + line_start, line_end - line_start, "ENDCHAR")) {
+            if (have_encoding != 0u && have_bbx != 0u) {
+                *codepoint = parsed_codepoint;
+                *width = glyph_width;
+                return 1;
+            }
+            return 0;
+        } else if (in_bitmap != 0u && bitmap_row < bitmap_height) {
+            uint16_t bits = 0;
+
+            if (framebuffer_parse_bdf_bitmap_row(text + line_start,
+                                                 line_end - line_start,
+                                                 bitmap_width,
+                                                 &bits)) {
+                int32_t dest_row = dest_start_row + bitmap_row;
+                uint16_t placed_bits = bits;
+
+                if (glyph_width == 16u && bitmap_width <= 8u) {
+                    placed_bits = (uint16_t)(placed_bits << 8);
+                }
+                if (x_offset > 0) {
+                    placed_bits = (uint16_t)(placed_bits >> x_offset);
+                } else if (x_offset < 0) {
+                    placed_bits = (uint16_t)(placed_bits << -x_offset);
+                }
+                if (dest_row >= 0 && dest_row < FRAMEBUFFER_FONT_HEIGHT) {
+                    rows[dest_row] = placed_bits;
+                }
+                bitmap_row++;
+            }
+        }
+        if (offset < g_framebuffer_font_module_size && text[offset] == '\n') {
+            offset++;
+        }
+    }
+    return 0;
+}
+
+static int framebuffer_try_load_bdf_font_module(const struct janus_module *module) {
+    const char *text;
+    uint32_t offset = 0;
+    int loaded_any = 0;
+
+    if (module == 0 || module->address == 0 || module->size == 0) {
+        return 0;
+    }
+
+    text = (const char *)(uintptr_t)module->address;
+    g_framebuffer_font_module_text = text;
+    g_framebuffer_font_module_size = module->size;
+    g_framebuffer_font_module_format = FRAMEBUFFER_FONT_MODULE_BDF;
+    g_framebuffer_bdf_ascent = 14u;
+    framebuffer_glyph_cache_clear();
+    (void)framebuffer_loaded_glyph_storage_init();
+
+    while (offset < module->size) {
+        uint32_t line_start = offset;
+        uint32_t line_end;
+
+        while (offset < module->size && text[offset] != '\n') {
+            offset++;
+        }
+        line_end = offset;
+        if (line_end > line_start && text[line_end - 1u] == '\r') {
+            line_end--;
+        }
+        (void)framebuffer_parse_bdf_ascent_line(text + line_start,
+                                                line_end - line_start,
+                                                &g_framebuffer_bdf_ascent);
+        if (framebuffer_line_starts_with(text + line_start, line_end - line_start, "STARTCHAR")) {
+            uint32_t codepoint = 0;
+            uint8_t glyph_width = 0;
+            uint16_t rows[FRAMEBUFFER_FONT_HEIGHT];
+
+            if (framebuffer_parse_bdf_glyph_at(line_start, &codepoint, &glyph_width, rows)) {
+                uint32_t page = codepoint >> 8;
+
+                loaded_any = 1;
+                (void)framebuffer_store_loaded_glyph(codepoint, glyph_width, rows);
+                if (page < FRAMEBUFFER_FONT_INDEX_PAGES && g_framebuffer_font_page_valid[page] == 0u) {
+                    g_framebuffer_font_page_valid[page] = 1u;
+                    g_framebuffer_font_page_offsets[page] = line_start;
+                }
+            }
+        }
+        if (offset < module->size && text[offset] == '\n') {
+            offset++;
+        }
+    }
+
+    return loaded_any;
+}
+
 static void framebuffer_copy_glyph_rows(uint16_t dst[FRAMEBUFFER_FONT_HEIGHT],
                                         const uint16_t src[FRAMEBUFFER_FONT_HEIGHT]) {
     for (uint32_t row = 0; row < FRAMEBUFFER_FONT_HEIGHT; row++) {
         dst[row] = src[row];
     }
+}
+
+static int framebuffer_store_loaded_glyph(uint32_t codepoint,
+                                          uint8_t width,
+                                          const uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]) {
+    struct framebuffer_loaded_glyph *glyph;
+
+    if (g_framebuffer_loaded_glyphs == 0 ||
+        g_framebuffer_loaded_glyph_count >= g_framebuffer_loaded_glyph_capacity) {
+        return 0;
+    }
+    if (g_framebuffer_loaded_glyph_count > 0u &&
+        codepoint < g_framebuffer_loaded_glyphs[g_framebuffer_loaded_glyph_count - 1u].codepoint) {
+        g_framebuffer_loaded_glyphs_sorted = 0u;
+    }
+
+    glyph = &g_framebuffer_loaded_glyphs[g_framebuffer_loaded_glyph_count++];
+    glyph->codepoint = codepoint;
+    glyph->width = width;
+    framebuffer_copy_glyph_rows(glyph->rows, rows);
+    return 1;
+}
+
+static int framebuffer_loaded_glyph_storage_init(void) {
+    uint64_t bytes;
+    uint32_t pages;
+    uint64_t phys;
+    struct framebuffer_loaded_glyph *glyphs;
+
+    if (g_framebuffer_loaded_glyphs != 0) {
+        g_framebuffer_loaded_glyph_capacity = FRAMEBUFFER_LOADED_GLYPH_CAPACITY;
+        return 1;
+    }
+
+    bytes = (uint64_t)sizeof(struct framebuffer_loaded_glyph) *
+            FRAMEBUFFER_LOADED_GLYPH_CAPACITY;
+    pages = (uint32_t)((bytes + 4095u) / 4096u);
+    phys = pmm_alloc_contiguous(pages);
+    if (phys == 0u) {
+        return 0;
+    }
+    glyphs = (struct framebuffer_loaded_glyph *)hal_phys_direct_map(phys);
+    if (glyphs == 0) {
+        for (uint32_t i = 0; i < pages; i++) {
+            (void)pmm_free_page(phys + (uint64_t)i * 4096u);
+        }
+        return 0;
+    }
+    g_framebuffer_loaded_glyphs = glyphs;
+    g_framebuffer_loaded_glyph_capacity = FRAMEBUFFER_LOADED_GLYPH_CAPACITY;
+    return 1;
+}
+
+static int framebuffer_find_loaded_glyph(uint32_t codepoint,
+                                         uint8_t *width,
+                                         uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]) {
+    if (g_framebuffer_loaded_glyphs == 0 || g_framebuffer_loaded_glyph_count == 0u) {
+        return 0;
+    }
+    if (g_framebuffer_loaded_glyphs_sorted != 0u) {
+        uint32_t lo = 0;
+        uint32_t hi = g_framebuffer_loaded_glyph_count;
+
+        while (lo < hi) {
+            uint32_t mid = lo + (hi - lo) / 2u;
+            uint32_t current = g_framebuffer_loaded_glyphs[mid].codepoint;
+
+            if (current < codepoint) {
+                lo = mid + 1u;
+            } else {
+                hi = mid;
+            }
+        }
+        if (lo < g_framebuffer_loaded_glyph_count &&
+            g_framebuffer_loaded_glyphs[lo].codepoint == codepoint) {
+            *width = g_framebuffer_loaded_glyphs[lo].width;
+            framebuffer_copy_glyph_rows(rows, g_framebuffer_loaded_glyphs[lo].rows);
+            return 1;
+        }
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < g_framebuffer_loaded_glyph_count; i++) {
+        if (g_framebuffer_loaded_glyphs[i].codepoint == codepoint) {
+            *width = g_framebuffer_loaded_glyphs[i].width;
+            framebuffer_copy_glyph_rows(rows, g_framebuffer_loaded_glyphs[i].rows);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int framebuffer_find_cached_glyph(uint32_t codepoint,
@@ -1012,11 +1502,29 @@ static int framebuffer_find_module_glyph(uint32_t codepoint,
         if (line_end > line_start && text[line_end - 1u] == '\r') {
             line_end--;
         }
-        if (framebuffer_parse_hex_font_line(text + line_start,
+        if (g_framebuffer_font_module_format == FRAMEBUFFER_FONT_MODULE_HEX &&
+            framebuffer_parse_hex_font_line(text + line_start,
                                             line_end - line_start,
                                             &current_codepoint,
                                             &current_width,
                                             current_rows)) {
+            if (current_codepoint == codepoint) {
+                *width = current_width;
+                framebuffer_copy_glyph_rows(rows, current_rows);
+                framebuffer_store_cached_glyph(codepoint, current_width, current_rows);
+                return 1;
+            }
+            if (current_codepoint > codepoint || (current_codepoint >> 8) > page) {
+                return 0;
+            }
+        } else if (g_framebuffer_font_module_format == FRAMEBUFFER_FONT_MODULE_BDF &&
+                   framebuffer_line_starts_with(text + line_start,
+                                                line_end - line_start,
+                                                "STARTCHAR") &&
+                   framebuffer_parse_bdf_glyph_at(line_start,
+                                                  &current_codepoint,
+                                                  &current_width,
+                                                  current_rows)) {
             if (current_codepoint == codepoint) {
                 *width = current_width;
                 framebuffer_copy_glyph_rows(rows, current_rows);
@@ -1037,6 +1545,9 @@ static int framebuffer_find_module_glyph(uint32_t codepoint,
 static void framebuffer_get_glyph(uint32_t codepoint,
                                   uint8_t *width,
                                   uint16_t rows[FRAMEBUFFER_FONT_HEIGHT]) {
+    if (framebuffer_find_loaded_glyph(codepoint, width, rows)) {
+        return;
+    }
     if (codepoint <= 0xffu) {
         *width = 8;
         for (uint32_t row = 0; row < FRAMEBUFFER_FONT_HEIGHT; row++) {
@@ -1196,27 +1707,25 @@ static void framebuffer_render_cell(const struct framebuffer_display_state *stat
                            state->cell_height);
 }
 
-static void framebuffer_render_all(struct framebuffer_display_state *state) {
-    uint32_t bg_pixel = framebuffer_vga_color_to_pixel(state, 0x00u);
-
-    framebuffer_fill_rect(state, 0, 0, state->width, state->height, bg_pixel);
+static void framebuffer_render_all(const struct framebuffer_display_state *state) {
+    if (state == 0 || state->base == 0) {
+        return;
+    }
     for (uint16_t row = 0; row < state->rows; row++) {
         for (uint16_t col = 0; col < state->columns; col++) {
             framebuffer_render_cell(state, row, col);
         }
     }
-    framebuffer_mark_dirty(state, 0, 0, state->width, state->height);
-    framebuffer_flush_dirty(state);
 }
 
-void framebuffer_display_init(const struct bootx_console_info *console) {
+void framebuffer_display_init(const struct janus_console_info *console) {
     struct framebuffer_display_state *state = &g_framebuffer_display;
     uint8_t cell_height = FRAMEBUFFER_FONT_HEIGHT;
     uint16_t columns;
     uint16_t rows;
 
-    state->active = 0;
-    if (console == 0 || console->type != BOOTX_CONSOLE_FRAMEBUFFER ||
+    memset(state, 0, sizeof(*state));
+    if (console == 0 || console->type != JANUS_CONSOLE_FRAMEBUFFER ||
         console->framebuffer_addr == 0 || console->width == 0 || console->height == 0 ||
         console->pitch == 0 || (console->framebuffer_bpp != 32u &&
                                 console->framebuffer_bpp != 24u &&
@@ -1269,7 +1778,7 @@ void framebuffer_display_init(const struct bootx_console_info *console) {
     state->cursor_row = 0;
     state->cursor_col = 0;
     state->cursor_blink_ticks = 0u;
-    state->present_accumulator = 0u;
+    state->cursor_update_pending = 0u;
     state->present_pending = 0u;
     state->dirty_count = 0u;
     state->mouse_cursor_enabled = 0u;
@@ -1288,7 +1797,8 @@ void framebuffer_display_init(const struct bootx_console_info *console) {
         }
     }
     state->active = 1;
-    framebuffer_render_all(state);
+    /* Skip framebuffer_render_all() during boot initialization to improve boot speed.
+     * The framebuffer will be rendered on first kprint() or graphics update. */
 }
 
 int framebuffer_display_enable_backbuffer(void) {
@@ -1304,28 +1814,99 @@ int framebuffer_display_enable_backbuffer(void) {
 
     bytes = (uint64_t)state->pitch * state->height;
     pages = (uint32_t)((bytes + 4095u) / 4096u);
+
     if (bytes == 0u || pages == 0u || bytes > 0xffffffffull) {
         return 0;
     }
 
+    kprint("FB: backbuffer bytes=%u pages=%u\n",
+           (uint32_t)bytes, pages);
+
+    /*
+     * 1. Backbuffer용 연속 물리 메모리 할당
+     */
+    kprint("FB: alloc begin\n");
+
     phys = pmm_alloc_contiguous(pages);
+
+    kprint("FB: alloc done\n");
+
     if (phys == 0u) {
+        kprint("FB: alloc FAILED\n");
         return 0;
     }
-    back = (volatile uint8_t *)hal_mmio_map(phys, bytes);
+
+    /*
+     * 2. 물리 메모리를 direct map으로 접근
+     */
+    kprint("FB: direct map begin\n");
+
+    back = (volatile uint8_t *)hal_phys_direct_map(phys);
+
+    kprint("FB: direct map done\n");
+
     if (back == 0) {
+        kprint("FB: direct map FAILED\n");
+
         for (uint32_t i = 0; i < pages; i++) {
-            (void)pmm_free_page(phys + (uint64_t)i * 4096u);
+            (void)pmm_free_page(
+                phys + (uint64_t)i * 4096u
+            );
         }
+
         return 0;
     }
+
+    /*
+     * 중요:
+     * 아직 state->base는 front framebuffer를 가리킨다.
+     * 따라서 이 로그는 실제 화면에 바로 보여야 한다.
+     */
+    kprint("FB: switching to backbuffer\n");
+    kprint("FB: render begin\n");
 
     state->base = back;
     state->backbuffer_enabled = 1u;
     framebuffer_render_all(state);
-    framebuffer_mark_dirty(state, 0, 0, state->width, state->height);
+    state->dirty_count = 0u;
+    kprint("FB: backbuffer enabled\n");
     framebuffer_flush_dirty(state);
+
     return 1;
+}
+
+int framebuffer_display_query_status(struct framebuffer_display_status *out) {
+    const struct framebuffer_display_state *state = &g_framebuffer_display;
+
+    if (out == 0) {
+        return 0;
+    }
+    out->active = state->active != 0;
+    out->backbuffer_enabled = state->backbuffer_enabled != 0;
+    out->width = state->width;
+    out->height = state->height;
+    out->pitch = state->pitch;
+    out->bpp = state->bpp;
+    out->columns = state->columns;
+    out->rows = state->rows;
+    out->cell_height = state->cell_height;
+    out->update_depth = state->update_depth;
+    out->dirty_count = state->dirty_count;
+    out->present_pending = state->present_pending;
+    out->present_requests = state->present_requests;
+    out->service_requests = state->service_requests;
+    out->flush_count = state->flush_count;
+    out->skipped_flush_count = state->skipped_flush_count;
+    out->coalesced_present_count = state->coalesced_present_count;
+    out->dirty_mark_count = state->dirty_mark_count;
+    out->dirty_merge_count = state->dirty_merge_count;
+    out->copied_rect_count = state->copied_rect_count;
+    out->copied_bytes = state->copied_bytes;
+    out->last_present_tick = state->last_present_tick;
+    out->last_flush_tick = state->last_flush_tick;
+    out->last_flush_rects = state->last_flush_rects;
+    out->last_skip_reason = state->last_skip_reason;
+    return state->active != 0;
 }
 
 void framebuffer_display_begin_update(void) {
@@ -1342,18 +1923,30 @@ void framebuffer_display_end_update(void) {
     g_framebuffer_display.update_depth--;
 }
 
-void framebuffer_display_load_font_from_boot_modules(const struct bootx_boot_info *boot_info) {
-    const struct bootx_module *modules;
+void framebuffer_display_load_font_from_boot_modules(const struct janus_boot_info *boot_info) {
+    const struct janus_module *modules;
 
     framebuffer_font_reset_to_builtin();
     if (boot_info == 0 || boot_info->module_count == 0 || boot_info->modules == 0) {
         return;
     }
 
-    modules = (const struct bootx_module *)(uintptr_t)boot_info->modules;
+    modules = (const struct janus_module *)(uintptr_t)boot_info->modules;
     for (uint32_t i = 0; i < boot_info->module_count; i++) {
         if (framebuffer_module_name_eq(modules[i].name, "FONT.HEX") &&
             framebuffer_try_load_hex_font_module(&modules[i])) {
+            if (g_framebuffer_display.active) {
+                framebuffer_render_all(&g_framebuffer_display);
+            }
+            return;
+        }
+    }
+    for (uint32_t i = 0; i < boot_info->module_count; i++) {
+        if (framebuffer_module_name_eq(modules[i].name, "FONT.BDF") &&
+            framebuffer_try_load_bdf_font_module(&modules[i])) {
+            if (g_framebuffer_display.active) {
+                framebuffer_render_all(&g_framebuffer_display);
+            }
             return;
         }
     }
@@ -1544,6 +2137,32 @@ void framebuffer_display_enable_cursor(uint8_t start, uint8_t end) {
     framebuffer_end_mouse_cursor_covered_update(&g_framebuffer_display, redraw_mouse);
 }
 
+void framebuffer_display_disable_cursor(void) {
+    uint32_t x;
+    uint32_t y;
+    int redraw_mouse;
+
+    if (!g_framebuffer_display.active ||
+        g_framebuffer_display.cursor_enabled == 0u) {
+        return;
+    }
+    x = g_framebuffer_display.origin_x +
+        (uint32_t)g_framebuffer_display.cursor_col * FRAMEBUFFER_FONT_WIDTH;
+    y = g_framebuffer_display.origin_y +
+        (uint32_t)g_framebuffer_display.cursor_row * g_framebuffer_display.cell_height;
+    redraw_mouse = framebuffer_begin_mouse_cursor_covered_update(&g_framebuffer_display,
+                                                                 x,
+                                                                 y,
+                                                                 FRAMEBUFFER_FONT_WIDTH,
+                                                                 g_framebuffer_display.cell_height);
+    g_framebuffer_display.cursor_enabled = 0u;
+    g_framebuffer_display.cursor_visible = 0u;
+    framebuffer_render_cell(&g_framebuffer_display,
+                            g_framebuffer_display.cursor_row,
+                            g_framebuffer_display.cursor_col);
+    framebuffer_end_mouse_cursor_covered_update(&g_framebuffer_display, redraw_mouse);
+}
+
 void framebuffer_display_set_cursor(uint16_t row, uint16_t col) {
     uint16_t old_row;
     uint16_t old_col;
@@ -1592,52 +2211,101 @@ void framebuffer_display_set_cursor(uint16_t row, uint16_t col) {
 
 void framebuffer_display_tick(uint32_t ticks) {
     uint8_t visible;
-    uint32_t x;
-    uint32_t y;
     uint32_t timer_hz;
-    int redraw_mouse;
+    uint32_t cursor_blink_ticks;
 
     if (!g_framebuffer_display.active) {
         return;
     }
-    if (g_framebuffer_display.cursor_enabled != 0u) {
-        visible = ((ticks / FRAMEBUFFER_CURSOR_BLINK_TICKS) & 1u) == 0u ? 1u : 0u;
-        if (visible != g_framebuffer_display.cursor_visible) {
-            g_framebuffer_display.cursor_blink_ticks = ticks;
-            g_framebuffer_display.cursor_visible = visible;
-            x = g_framebuffer_display.origin_x +
-                (uint32_t)g_framebuffer_display.cursor_col * FRAMEBUFFER_FONT_WIDTH;
-            y = g_framebuffer_display.origin_y +
-                (uint32_t)g_framebuffer_display.cursor_row * g_framebuffer_display.cell_height;
-            redraw_mouse = framebuffer_begin_mouse_cursor_covered_update(&g_framebuffer_display,
-                                                                         x,
-                                                                         y,
-                                                                         FRAMEBUFFER_FONT_WIDTH,
-                                                                         g_framebuffer_display.cell_height);
-            framebuffer_render_cell(&g_framebuffer_display,
-                                    g_framebuffer_display.cursor_row,
-                                    g_framebuffer_display.cursor_col);
-            framebuffer_end_mouse_cursor_covered_update(&g_framebuffer_display, redraw_mouse);
-        }
+
+    if (g_framebuffer_display.cursor_enabled == 0u) {
+        return;
     }
 
     timer_hz = hal_timer_hz();
     if (timer_hz == 0u) {
         timer_hz = 100u;
     }
-    g_framebuffer_display.present_accumulator += FRAMEBUFFER_PRESENT_HZ;
-    if (g_framebuffer_display.present_accumulator >= timer_hz) {
-        g_framebuffer_display.present_accumulator -= timer_hz;
-        g_framebuffer_display.present_pending = 1u;
+
+    cursor_blink_ticks =
+        (timer_hz * FRAMEBUFFER_CURSOR_BLINK_MS) / 1000u;
+
+    if (cursor_blink_ticks == 0u) {
+        cursor_blink_ticks = 1u;
+    }
+
+    visible =
+        ((ticks / cursor_blink_ticks) & 1u) == 0u ? 1u : 0u;
+
+    if (visible != g_framebuffer_display.cursor_visible) {
+        g_framebuffer_display.cursor_visible = visible;
+        g_framebuffer_display.cursor_blink_ticks = ticks;
+        g_framebuffer_display.cursor_update_pending = 1u;
     }
 }
 
-void framebuffer_display_service_pending(void) {
-    if (!g_framebuffer_display.active ||
-        !g_framebuffer_display.present_pending ||
-        g_framebuffer_display.update_depth != 0u) {
+void framebuffer_display_service_pending(void)
+{
+    if (!g_framebuffer_display.active) {
         return;
     }
+
+    g_framebuffer_display.service_requests++;
+
+    if (g_framebuffer_display.cursor_update_pending) {
+        uint32_t x;
+        uint32_t y;
+        int redraw_mouse;
+
+        g_framebuffer_display.cursor_update_pending = 0u;
+
+        x = g_framebuffer_display.origin_x +
+            (uint32_t)g_framebuffer_display.cursor_col *
+            FRAMEBUFFER_FONT_WIDTH;
+
+        y = g_framebuffer_display.origin_y +
+            (uint32_t)g_framebuffer_display.cursor_row *
+            g_framebuffer_display.cell_height;
+
+        redraw_mouse =
+            framebuffer_begin_mouse_cursor_covered_update(
+                &g_framebuffer_display,
+                x,
+                y,
+                FRAMEBUFFER_FONT_WIDTH,
+                g_framebuffer_display.cell_height
+            );
+
+        framebuffer_render_cell(
+            &g_framebuffer_display,
+            g_framebuffer_display.cursor_row,
+            g_framebuffer_display.cursor_col
+        );
+
+        framebuffer_end_mouse_cursor_covered_update(
+            &g_framebuffer_display,
+            redraw_mouse
+        );
+
+        /*
+         * render_cell 과정에서 dirty가 생길 가능성이 있지만
+         * 명시적으로 보장해도 됨.
+         */
+        g_framebuffer_display.present_pending = 1u;
+    }
+
+    if (!g_framebuffer_display.present_pending) {
+        return;
+    }
+
+    if (g_framebuffer_display.update_depth != 0u) {
+        framebuffer_note_skip(
+            &g_framebuffer_display,
+            FRAMEBUFFER_FLUSH_SKIP_UPDATE_DEPTH
+        );
+        return;
+    }
+
     g_framebuffer_display.present_pending = 0u;
     framebuffer_flush_dirty(&g_framebuffer_display);
 }
@@ -2217,9 +2885,29 @@ void framebuffer_display_fill_circle(int32_t cx, int32_t cy, uint32_t radius, ui
 }
 
 void framebuffer_display_present(void) {
+    uint32_t now;
+
     if (!g_framebuffer_display.active) {
         return;
     }
+    g_framebuffer_display.present_requests++;
+    now = hal_timer_current_ticks();
+    g_framebuffer_display.last_present_tick = now;
+    if (g_framebuffer_display.update_depth != 0u) {
+        g_framebuffer_display.present_pending = 1u;
+        framebuffer_note_skip(&g_framebuffer_display, FRAMEBUFFER_FLUSH_SKIP_UPDATE_DEPTH);
+        return;
+    }
+#if FRAMEBUFFER_DISPLAY_COALESCE_FORCED_PRESENT
+    if (g_framebuffer_display.flush_count != 0u &&
+        g_framebuffer_display.dirty_count != 0u &&
+        g_framebuffer_display.last_flush_tick == now) {
+        g_framebuffer_display.present_pending = 1u;
+        g_framebuffer_display.coalesced_present_count++;
+        framebuffer_note_skip(&g_framebuffer_display, FRAMEBUFFER_FLUSH_SKIP_COALESCED);
+        return;
+    }
+#endif
     g_framebuffer_display.present_pending = 0u;
     framebuffer_flush_dirty(&g_framebuffer_display);
 }

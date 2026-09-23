@@ -9,7 +9,15 @@ struct ata_device {
     uint16_t ctrl_base;
     uint8_t slave;
     uint8_t present;
+    uint8_t state;
+    uint8_t last_status;
     uint32_t sector_count;
+    uint32_t reset_count;
+    uint32_t read_count;
+    uint32_t write_count;
+    uint32_t flush_count;
+    uint32_t error_count;
+    uint32_t last_error;
     char model[41];
     struct block_device blockdev;
 };

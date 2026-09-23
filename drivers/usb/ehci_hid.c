@@ -1,5 +1,17 @@
 #include "drivers/usb/ehci_internal.h"
 
+static int ehci_hid_keyboard_report_has_key(const uint8_t report[8]) {
+    if (report == 0 || report[0] != 0u) {
+        return report != 0;
+    }
+    for (uint32_t i = 2u; i < 8u; i++) {
+        if (report[i] != 0u) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int ehci_parse_hid_keyboard_config(struct ehci_hid_keyboard *kbd, const uint8_t *cfg, uint32_t length) {
     uint32_t offset = 0;
     uint8_t in_keyboard = 0;
@@ -26,10 +38,12 @@ int ehci_parse_hid_keyboard_config(struct ehci_hid_keyboard *kbd, const uint8_t 
             uint8_t ep = cfg[offset + 2u];
             uint8_t attr = cfg[offset + 3u] & 0x03u;
             uint16_t mps = usb_read_u16le(cfg + offset + 4u);
+            uint8_t interval = cfg[offset + 6u];
 
             if (attr == 3u && (ep & 0x80u) != 0u) {
                 kbd->interrupt_in_ep = ep;
                 kbd->interrupt_in_mps = mps;
+                kbd->interrupt_in_interval = interval;
             }
         }
         offset += len;
@@ -63,10 +77,12 @@ int ehci_parse_hid_mouse_config(struct ehci_hid_mouse *mouse, const uint8_t *cfg
             uint8_t ep = cfg[offset + 2u];
             uint8_t attr = cfg[offset + 3u] & 0x03u;
             uint16_t mps = usb_read_u16le(cfg + offset + 4u);
+            uint8_t interval = cfg[offset + 6u];
 
             if (attr == 3u && (ep & 0x80u) != 0u) {
                 mouse->interrupt_in_ep = ep;
                 mouse->interrupt_in_mps = mps;
+                mouse->interrupt_in_interval = interval;
             }
         }
         offset += len;
@@ -129,6 +145,108 @@ int ehci_hid_get_report(struct ehci_hid_keyboard *kbd, uint8_t report[8]) {
     return ehci_control_transfer(&kbd->xfer, kbd->address, kbd->xfer.bulk_in_mps, &req, report, 8u, 1u);
 }
 
+static int ehci_hid_keyboard_recover_interrupt(struct ehci_hid_keyboard *kbd) {
+    uint8_t hard_reset;
+    uint8_t failures;
+    uint16_t mps;
+
+    if (kbd == 0) {
+        return 0;
+    }
+    failures = kbd->interrupt_fail_count;
+    hard_reset = kbd->interrupt_fail_count >= EHCI_HID_RESET_ON_FAIL_COUNT ? 1u : 0u;
+    if (kbd->interrupt_armed) {
+        ehci_interrupt_close(&kbd->xfer);
+        kbd->interrupt_armed = 0u;
+    }
+    kbd->xfer.bulk_in_toggle = 0u;
+    mps = kbd->xfer.control_mps != 0u ? kbd->xfer.control_mps : kbd->xfer.bulk_in_mps;
+    if (mps == 0u) {
+        mps = 64u;
+    }
+    if (hard_reset) {
+        if (!ehci_reset_device_port(&kbd->xfer)) {
+            return 0;
+        }
+        ehci_delay_ms(40u);
+        if (!ehci_set_address(&kbd->xfer, kbd->address, mps) ||
+            !ehci_set_configuration(&kbd->xfer, kbd->configuration, mps)) {
+            return 0;
+        }
+        (void)ehci_hid_set_protocol(kbd, 0u);
+        (void)ehci_hid_set_idle(kbd);
+    } else if (!ehci_clear_endpoint_halt(&kbd->xfer, kbd->interrupt_in_ep)) {
+        return 0;
+    }
+    ehci_delay_ms(2u);
+    if (!ehci_hid_keyboard_arm_interrupt(kbd)) {
+        return 0;
+    }
+    kbd->interrupt_fail_count = hard_reset ? 0u : failures;
+    return 1;
+}
+
+int ehci_hid_keyboard_poll_interrupt_report(struct ehci_hid_keyboard *kbd, uint8_t report[8]) {
+    uint32_t token = 0u;
+
+    if (kbd == 0 || report == 0 || kbd->interrupt_in_ep == 0u ||
+        kbd->interrupt_in_mps == 0u || kbd->xfer.data == 0) {
+        return 0;
+    }
+    if (!kbd->interrupt_armed && !ehci_hid_keyboard_arm_interrupt(kbd)) {
+        return 0;
+    }
+    if (!ehci_interrupt_poll(&kbd->xfer, &kbd->xfer.bulk_in_toggle, &token)) {
+        kbd->last_interrupt_token = token;
+        if ((token & EHCI_QTD_HALTED) != 0u) {
+            kbd->interrupt_error_count++;
+            if (kbd->interrupt_fail_count < 0xffu) {
+                kbd->interrupt_fail_count++;
+            }
+            if (!ehci_hid_keyboard_recover_interrupt(kbd)) {
+                return 0;
+            }
+            if (kbd->interrupt_fail_count >= EHCI_HID_RELEASE_ON_FAIL_COUNT &&
+                ehci_hid_keyboard_report_has_key(kbd->last_report)) {
+                memset(report, 0, 8u);
+                return 1;
+            }
+        }
+        return 0;
+    }
+    kbd->interrupt_fail_count = 0u;
+    kbd->last_interrupt_token = token;
+    memcpy(report, kbd->xfer.data, 8u);
+    ehci_interrupt_rearm(&kbd->xfer,
+                         &kbd->xfer.bulk_in_toggle,
+                         kbd->xfer.data_phys,
+                         8u,
+                         1u);
+    return 1;
+}
+
+int ehci_hid_keyboard_arm_interrupt(struct ehci_hid_keyboard *kbd) {
+    if (kbd == 0 || kbd->interrupt_in_ep == 0u ||
+        kbd->interrupt_in_mps == 0u || kbd->xfer.data == 0) {
+        return 0;
+    }
+    memset(kbd->xfer.data, 0, 8u);
+    kbd->xfer.bulk_in_toggle = 0u;
+    if (!ehci_interrupt_open(&kbd->xfer,
+                             kbd->interrupt_in_ep,
+                             kbd->interrupt_in_mps,
+                             kbd->interrupt_in_interval,
+                             &kbd->xfer.bulk_in_toggle,
+                             kbd->xfer.data_phys,
+                             8u,
+                             1u)) {
+        return 0;
+    }
+    kbd->interrupt_armed = 1u;
+    kbd->interrupt_fail_count = 0u;
+    return 1;
+}
+
 int ehci_hid_mouse_get_report(struct ehci_hid_mouse *mouse, uint8_t report[4]) {
     struct usb_ctrl_request req;
 
@@ -140,6 +258,47 @@ int ehci_hid_mouse_get_report(struct ehci_hid_mouse *mouse, uint8_t report[4]) {
     return ehci_control_transfer(&mouse->xfer, mouse->address, mouse->xfer.bulk_in_mps, &req, report, 4u, 1u);
 }
 
+static int ehci_hid_mouse_recover_interrupt(struct ehci_hid_mouse *mouse) {
+    uint8_t hard_reset;
+    uint8_t failures;
+    uint16_t mps;
+
+    if (mouse == 0) {
+        return 0;
+    }
+    failures = mouse->interrupt_fail_count;
+    hard_reset = mouse->interrupt_fail_count >= EHCI_HID_RESET_ON_FAIL_COUNT ? 1u : 0u;
+    if (mouse->interrupt_armed) {
+        ehci_interrupt_close(&mouse->xfer);
+        mouse->interrupt_armed = 0u;
+    }
+    mouse->xfer.bulk_in_toggle = 0u;
+    mps = mouse->xfer.control_mps != 0u ? mouse->xfer.control_mps : mouse->xfer.bulk_in_mps;
+    if (mps == 0u) {
+        mps = 64u;
+    }
+    if (hard_reset) {
+        if (!ehci_reset_device_port(&mouse->xfer)) {
+            return 0;
+        }
+        ehci_delay_ms(40u);
+        if (!ehci_set_address(&mouse->xfer, mouse->address, mps) ||
+            !ehci_set_configuration(&mouse->xfer, mouse->configuration, mps)) {
+            return 0;
+        }
+        (void)ehci_hid_mouse_set_protocol(mouse, 0u);
+        (void)ehci_hid_mouse_set_idle(mouse);
+    } else if (!ehci_clear_endpoint_halt(&mouse->xfer, mouse->interrupt_in_ep)) {
+        return 0;
+    }
+    ehci_delay_ms(2u);
+    if (!ehci_hid_mouse_arm_interrupt(mouse)) {
+        return 0;
+    }
+    mouse->interrupt_fail_count = hard_reset ? 0u : failures;
+    return 1;
+}
+
 int ehci_hid_mouse_poll_interrupt_report(struct ehci_hid_mouse *mouse, uint8_t report[4]) {
     uint32_t token = 0u;
 
@@ -147,20 +306,96 @@ int ehci_hid_mouse_poll_interrupt_report(struct ehci_hid_mouse *mouse, uint8_t r
         mouse->interrupt_in_mps == 0u || mouse->xfer.data == 0) {
         return 0;
     }
-    memset(mouse->xfer.data, 0, 4u);
-    if (!ehci_bulk_transfer(&mouse->xfer,
-                            mouse->interrupt_in_ep,
-                            mouse->interrupt_in_mps,
-                            &mouse->xfer.bulk_in_toggle,
-                            mouse->xfer.data_phys,
-                            4u,
-                            1u,
-                            &token,
-                            EHCI_HID_INTERRUPT_POLL_SPINS)) {
+    if (!mouse->interrupt_armed && !ehci_hid_mouse_arm_interrupt(mouse)) {
         return 0;
     }
+    if (!ehci_interrupt_poll(&mouse->xfer, &mouse->xfer.bulk_in_toggle, &token)) {
+        mouse->last_interrupt_token = token;
+        if ((token & EHCI_QTD_HALTED) != 0u) {
+            mouse->interrupt_error_count++;
+            if (mouse->interrupt_fail_count < 0xffu) {
+                mouse->interrupt_fail_count++;
+            }
+            if (!ehci_hid_mouse_recover_interrupt(mouse)) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+    mouse->interrupt_fail_count = 0u;
+    mouse->last_interrupt_token = token;
     memcpy(report, mouse->xfer.data, 4u);
+    ehci_interrupt_rearm(&mouse->xfer,
+                         &mouse->xfer.bulk_in_toggle,
+                         mouse->xfer.data_phys,
+                         4u,
+                         1u);
     return 1;
+}
+
+int ehci_hid_mouse_arm_interrupt(struct ehci_hid_mouse *mouse) {
+    if (mouse == 0 || mouse->interrupt_in_ep == 0u ||
+        mouse->interrupt_in_mps == 0u || mouse->xfer.data == 0) {
+        return 0;
+    }
+    memset(mouse->xfer.data, 0, 4u);
+    mouse->xfer.bulk_in_toggle = 0u;
+    if (!ehci_interrupt_open(&mouse->xfer,
+                             mouse->interrupt_in_ep,
+                             mouse->interrupt_in_mps,
+                             mouse->interrupt_in_interval,
+                             &mouse->xfer.bulk_in_toggle,
+                             mouse->xfer.data_phys,
+                             4u,
+                             1u)) {
+        return 0;
+    }
+    mouse->interrupt_armed = 1u;
+    mouse->interrupt_fail_count = 0u;
+    return 1;
+}
+
+void ehci_hid_keyboard_detach(struct ehci_hid_keyboard *kbd) {
+    uint8_t released[8];
+
+    if (kbd == 0) {
+        return;
+    }
+    if (kbd->interrupt_armed) {
+        ehci_interrupt_close(&kbd->xfer);
+    }
+    if (kbd->present && ehci_hid_keyboard_report_has_key(kbd->last_report)) {
+        memset(released, 0, sizeof(released));
+        ehci_hid_process_report(kbd, released);
+    }
+    kbd->present = 0u;
+    kbd->interrupt_armed = 0u;
+    kbd->interrupt_fail_count = 0u;
+    kbd->interrupt_error_count = 0u;
+    kbd->interrupt_log_count = 0u;
+    kbd->last_interrupt_token = 0u;
+    kbd->report_fail_logged = 0u;
+    kbd->repeat_usage = 0u;
+    kbd->repeat_active = 0u;
+    kbd->repeat_ticks = 0u;
+    memset(kbd->last_report, 0, sizeof(kbd->last_report));
+}
+
+void ehci_hid_mouse_detach(struct ehci_hid_mouse *mouse) {
+    if (mouse == 0) {
+        return;
+    }
+    if (mouse->interrupt_armed) {
+        ehci_interrupt_close(&mouse->xfer);
+    }
+    mouse->present = 0u;
+    mouse->interrupt_armed = 0u;
+    mouse->interrupt_fail_count = 0u;
+    mouse->interrupt_error_count = 0u;
+    mouse->interrupt_log_count = 0u;
+    mouse->last_interrupt_token = 0u;
+    mouse->report_fail_logged = 0u;
+    memset(mouse->last_report, 0, sizeof(mouse->last_report));
 }
 
 void ehci_hid_mouse_process_report(struct ehci_hid_mouse *mouse, const uint8_t report[4], uint32_t tick) {

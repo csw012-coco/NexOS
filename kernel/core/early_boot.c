@@ -1,4 +1,4 @@
-#include "bootx.h"
+#include "janus.h"
 #include "hal/early.h"
 #include "kernel/public/core/early_boot.h"
 #include "kernel/public/core/early_console.h"
@@ -36,7 +36,7 @@ static int early_string_self_test(void) {
            target[10] == 'r';
 }
 
-void kernel_early_boot(const struct bootx_boot_info *boot_info,
+void kernel_early_boot(const struct janus_boot_info *boot_info,
                        const struct kernel_early_boot_ops *ops) {
     struct kernel_early_boot_report report = {0};
 
@@ -50,8 +50,8 @@ void kernel_early_boot(const struct bootx_boot_info *boot_info,
     early_console_write(ops->architecture != 0 ? ops->architecture : "unknown");
     early_console_write(" early boot\n");
 
-    if (boot_info == 0 || boot_info->hdr.magic != BOOTX_MAGIC ||
-        boot_info->hdr.version < BOOTX_PROTOCOL_VERSION) {
+    if (boot_info == 0 || boot_info->hdr.magic != JANUS_MAGIC ||
+        boot_info->hdr.version < 3u) {
         early_fail("boot/x protocol invalid");
     }
 

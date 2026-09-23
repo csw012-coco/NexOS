@@ -5,7 +5,10 @@ enum {
     STORAGE_TOOL_BLOCK_SIZE = 512u,
     STORAGE_TOOL_NXFS_MAGIC = 0x4e584653u,
     STORAGE_TOOL_NXFS_MAX_INODES = 1024u,
-    STORAGE_TOOL_NXFS_TYPE_DIR = 2u
+    STORAGE_TOOL_NXFS_TYPE_DIR = 2u,
+    STORAGE_TOOL_FAT32_RESERVED_SECTORS = 32u,
+    STORAGE_TOOL_FAT32_TABLES = 2u,
+    STORAGE_TOOL_FAT32_ROOT_CLUSTER = 2u
 };
 
 struct storage_tool_nxfs_super {
@@ -438,6 +441,11 @@ static void mkfs_put_u32_local(uint8_t *dst, uint32_t value) {
     dst[3] = (uint8_t)((value >> 24) & 0xffu);
 }
 
+static void mkfs_put_u16_local(uint8_t *dst, uint16_t value) {
+    dst[0] = (uint8_t)(value & 0xffu);
+    dst[1] = (uint8_t)((value >> 8) & 0xffu);
+}
+
 static void mkfs_bitmap_set_local(uint8_t *bitmap, uint32_t block) {
     bitmap[block / 8u] |= (uint8_t)(1u << (block % 8u));
 }
@@ -488,14 +496,12 @@ static int cmd_mkfs_nxfs_local(const struct storage_block_target *target) {
         return 1;
     }
 
-    for (uint32_t i = 0; i < total_blocks; i++) {
-        storage_zero_block_local(block);
-        if (!storage_write_block_local(target->disk, target->start_lba + i, block)) {
-            write_err_str("mkfs: zero failed\n");
-            return 1;
-        }
-    }
-
+    /*
+     * Full-disk zeroing is unnecessarily expensive for large partitions: mkfs
+     * only needs to initialize filesystem metadata and the bitmap blocks it
+     * will update. Clearing every data block makes formatting O(total_blocks)
+     * writes even though the filesystem marks the rest as free.
+     */
     super.magic = STORAGE_TOOL_NXFS_MAGIC;
     super.total_blocks = total_blocks;
     super.bitmap_start = 1u;
@@ -562,30 +568,278 @@ static int cmd_mkfs_nxfs_local(const struct storage_block_target *target) {
     return 0;
 }
 
+static uint32_t mkfs_fat32_volume_id_local(const struct storage_block_target *target) {
+    uint32_t state = 0x4e465333u ^ target->disk ^
+                     (uint32_t)target->start_lba ^
+                     (uint32_t)(target->blocks >> 32) ^
+                     (uint32_t)target->blocks;
+
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+static uint8_t mkfs_fat32_sectors_per_cluster_local(uint32_t total_sectors) {
+    if (total_sectors < 65536u) {
+        return 1u;
+    }
+    if (total_sectors < 524288u) {
+        return 4u;
+    }
+    if (total_sectors < 16777216u) {
+        return 8u;
+    }
+    if (total_sectors < 33554432u) {
+        return 32u;
+    }
+    return 64u;
+}
+
+static uint32_t mkfs_fat32_compute_spf_local(uint32_t total_sectors,
+                                             uint8_t sectors_per_cluster,
+                                             uint32_t *cluster_count_out) {
+    uint32_t sectors_per_fat = 1u;
+    uint32_t cluster_count = 0u;
+
+    for (uint32_t i = 0; i < 8u; i++) {
+        uint32_t meta = STORAGE_TOOL_FAT32_RESERVED_SECTORS +
+                        STORAGE_TOOL_FAT32_TABLES * sectors_per_fat;
+        uint32_t data_sectors;
+        uint32_t needed;
+
+        if (meta >= total_sectors) {
+            return 0u;
+        }
+        data_sectors = total_sectors - meta;
+        cluster_count = data_sectors / sectors_per_cluster;
+        needed = (uint32_t)((((uint64_t)cluster_count + 2u) * 4u +
+                             STORAGE_TOOL_BLOCK_SIZE - 1u) /
+                            STORAGE_TOOL_BLOCK_SIZE);
+        if (needed == sectors_per_fat) {
+            break;
+        }
+        sectors_per_fat = needed;
+    }
+    if (cluster_count_out != NULL) {
+        *cluster_count_out = cluster_count;
+    }
+    return sectors_per_fat;
+}
+
+static void mkfs_fat32_make_boot_sector_local(uint8_t block[STORAGE_TOOL_BLOCK_SIZE],
+                                              const struct storage_block_target *target,
+                                              uint32_t total_sectors,
+                                              uint8_t sectors_per_cluster,
+                                              uint32_t sectors_per_fat) {
+    storage_zero_block_local(block);
+    block[0] = 0xebu;
+    block[1] = 0x58u;
+    block[2] = 0x90u;
+    block[3] = 'N';
+    block[4] = 'E';
+    block[5] = 'X';
+    block[6] = 'O';
+    block[7] = 'S';
+    block[8] = ' ';
+    block[9] = ' ';
+    block[10] = ' ';
+    mkfs_put_u16_local(block + 11u, STORAGE_TOOL_BLOCK_SIZE);
+    block[13] = sectors_per_cluster;
+    mkfs_put_u16_local(block + 14u, STORAGE_TOOL_FAT32_RESERVED_SECTORS);
+    block[16] = STORAGE_TOOL_FAT32_TABLES;
+    mkfs_put_u16_local(block + 17u, 0u);
+    mkfs_put_u16_local(block + 19u, 0u);
+    block[21] = 0xf8u;
+    mkfs_put_u16_local(block + 22u, 0u);
+    mkfs_put_u16_local(block + 24u, 63u);
+    mkfs_put_u16_local(block + 26u, 255u);
+    mkfs_put_u32_local(block + 28u, (uint32_t)target->start_lba);
+    mkfs_put_u32_local(block + 32u, total_sectors);
+    mkfs_put_u32_local(block + 36u, sectors_per_fat);
+    mkfs_put_u16_local(block + 40u, 0u);
+    mkfs_put_u16_local(block + 42u, 0u);
+    mkfs_put_u32_local(block + 44u, STORAGE_TOOL_FAT32_ROOT_CLUSTER);
+    mkfs_put_u16_local(block + 48u, 1u);
+    mkfs_put_u16_local(block + 50u, 6u);
+    block[64] = 0x80u;
+    block[66] = 0x29u;
+    mkfs_put_u32_local(block + 67u, mkfs_fat32_volume_id_local(target));
+    {
+        const char label[11] = {'N', 'E', 'X', 'O', 'S', ' ', ' ', ' ', ' ', ' ', ' '};
+        const char type[8] = {'F', 'A', 'T', '3', '2', ' ', ' ', ' '};
+
+        for (uint32_t i = 0; i < sizeof(label); i++) {
+            block[71u + i] = (uint8_t)label[i];
+        }
+        for (uint32_t i = 0; i < sizeof(type); i++) {
+            block[82u + i] = (uint8_t)type[i];
+        }
+    }
+    block[510] = 0x55u;
+    block[511] = 0xaau;
+}
+
+static void mkfs_fat32_make_fsinfo_local(uint8_t block[STORAGE_TOOL_BLOCK_SIZE],
+                                         uint32_t cluster_count) {
+    storage_zero_block_local(block);
+    mkfs_put_u32_local(block + 0u, 0x41615252u);
+    mkfs_put_u32_local(block + 484u, 0x61417272u);
+    mkfs_put_u32_local(block + 488u, cluster_count > 0u ? cluster_count - 1u : 0u);
+    mkfs_put_u32_local(block + 492u, 3u);
+    mkfs_put_u32_local(block + 508u, 0xaa550000u);
+}
+
+static int mkfs_fat32_write_fat_copy_local(const struct storage_block_target *target,
+                                           uint32_t fat_lba,
+                                           uint32_t sectors_per_fat) {
+    uint8_t block[STORAGE_TOOL_BLOCK_SIZE];
+
+    storage_zero_block_local(block);
+    mkfs_put_u32_local(block + 0u, 0x0ffffff8u);
+    mkfs_put_u32_local(block + 4u, 0xffffffffu);
+    mkfs_put_u32_local(block + 8u, 0x0fffffffu);
+    if (!storage_write_block_local(target->disk, target->start_lba + fat_lba, block)) {
+        return 0;
+    }
+    storage_zero_block_local(block);
+    for (uint32_t i = 1u; i < sectors_per_fat; i++) {
+        if (!storage_write_block_local(target->disk, target->start_lba + fat_lba + i, block)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int cmd_mkfs_fat32_local(const struct storage_block_target *target) {
+    uint8_t block[STORAGE_TOOL_BLOCK_SIZE];
+    uint32_t total_sectors;
+    uint32_t sectors_per_fat;
+    uint32_t cluster_count = 0u;
+    uint8_t sectors_per_cluster;
+    uint32_t first_fat_lba;
+    uint32_t second_fat_lba;
+    uint32_t data_lba;
+
+    if (target == NULL || !target->valid || !target->writable || target->blocks > 0xffffffffu) {
+        write_err_str("mkfs.fat: invalid or read-only target\n");
+        return 1;
+    }
+    total_sectors = (uint32_t)target->blocks;
+    sectors_per_cluster = mkfs_fat32_sectors_per_cluster_local(total_sectors);
+    sectors_per_fat = mkfs_fat32_compute_spf_local(total_sectors, sectors_per_cluster, &cluster_count);
+    if (sectors_per_fat == 0u || cluster_count == 0u) {
+        write_err_str("mkfs.fat: target too small\n");
+        return 1;
+    }
+    first_fat_lba = STORAGE_TOOL_FAT32_RESERVED_SECTORS;
+    second_fat_lba = first_fat_lba + sectors_per_fat;
+    data_lba = STORAGE_TOOL_FAT32_RESERVED_SECTORS +
+               STORAGE_TOOL_FAT32_TABLES * sectors_per_fat;
+    if (data_lba + sectors_per_cluster > total_sectors) {
+        write_err_str("mkfs.fat: target too small\n");
+        return 1;
+    }
+
+    mkfs_fat32_make_boot_sector_local(block, target, total_sectors, sectors_per_cluster, sectors_per_fat);
+    if (!storage_write_block_local(target->disk, target->start_lba, block) ||
+        !storage_write_block_local(target->disk, target->start_lba + 6u, block)) {
+        write_err_str("mkfs.fat: boot sector write failed\n");
+        return 1;
+    }
+
+    mkfs_fat32_make_fsinfo_local(block, cluster_count);
+    if (!storage_write_block_local(target->disk, target->start_lba + 1u, block) ||
+        !storage_write_block_local(target->disk, target->start_lba + 7u, block)) {
+        write_err_str("mkfs.fat: fsinfo write failed\n");
+        return 1;
+    }
+
+    storage_zero_block_local(block);
+    if (!storage_write_block_local(target->disk, target->start_lba + 2u, block) ||
+        !storage_write_block_local(target->disk, target->start_lba + 8u, block)) {
+        write_err_str("mkfs.fat: reserved sector write failed\n");
+        return 1;
+    }
+    if (!mkfs_fat32_write_fat_copy_local(target, first_fat_lba, sectors_per_fat) ||
+        !mkfs_fat32_write_fat_copy_local(target, second_fat_lba, sectors_per_fat)) {
+        write_err_str("mkfs.fat: FAT write failed\n");
+        return 1;
+    }
+    for (uint32_t i = 0u; i < sectors_per_cluster; i++) {
+        storage_zero_block_local(block);
+        if (!storage_write_block_local(target->disk, target->start_lba + data_lba + i, block)) {
+            write_err_str("mkfs.fat: root directory write failed\n");
+            return 1;
+        }
+    }
+
+    write_str("mkfs.fat: formatted FAT32 ");
+    storage_write_u64_dec(target->blocks * STORAGE_TOOL_BLOCK_SIZE);
+    write_str(" bytes\n");
+    return 0;
+}
+
 int cmd_mkfs(int argc, char **argv) {
     const char *kind;
     const char *target_path;
     struct storage_block_target target;
+    uint32_t arg_index;
+    uint32_t fat_bits = 0u;
 
     if (argc == 2 && storage_starts_with_local(argv[0], "mkfs.")) {
         kind = argv[0] + 5;
-        target_path = argv[1];
-    } else if (argc == 3) {
+        arg_index = 1u;
+    } else if (argc >= 3) {
         kind = argv[1];
-        target_path = argv[2];
+        arg_index = 2u;
     } else {
         write_err_usage("mkfs", " nxfs /dev/diskXpY\n");
+        write_err_str("   or: mkfs fat32 /dev/diskXpY\n");
+        write_err_str("   or: mkfs.fat -F 32 /dev/diskXpY\n");
         write_err_str("   or: mkfs.nxfs /dev/diskXpY\n");
         return 1;
     }
-    if (!streq_ignore_case_local(kind, "nxfs")) {
-        write_err_str("mkfs: only nxfs is supported\n");
+    while (arg_index < (uint32_t)argc && argv[arg_index][0] == '-') {
+        if (streq_local(argv[arg_index], "-F") && arg_index + 1u < (uint32_t)argc) {
+            uint64_t parsed = 0u;
+
+            if (!storage_parse_u64_local(argv[arg_index + 1u], &parsed) ||
+                parsed > 0xffffffffu) {
+                write_err_str("mkfs.fat: invalid -F value\n");
+                return 1;
+            }
+            fat_bits = (uint32_t)parsed;
+            arg_index += 2u;
+        } else {
+            write_err_usage("mkfs", " [nxfs|fat32] [-F 32] /dev/diskXpY\n");
+            return 1;
+        }
+    }
+    if (arg_index + 1u != (uint32_t)argc) {
+        write_err_usage("mkfs", " [nxfs|fat32] [-F 32] /dev/diskXpY\n");
         return 1;
     }
+    target_path = argv[arg_index];
     target.valid = 0u;
     if (!storage_resolve_block_target_local(target_path, &target)) {
         write_err_str("mkfs: target must be /dev/diskX or /dev/diskXpY\n");
         return 1;
     }
-    return cmd_mkfs_nxfs_local(&target);
+    if (streq_ignore_case_local(kind, "nxfs")) {
+        if (fat_bits != 0u) {
+            write_err_str("mkfs.nxfs: -F is only valid for FAT\n");
+            return 1;
+        }
+        return cmd_mkfs_nxfs_local(&target);
+    }
+    if (streq_ignore_case_local(kind, "fat") || streq_ignore_case_local(kind, "fat32")) {
+        if (fat_bits != 0u && fat_bits != 32u) {
+            write_err_str("mkfs.fat: only -F 32 is supported\n");
+            return 1;
+        }
+        return cmd_mkfs_fat32_local(&target);
+    }
+    write_err_str("mkfs: supported filesystems: nxfs, fat32\n");
+    return 1;
 }

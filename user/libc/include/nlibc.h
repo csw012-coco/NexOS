@@ -14,6 +14,7 @@
 #include "nexos/gfx.h"
 #include "nexos/gui.h"
 #include "nexos/net.h"
+#include "nexos/prism.h"
 #include "nexos/process.h"
 #include "nexos/string.h"
 #include "nexos/system.h"

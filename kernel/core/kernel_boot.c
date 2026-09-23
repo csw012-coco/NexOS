@@ -1,5 +1,5 @@
 #include <stdint.h>
-#include "bootx/bootx.h"
+#include "janus/janus.h"
 #include "block/blockdev.h"
 #include "drivers/audio/ac97.h"
 #include "drivers/audio/hda.h"
@@ -45,31 +45,29 @@ enum {
     KERNEL_PAGE_FLAG_USER = 1ull << 2,
     KERNEL_PAGE_FLAG_NX = 1ull << 63,
     KERNEL_BOOT_VERBOSE_MEMMAP = 0u,
-    KERNEL_BOOT_VERBOSE_PAGING_MAPS = 0u,
-    KERNEL_ROOT_USB_RETRY_COUNT = 8u,
-    KERNEL_ROOT_USB_RETRY_RELAX_LOOPS = 200000u
+    KERNEL_BOOT_VERBOSE_PAGING_MAPS = 0u
 };
 
 static const char *kernel_memmap_type_name(uint32_t type) {
     switch (type) {
-        case BOOTX_MEMMAP_USABLE:
+        case JANUS_MEMMAP_USABLE:
             return "usable";
-        case BOOTX_MEMMAP_RESERVED:
+        case JANUS_MEMMAP_RESERVED:
             return "reserved";
-        case BOOTX_MEMMAP_ACPI_RECLAIMABLE:
+        case JANUS_MEMMAP_ACPI_RECLAIMABLE:
             return "acpi reclaim";
-        case BOOTX_MEMMAP_ACPI_NVS:
+        case JANUS_MEMMAP_ACPI_NVS:
             return "acpi nvs";
-        case BOOTX_MEMMAP_BAD:
+        case JANUS_MEMMAP_BAD:
             return "bad";
-        case BOOTX_MEMMAP_BOOTLOADER_RECLAIMABLE:
+        case JANUS_MEMMAP_BOOTLOADER_RECLAIMABLE:
             return "boot reclaim";
         default:
             return "unknown";
     }
 }
 
-void kernel_log_boot_info(const struct bootx_boot_info *boot_info) {
+void kernel_log_boot_info(const struct janus_boot_info *boot_info) {
     uint64_t detected_phys = 0;
     uint64_t mapped_phys = 0;
     int mapped = 0;
@@ -79,7 +77,7 @@ void kernel_log_boot_info(const struct bootx_boot_info *boot_info) {
     }
 
     kernel_boot_log_system(hal_arch_name());
-    kprint("bootx: magic=%x version=%u size=%u\n",
+    kprint("janus: magic=%x version=%u size=%u\n",
            boot_info->hdr.magic,
            (uint32_t)boot_info->hdr.version,
            (uint32_t)boot_info->hdr.size);
@@ -126,7 +124,7 @@ void kernel_log_paging_info(void) {
     }
 }
 
-void kernel_log_memmap(const struct bootx_memmap_entry *memmap, uint32_t memmap_count) {
+void kernel_log_memmap(const struct janus_memmap_entry *memmap, uint32_t memmap_count) {
     uint64_t total_usable = 0;
     uint32_t i;
 
@@ -136,7 +134,7 @@ void kernel_log_memmap(const struct bootx_memmap_entry *memmap, uint32_t memmap_
     }
 
     for (i = 0; i < memmap_count; i++) {
-        if (memmap[i].type == BOOTX_MEMMAP_USABLE) {
+        if (memmap[i].type == JANUS_MEMMAP_USABLE) {
             total_usable += memmap[i].length;
         }
         if (KERNEL_BOOT_VERBOSE_MEMMAP) {
@@ -280,6 +278,15 @@ void kernel_log_rtl8139_info(void) {
            (uint32_t)status.mac[5],
            status.tx_config,
            status.rx_config);
+    kprint("rtl8139: state=%u resets=%u tx=%u rx=%u irq=%u errors=%u last_error=%u last_isr=%x\n",
+           status.state,
+           status.reset_count,
+           status.tx_count,
+           status.rx_count,
+           status.irq_count,
+           status.error_count,
+           status.last_error,
+           status.last_isr);
 }
 
 void kernel_log_block_devices(void) {
@@ -310,11 +317,16 @@ static void kernel_register_builtin_drivers_local(void) {
     }
 }
 
-void kernel_init_storage_devices(const struct bootx_boot_info *boot_info) {
+void kernel_init_storage_devices(const struct janus_boot_info *boot_info) {
     blockdev_init();
     kernel_register_builtin_drivers_local();
     (void)driver_init_all();
     kernel_log_pci_info();
+    if (boot_info != 0 &&
+        boot_info->hdr.size >= sizeof(struct janus_boot_info) &&
+        boot_info->acpi_rsdp_addr != 0u) {
+        acpi_set_rsdp_override(boot_info->acpi_rsdp_addr);
+    }
     (void)acpi_init();
     (void)lapic_init_from_acpi();
     (void)lapic_enable();
@@ -322,6 +334,7 @@ void kernel_init_storage_devices(const struct bootx_boot_info *boot_info) {
     kernel_log_ac97_info();
     kernel_log_hda_info();
     kernel_log_rtl8139_info();
+    kernel_log_ata_info();
     ramdisk_init_from_boot_modules(boot_info);
     kernel_log_block_devices();
 }
@@ -340,8 +353,10 @@ static void kernel_mount_ramdisk_root(struct vfs *vfs) {
         uint32_t ramdisk_part_index =
             blockdev_partition_count(blockdev_get(ramdisk_index)) != 0 ? 0u : VFS_PARTITION_RAW;
 
-        (void)vfs_mount_fs(vfs, VFS_MOUNT_FAT32, ramdisk_index, ramdisk_part_index, "/ram");
-        (void)vfs_set_root_mount(vfs, "/ram");
+        if (vfs_mount_fs(vfs, VFS_MOUNT_FAT32, ramdisk_index, ramdisk_part_index, "/ram") == 0) {
+            kernel_boot_log_mount("/ram", "FAT32");
+            (void)vfs_set_root_mount(vfs, "/ram");
+        }
     }
 }
 
@@ -379,7 +394,7 @@ static struct block_device *kernel_find_boot_partition_disk(uint32_t partition_l
     return 0;
 }
 
-static void kernel_mount_boot_partition(struct vfs *vfs, const struct bootx_boot_info *boot_info) {
+static void kernel_mount_boot_partition(struct vfs *vfs, const struct janus_boot_info *boot_info) {
     struct block_device *disk;
 
     if (vfs == 0 || boot_info == 0 || boot_info->partition_lba == 0u ||
@@ -388,134 +403,23 @@ static void kernel_mount_boot_partition(struct vfs *vfs, const struct bootx_boot
         return;
     }
     if (fat32_mount(&vfs->fat32, disk, boot_info->partition_lba) == 0) {
-        kprint("boot: FAT32 /boot mounted\n");
+        kernel_boot_log_mount("/boot", "FAT32");
     }
 }
 
-struct vfs *kernel_bootstrap_vfs(const struct bootx_boot_info *boot_info) {
+struct vfs *kernel_bootstrap_vfs(const struct janus_boot_info *boot_info) {
     vfs_init(&g_kernel_vfs);
     kernel_mount_boot_partition(&g_kernel_vfs, boot_info);
     kernel_mount_ramdisk_root(&g_kernel_vfs);
     return &g_kernel_vfs;
 }
 
-static int kernel_hex_value(char ch) {
-    if (ch >= '0' && ch <= '9') {
-        return ch - '0';
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        return ch - 'a' + 10;
-    }
-    if (ch >= 'A' && ch <= 'F') {
-        return ch - 'A' + 10;
-    }
-    return -1;
+int kernel_boot_info_valid(const struct janus_boot_info *boot_info) {
+    return boot_info != 0 && boot_info->hdr.magic == JANUS_MAGIC &&
+           boot_info->hdr.version >= 3u;
 }
 
-static int kernel_parse_uuid(const char *text, uint32_t len, uint8_t uuid_out[16]) {
-    uint32_t digits = 0;
-    int high = -1;
-
-    if (text == 0 || uuid_out == 0) {
-        return 0;
-    }
-    for (uint32_t i = 0; i < 16u; i++) {
-        uuid_out[i] = 0;
-    }
-    for (uint32_t i = 0; i < len; i++) {
-        int value;
-
-        if (text[i] == '-') {
-            continue;
-        }
-        value = kernel_hex_value(text[i]);
-        if (value < 0 || digits >= 32u) {
-            return 0;
-        }
-        if ((digits & 1u) == 0u) {
-            high = value;
-        } else {
-            uuid_out[digits / 2u] = (uint8_t)((uint32_t)(high << 4) | (uint32_t)value);
-            high = -1;
-        }
-        digits++;
-    }
-    return digits == 32u;
-}
-
-static int kernel_extract_root_uuid(const char *cmdline, uint8_t uuid_out[16]) {
-    if (cmdline == 0 || uuid_out == 0) {
-        return 0;
-    }
-    while (*cmdline != '\0') {
-        uint32_t len = 0;
-
-        cmdline = skip_spaces(cmdline);
-        if (*cmdline == '\0') {
-            break;
-        }
-        if (starts_with(cmdline, "root=UUID=")) {
-            const char *uuid_text = cmdline + 10;
-
-            while (uuid_text[len] != '\0' && uuid_text[len] != ' ') {
-                len++;
-            }
-            return kernel_parse_uuid(uuid_text, len, uuid_out);
-        }
-        while (*cmdline != '\0' && *cmdline != ' ') {
-            cmdline++;
-        }
-    }
-    return 0;
-}
-
-static void kernel_root_usb_retry_delay(void) {
-    for (uint32_t i = 0u; i < KERNEL_ROOT_USB_RETRY_RELAX_LOOPS; i++) {
-        hal_cpu_relax();
-    }
-}
-
-static int kernel_switch_root_to_uuid_with_usb_wait(struct vfs *vfs, const uint8_t uuid[16]) {
-    if (vfs_switch_root_to_nxfs_uuid(vfs, uuid) == 0) {
-        return 1;
-    }
-    for (uint32_t attempt = 0u; attempt < KERNEL_ROOT_USB_RETRY_COUNT; attempt++) {
-        ehci_hotplug_scan_now();
-        xhci_hotplug_scan_now();
-        if (vfs_switch_root_to_nxfs_uuid(vfs, uuid) == 0) {
-            kprint("root: switched by UUID after USB scan\n");
-            return 1;
-        }
-        kernel_root_usb_retry_delay();
-    }
-    return 0;
-}
-
-int kernel_apply_root_cmdline(struct vfs *vfs, const struct bootx_boot_info *boot_info) {
-    uint8_t uuid[16];
-    const char *cmdline;
-
-    if (vfs == 0 || boot_info == 0 || boot_info->cmdline == 0) {
-        return 0;
-    }
-    cmdline = (const char *)(uintptr_t)boot_info->cmdline;
-    if (!kernel_extract_root_uuid(cmdline, uuid)) {
-        return 0;
-    }
-    if (!kernel_switch_root_to_uuid_with_usb_wait(vfs, uuid)) {
-        kprint("root: UUID target not found\n");
-        return -1;
-    }
-    kprint("root: switched by UUID\n");
-    return 1;
-}
-
-int kernel_boot_info_valid(const struct bootx_boot_info *boot_info) {
-    return boot_info != 0 && boot_info->hdr.magic == BOOTX_MAGIC &&
-           boot_info->hdr.version >= BOOTX_PROTOCOL_VERSION;
-}
-
-uint64_t kernel_detect_phys_base(const struct bootx_boot_info *boot_info) {
+uint64_t kernel_detect_phys_base(const struct janus_boot_info *boot_info) {
     uint64_t phys = 0;
 
     if (vmm_query((uint64_t)(uintptr_t)__kernel_start, &phys)) {
@@ -524,15 +428,15 @@ uint64_t kernel_detect_phys_base(const struct bootx_boot_info *boot_info) {
     return boot_info != 0 ? boot_info->kernel_phys_addr : 0;
 }
 
-void kernel_reserve_boot_modules(const struct bootx_boot_info *boot_info) {
-    const struct bootx_module *modules;
+void kernel_reserve_boot_modules(const struct janus_boot_info *boot_info) {
+    const struct janus_module *modules;
     uint32_t i;
 
     if (boot_info == 0 || boot_info->module_count == 0 || boot_info->modules == 0) {
         return;
     }
 
-    modules = (const struct bootx_module *)(uintptr_t)boot_info->modules;
+    modules = (const struct janus_module *)(uintptr_t)boot_info->modules;
     for (i = 0; i < boot_info->module_count; i++) {
         if (modules[i].address == 0 || modules[i].size == 0) {
             continue;

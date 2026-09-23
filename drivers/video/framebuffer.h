@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
-#include "bootx/bootx.h"
+#include "janus/janus.h"
 #include "drivers/video/surface.h"
 
 enum {
@@ -9,11 +9,50 @@ enum {
     FRAMEBUFFER_TEXT_MAX_ROWS = 90
 };
 
-void framebuffer_display_init(const struct bootx_console_info *console);
+enum {
+    FRAMEBUFFER_FLUSH_SKIP_NONE = 0,
+    FRAMEBUFFER_FLUSH_SKIP_INACTIVE = 1,
+    FRAMEBUFFER_FLUSH_SKIP_UPDATE_DEPTH = 2,
+    FRAMEBUFFER_FLUSH_SKIP_NO_BACKBUFFER = 3,
+    FRAMEBUFFER_FLUSH_SKIP_NO_DIRTY = 4,
+    FRAMEBUFFER_FLUSH_SKIP_BAD_BASE = 5,
+    FRAMEBUFFER_FLUSH_SKIP_COALESCED = 6
+};
+
+struct framebuffer_display_status {
+    uint32_t active;
+    uint32_t backbuffer_enabled;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t bpp;
+    uint32_t columns;
+    uint32_t rows;
+    uint32_t cell_height;
+    uint32_t update_depth;
+    uint32_t dirty_count;
+    uint32_t present_pending;
+    uint32_t present_requests;
+    uint32_t service_requests;
+    uint32_t flush_count;
+    uint32_t skipped_flush_count;
+    uint32_t coalesced_present_count;
+    uint32_t dirty_mark_count;
+    uint32_t dirty_merge_count;
+    uint32_t copied_rect_count;
+    uint64_t copied_bytes;
+    uint32_t last_present_tick;
+    uint32_t last_flush_tick;
+    uint32_t last_flush_rects;
+    uint32_t last_skip_reason;
+};
+
+void framebuffer_display_init(const struct janus_console_info *console);
 int framebuffer_display_enable_backbuffer(void);
+int framebuffer_display_query_status(struct framebuffer_display_status *out);
 void framebuffer_display_begin_update(void);
 void framebuffer_display_end_update(void);
-void framebuffer_display_load_font_from_boot_modules(const struct bootx_boot_info *boot_info);
+void framebuffer_display_load_font_from_boot_modules(const struct janus_boot_info *boot_info);
 int framebuffer_display_active(void);
 uint32_t framebuffer_device_size(void);
 int64_t framebuffer_device_read(uint32_t *offset_io, void *buffer, uint32_t size);
@@ -23,6 +62,7 @@ void framebuffer_display_write_cell(uint16_t row, uint16_t col, uint32_t value);
 void framebuffer_display_clear_row(uint16_t row, uint8_t color);
 void framebuffer_display_put_at(uint16_t row, uint16_t col, uint8_t color, char ch);
 void framebuffer_display_enable_cursor(uint8_t start, uint8_t end);
+void framebuffer_display_disable_cursor(void);
 void framebuffer_display_set_cursor(uint16_t row, uint16_t col);
 void framebuffer_display_tick(uint32_t ticks);
 void framebuffer_display_service_pending(void);

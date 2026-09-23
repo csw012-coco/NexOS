@@ -109,7 +109,7 @@ static int ush_parse_token_local(const char *text,
         *quoted_out = quoted;
     }
     *pos_io = pos;
-    return out_len != 0;
+    return out_len != 0 || quoted;
 }
 
 static int ush_append_token_local(char *out, uint32_t out_size, uint32_t *out_pos, const char *token) {

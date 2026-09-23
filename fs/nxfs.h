@@ -6,7 +6,7 @@
 
 enum {
     NXFS_BLOCK_SIZE = 512,
-    NXFS_CACHE_BLOCKS = 8,
+    NXFS_CACHE_BLOCKS = 64,
     NXFS_MAX_INODES = 1024,
     NXFS_MAGIC = 0x4e584653u,
     NXFS_TYPE_FILE = 1,
@@ -29,6 +29,7 @@ struct nxfs_dir_entry {
 
 struct nxfs_cache_entry {
     uint32_t block;
+    uint32_t last_used;
     uint8_t data[NXFS_BLOCK_SIZE];
     uint8_t valid;
 };
@@ -43,6 +44,7 @@ struct nxfs_volume {
     uint8_t sector_buffer[NXFS_BLOCK_SIZE];
     struct nxfs_cache_entry cache[NXFS_CACHE_BLOCKS];
     uint32_t cache_next;
+    uint32_t cache_epoch;
 };
 
 int nxfs_mount(struct nxfs_volume *vol, struct block_device *bdev, uint32_t partition_lba);

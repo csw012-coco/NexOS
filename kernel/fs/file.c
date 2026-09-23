@@ -1,5 +1,6 @@
 #include "kernel/internal/fs/file_internal.h"
 #include "kernel/internal/fs/file_pipe_backend.h"
+#include "kernel/public/core/kprint.h"
 #include "fs/vfs.h"
 #include "fs/vfs_internal.h"
 
@@ -264,11 +265,14 @@ int64_t file_close(struct file *file) {
 int64_t file_readdir(struct file *file,
                      const struct vfs *vfs,
                      struct vfs_dirent *entry) {
+    int64_t rc;
+
     if (!file_is_active(file) || file->ops->readdir == 0) {
         return -1;
     }
     if (!file_can_readdir(file)) {
         return -NEX_ERR_ACCES;
     }
-    return file->ops->readdir(file, vfs, entry);
+    rc = file->ops->readdir(file, vfs, entry);
+    return rc;
 }

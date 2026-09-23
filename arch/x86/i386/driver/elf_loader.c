@@ -333,7 +333,7 @@ static int driver_elf32_apply_relocations(uint8_t *load_base,
             if (symbol_index >= symbol_count ||
                 relocs[r].offset > sections[target_index].size ||
                 4u > sections[target_index].size - relocs[r].offset) {
-                kprint("driver: bad i386 reloc sec=%u index=%u type=%u sym=%u\n",
+                kprint("driver: bad reloc sec=%u index=%u type=%u sym=%u\n",
                        i,
                        r,
                        type,
@@ -359,7 +359,7 @@ static int driver_elf32_apply_relocations(uint8_t *load_base,
             } else if (type == DRIVER_ELF32_R_386_PC32) {
                 *((uint32_t *)place) = value + addend - (uint32_t)(uintptr_t)place;
             } else {
-                kprint("driver: unsupported i386 reloc type=%u\n", type);
+                kprint("driver: unsupported reloc type=%u\n", type);
                 return 0;
             }
         }
@@ -472,7 +472,7 @@ int driver_arch_load_file(struct vfs *vfs, struct kernel_driver_file *file) {
     header = (struct driver_elf32_header *)image;
     if (!driver_elf32_elf_header_valid(header, file_size) ||
         !driver_elf32_layout_sections(image, file_size, header, section_addrs, &load_size)) {
-        kprint("driver: ELF32 layout failed %s\n", file->path);
+        kprint("driver: ELF layout failed %s\n", file->path);
         file->reason_code = KERNEL_DRIVER_REASON_LAYOUT_FAILED;
         driver_elf32_free_pages(image, image_pages);
         return 0;
@@ -480,7 +480,7 @@ int driver_arch_load_file(struct vfs *vfs, struct kernel_driver_file *file) {
     load_pages = (load_size + DRIVER_ELF32_PAGE_SIZE - 1u) / DRIVER_ELF32_PAGE_SIZE;
     load_base = driver_elf32_alloc_pages(load_pages, 0, &load_alloc_size);
     if (load_base == 0 || load_alloc_size < load_size) {
-        kprint("driver: i386 load memory failed %s size=%u\n", file->path, load_size);
+        kprint("driver: load memory failed %s size=%u\n", file->path, load_size);
         file->reason_code = KERNEL_DRIVER_REASON_NO_MEMORY;
         driver_elf32_free_pages(image, image_pages);
         return 0;

@@ -469,11 +469,7 @@ static void console_scroll_live_display(struct console *console) {
     if (console == 0 || !console->visible || g_console_visible_display != console) {
         return;
     }
-    hal_display_begin_update();
-    hal_display_scroll_rows(console->top_row, console->bottom_row, console->default_color);
-
-    console_render_row(console, console->bottom_row);
-    hal_display_end_update();
+    console_render_and_sync(console);
 }
 
 static void console_newline(struct console *console) {

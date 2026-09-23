@@ -20,7 +20,25 @@ enum {
     ATA_SR_ERR = 0x01,
     ATA_SR_DRQ = 0x08,
     ATA_SR_DF = 0x20,
-    ATA_SR_BSY = 0x80
+    ATA_SR_BSY = 0x80,
+
+    ATA_POLL_SPINS = 1000000u,
+
+    ATA_STATE_ABSENT = 0u,
+    ATA_STATE_IDENTIFY = 1u,
+    ATA_STATE_READY = 2u,
+    ATA_STATE_READING = 3u,
+    ATA_STATE_WRITING = 4u,
+    ATA_STATE_FLUSHING = 5u,
+    ATA_STATE_RECOVERING = 6u,
+    ATA_STATE_FAILED = 7u,
+
+    ATA_ERROR_NONE = 0u,
+    ATA_ERROR_TIMEOUT = 1u,
+    ATA_ERROR_DEVICE = 2u,
+    ATA_ERROR_NO_DRQ = 3u,
+    ATA_ERROR_BOUNDS = 4u,
+    ATA_ERROR_BAD_ARG = 5u
 };
 
 static struct ata_device ata_devices[] = {
@@ -58,6 +76,26 @@ const struct kernel_driver ata_kernel_driver = {
     .exit = NULL,
 };
 
+static void ata_set_state(struct ata_device *dev, uint8_t state) {
+    if (dev != 0) {
+        dev->state = state;
+    }
+}
+
+static void ata_note_error(struct ata_device *dev, uint32_t error) {
+    if (dev == 0) {
+        return;
+    }
+    dev->last_error = error;
+    if (error != ATA_ERROR_NONE) {
+        dev->error_count++;
+        dev->state = ATA_STATE_FAILED;
+        blockdev_record_failure(&dev->blockdev, -(int)error, "ata");
+    } else {
+        blockdev_record_success(&dev->blockdev);
+    }
+}
+
 static void ata_delay_400ns(struct ata_device *dev) {
     (void)hal_io_in8(dev->ctrl_base);
     (void)hal_io_in8(dev->ctrl_base);
@@ -69,23 +107,25 @@ static int ata_poll(struct ata_device *dev, int check_error) {
     uint8_t status;
 
     ata_delay_400ns(dev);
-    for (;;) {
+    for (uint32_t spin = 0u; spin < ATA_POLL_SPINS; spin++) {
         status = hal_io_in8(dev->io_base + ATA_REG_STATUS);
+        dev->last_status = status;
         if ((status & ATA_SR_BSY) == 0) {
-            break;
+            if (check_error) {
+                if ((status & ATA_SR_ERR) != 0 || (status & ATA_SR_DF) != 0) {
+                    ata_note_error(dev, ATA_ERROR_DEVICE);
+                    return -1;
+                }
+                if ((status & ATA_SR_DRQ) == 0) {
+                    ata_note_error(dev, ATA_ERROR_NO_DRQ);
+                    return -1;
+                }
+            }
+            return 0;
         }
     }
-
-    if (check_error) {
-        if ((status & ATA_SR_ERR) != 0 || (status & ATA_SR_DF) != 0) {
-            return -1;
-        }
-        if ((status & ATA_SR_DRQ) == 0) {
-            return -1;
-        }
-    }
-
-    return 0;
+    ata_note_error(dev, ATA_ERROR_TIMEOUT);
+    return -1;
 }
 
 static int ata_wait_idle(struct ata_device *dev) {
@@ -95,21 +135,48 @@ static int ata_wait_idle(struct ata_device *dev) {
         return -1;
     }
     ata_delay_400ns(dev);
-    for (;;) {
+    for (uint32_t spin = 0u; spin < ATA_POLL_SPINS; spin++) {
         status = hal_io_in8(dev->io_base + ATA_REG_STATUS);
+        dev->last_status = status;
         if ((status & ATA_SR_BSY) == 0) {
-            break;
+            if ((status & ATA_SR_ERR) != 0 || (status & ATA_SR_DF) != 0) {
+                ata_note_error(dev, ATA_ERROR_DEVICE);
+                return -1;
+            }
+            return 0;
         }
     }
-    if ((status & ATA_SR_ERR) != 0 || (status & ATA_SR_DF) != 0) {
-        return -1;
-    }
-    return 0;
+    ata_note_error(dev, ATA_ERROR_TIMEOUT);
+    return -1;
 }
 
 static void ata_select_drive(struct ata_device *dev) {
     hal_io_out8(dev->io_base + ATA_REG_HDDEVSEL, (uint8_t)(0xe0 | (dev->slave << 4)));
     ata_delay_400ns(dev);
+}
+
+static int ata_reset_device(struct ata_device *dev) {
+    if (dev == 0) {
+        return -1;
+    }
+    ata_set_state(dev, ATA_STATE_RECOVERING);
+    dev->reset_count++;
+    hal_io_out8(dev->ctrl_base, 0x04u);
+    ata_delay_400ns(dev);
+    hal_io_out8(dev->ctrl_base, 0x00u);
+    ata_delay_400ns(dev);
+    ata_select_drive(dev);
+    if (ata_wait_idle(dev) != 0) {
+        return -1;
+    }
+    ata_note_error(dev, ATA_ERROR_NONE);
+    ata_set_state(dev, ATA_STATE_READY);
+    blockdev_record_rebind(&dev->blockdev, "ata-reset");
+    return 0;
+}
+
+static int ata_reset_impl(struct block_device *bdev) {
+    return ata_reset_device(bdev != 0 ? (struct ata_device *)bdev->driver_data : 0);
 }
 
 static uint16_t ata_bar_io_base(uint32_t bar, uint16_t fallback) {
@@ -184,12 +251,15 @@ static int ata_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count
     uint16_t *words = (uint16_t *)buffer;
 
     if (dev == 0 || !dev->present || count == 0 || count > 255) {
+        ata_note_error(dev, ATA_ERROR_BAD_ARG);
         return -1;
     }
     if (lba + count > dev->sector_count || lba > 0x0fffffffULL) {
+        ata_note_error(dev, ATA_ERROR_BOUNDS);
         return -1;
     }
 
+    ata_set_state(dev, ATA_STATE_READING);
     ata_select_drive(dev);
     hal_io_out8(dev->io_base + ATA_REG_SECCOUNT0, (uint8_t)count);
     hal_io_out8(dev->io_base + ATA_REG_LBA0, (uint8_t)(lba & 0xff));
@@ -198,9 +268,13 @@ static int ata_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count
     hal_io_out8(dev->io_base + ATA_REG_HDDEVSEL,
                 (uint8_t)(0xe0 | (dev->slave << 4) | ((lba >> 24) & 0x0f)));
     hal_io_out8(dev->io_base + ATA_REG_COMMAND, ATA_CMD_READ_PIO);
+    for (uint32_t settle = 0; settle < 1024u; settle++) {
+        (void)hal_io_in8(dev->ctrl_base);
+    }
 
     for (uint32_t sector = 0; sector < count; sector++) {
         if (ata_poll(dev, 1) != 0) {
+            (void)ata_reset_device(dev);
             return -1;
         }
         for (uint32_t i = 0; i < 256; i++) {
@@ -210,9 +284,13 @@ static int ata_read_impl(struct block_device *bdev, uint64_t lba, uint32_t count
     }
 
     if (ata_wait_idle(dev) != 0) {
+        (void)ata_reset_device(dev);
         return -1;
     }
 
+    dev->read_count += count;
+    ata_note_error(dev, ATA_ERROR_NONE);
+    ata_set_state(dev, ATA_STATE_READY);
     return 0;
 }
 
@@ -221,12 +299,15 @@ static int ata_write_impl(struct block_device *bdev, uint64_t lba, uint32_t coun
     const uint16_t *words = (const uint16_t *)buffer;
 
     if (dev == 0 || !dev->present || count == 0 || count > 255) {
+        ata_note_error(dev, ATA_ERROR_BAD_ARG);
         return -1;
     }
     if (lba + count > dev->sector_count || lba > 0x0fffffffULL) {
+        ata_note_error(dev, ATA_ERROR_BOUNDS);
         return -1;
     }
 
+    ata_set_state(dev, ATA_STATE_WRITING);
     ata_select_drive(dev);
     hal_io_out8(dev->io_base + ATA_REG_SECCOUNT0, (uint8_t)count);
     hal_io_out8(dev->io_base + ATA_REG_LBA0, (uint8_t)(lba & 0xff));
@@ -238,15 +319,20 @@ static int ata_write_impl(struct block_device *bdev, uint64_t lba, uint32_t coun
 
     for (uint32_t sector = 0; sector < count; sector++) {
         if (ata_poll(dev, 1) != 0) {
+            (void)ata_reset_device(dev);
             return -1;
         }
         for (uint32_t i = 0; i < 256; i++) {
             hal_io_out16(dev->io_base + ATA_REG_DATA, words[sector * 256 + i]);
         }
         if (ata_wait_idle(dev) != 0) {
+            (void)ata_reset_device(dev);
             return -1;
         }
     }
+    dev->write_count += count;
+    ata_note_error(dev, ATA_ERROR_NONE);
+    ata_set_state(dev, ATA_STATE_READY);
     return 0;
 }
 
@@ -256,15 +342,24 @@ static int ata_flush_impl(struct block_device *bdev) {
     if (dev == 0 || !dev->present) {
         return -1;
     }
+    ata_set_state(dev, ATA_STATE_FLUSHING);
     ata_select_drive(dev);
     hal_io_out8(dev->io_base + ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
-    return ata_poll(dev, 0);
+    if (ata_poll(dev, 0) != 0) {
+        (void)ata_reset_device(dev);
+        return -1;
+    }
+    dev->flush_count++;
+    ata_note_error(dev, ATA_ERROR_NONE);
+    ata_set_state(dev, ATA_STATE_READY);
+    return 0;
 }
 
 static int ata_identify(struct ata_device *dev) {
     uint16_t identify[256];
     uint8_t status;
 
+    ata_set_state(dev, ATA_STATE_IDENTIFY);
     ata_select_drive(dev);
     hal_io_out8(dev->io_base + ATA_REG_SECCOUNT0, 0);
     hal_io_out8(dev->io_base + ATA_REG_LBA0, 0);
@@ -273,34 +368,40 @@ static int ata_identify(struct ata_device *dev) {
     hal_io_out8(dev->io_base + ATA_REG_COMMAND, ATA_CMD_IDENTIFY);
 
     status = hal_io_in8(dev->io_base + ATA_REG_STATUS);
+    dev->last_status = status;
     if (status == 0) {
         return -1;
     }
 
-    for (;;) {
+    for (uint32_t spin = 0u; spin < ATA_POLL_SPINS; spin++) {
         status = hal_io_in8(dev->io_base + ATA_REG_STATUS);
+        dev->last_status = status;
         if ((status & ATA_SR_ERR) != 0) {
+            ata_note_error(dev, ATA_ERROR_DEVICE);
             return -1;
         }
         if ((status & ATA_SR_BSY) == 0 && (status & ATA_SR_DRQ) != 0) {
-            break;
+            for (uint32_t i = 0; i < 256; i++) {
+                identify[i] = hal_io_in16(dev->io_base + ATA_REG_DATA);
+            }
+
+            dev->sector_count = ((uint32_t)identify[61] << 16) | identify[60];
+            ata_swap_ident_string(dev->model, &identify[27], 20);
+            dev->blockdev.block_size = 512;
+            dev->blockdev.block_count = dev->sector_count;
+            dev->blockdev.read = ata_read_impl;
+            dev->blockdev.write = ata_write_impl;
+            dev->blockdev.flush = ata_flush_impl;
+            dev->blockdev.reset = ata_reset_impl;
+            dev->blockdev.driver_data = dev;
+            dev->present = 1;
+            ata_note_error(dev, ATA_ERROR_NONE);
+            ata_set_state(dev, ATA_STATE_READY);
+            return 0;
         }
     }
-
-    for (uint32_t i = 0; i < 256; i++) {
-        identify[i] = hal_io_in16(dev->io_base + ATA_REG_DATA);
-    }
-
-    dev->sector_count = ((uint32_t)identify[61] << 16) | identify[60];
-    ata_swap_ident_string(dev->model, &identify[27], 20);
-    dev->blockdev.block_size = 512;
-    dev->blockdev.block_count = dev->sector_count;
-    dev->blockdev.read = ata_read_impl;
-    dev->blockdev.write = ata_write_impl;
-    dev->blockdev.flush = ata_flush_impl;
-    dev->blockdev.driver_data = dev;
-    dev->present = 1;
-    return 0;
+    ata_note_error(dev, ATA_ERROR_TIMEOUT);
+    return -1;
 }
 
 void ata_init(void) {
@@ -315,6 +416,14 @@ void ata_init(void) {
 
     for (uint32_t i = 0; i < (uint32_t)(sizeof(ata_devices) / sizeof(ata_devices[0])); i++) {
         ata_devices[i].present = 0;
+        ata_devices[i].state = ATA_STATE_ABSENT;
+        ata_devices[i].last_status = 0u;
+        ata_devices[i].reset_count = 0u;
+        ata_devices[i].read_count = 0u;
+        ata_devices[i].write_count = 0u;
+        ata_devices[i].flush_count = 0u;
+        ata_devices[i].error_count = 0u;
+        ata_devices[i].last_error = ATA_ERROR_NONE;
         ata_devices[i].model[0] = '\0';
         ata_devices[i].blockdev.name = names[i];
         ata_devices[i].blockdev.block_size = 512;
@@ -322,6 +431,7 @@ void ata_init(void) {
         ata_devices[i].blockdev.read = ata_read_impl;
         ata_devices[i].blockdev.write = ata_write_impl;
         ata_devices[i].blockdev.flush = ata_flush_impl;
+        ata_devices[i].blockdev.reset = ata_reset_impl;
         ata_devices[i].blockdev.driver_data = &ata_devices[i];
 
         if (ata_identify(&ata_devices[i]) == 0) {

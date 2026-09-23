@@ -15,7 +15,7 @@ every subsystem is production-complete.
 
 Implemented and covered by the current i386 smoke checks:
 
-- BootX-based i386 boot to framebuffer console.
+- Janus-based i386 boot to framebuffer console.
 - ELF32 userland loading and `/system/init` startup.
 - `USH32.ELF` shell startup and NEXBOX32 command execution.
 - i386 syscall request adapter for the current libc32/userland surface.

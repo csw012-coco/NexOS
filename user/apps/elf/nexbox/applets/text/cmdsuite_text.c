@@ -125,7 +125,7 @@ static void pager_run_fd(uint32_t content_fd, uint32_t tty_fd) {
 
 
 int cmd_help(void) {
-    write_str("cmd commands: help actions action mapper echo yes clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps id whoami su sudo login getty session service jobs wait alarm timeout kill fg bg reboot poweroff switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg\n");
+    write_str("cmd commands: help actions action mapper echo yes clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk mkfs mkfs.nxfs mkfs.fat df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps id whoami su sudo login getty session service jobs wait alarm timeout kill fg bg reboot poweroff switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg\n");
     write_str("shell-only builtins: cd exit [code] exec set export alias functions history source .\n");
     write_str("multicall: nexbox <applet> [args]\n");
     write_str("set lists shell-local vars; env/export list exported environment\n");
@@ -248,17 +248,31 @@ static void font_write_help_local(void) {
     write_str("show the active text font cell, console grid, and sample glyphs\n");
 }
 
-static int font_hex_file_available_local(void) {
-    int fd = open("/system/font/font.hex", 0);
+static int font_bdf_file_available_local(void) {
+    int fd = open("/system/font/font.bdf", 0);
 
     if (fd < 0) {
-        fd = open("/SYSTEM/FONT/FONT.HEX", 0);
+        fd = open("/SYSTEM/FONT/FONT.BDF", 0);
     }
     if (fd < 0) {
         return 0;
     }
     close((uint32_t)fd);
     return 1;
+}
+
+static int font_bdf_line_has_encoding_local(const char *line, uint32_t encoding) {
+    uint32_t pos = 9u;
+    uint32_t value = 0u;
+
+    if (!starts_with_text_local(line, "ENCODING ")) {
+        return 0;
+    }
+    while (line[pos] >= '0' && line[pos] <= '9') {
+        value = value * 10u + (uint32_t)(line[pos] - '0');
+        pos++;
+    }
+    return value == encoding;
 }
 
 static int font_write_info_local(int table) {
@@ -274,7 +288,7 @@ static int font_write_info_local(int table) {
 
     cell_width = machine.text_cell_width != 0u ? machine.text_cell_width : 8u;
     cell_height = machine.text_cell_height != 0u ? machine.text_cell_height : 16u;
-    has_font_file = font_hex_file_available_local();
+    has_font_file = font_bdf_file_available_local();
 
     if (table) {
         write_str("#!type=table columns=property,value\n");
@@ -288,7 +302,7 @@ static int font_write_info_local(int table) {
         write_str("x");
         write_dec(cell_height);
         write_str("\nfont_file ");
-        write_str(has_font_file ? "/system/font/font.hex" : "none");
+        write_str(has_font_file ? "/system/font/font.bdf" : "none");
         write_str("\n");
         return 0;
     }
@@ -302,8 +316,8 @@ static int font_write_info_local(int table) {
     write_dec(cell_width);
     write_str("x");
     write_dec(cell_height);
-    write_str("\nfont hex: ");
-    write_str(has_font_file ? "/system/font/font.hex" : "not found");
+    write_str("\nfont bdf: ");
+    write_str(has_font_file ? "/system/font/font.bdf" : "not found");
     write_str("\n");
     return 0;
 }
@@ -321,18 +335,15 @@ static void font_write_sample_local(void) {
     write_str(" +--------+\n");
 }
 
-static int font_hex_has_glyph_local(const char *glyph) {
+static int font_bdf_has_encoding_local(uint32_t encoding) {
     char buffer[256];
     char line[96];
     uint32_t line_len = 0u;
     int fd;
 
-    if (glyph == NULL || glyph[0] == '\0') {
-        return 0;
-    }
-    fd = open("/system/font/font.hex", 0);
+    fd = open("/system/font/font.bdf", 0);
     if (fd < 0) {
-        fd = open("/SYSTEM/FONT/FONT.HEX", 0);
+        fd = open("/SYSTEM/FONT/FONT.BDF", 0);
     }
     if (fd < 0) {
         return 0;
@@ -352,7 +363,7 @@ static int font_hex_has_glyph_local(const char *glyph) {
 
             if (ch == '\n' || ch == '\r') {
                 line[line_len] = '\0';
-                if (starts_with_text_local(line, glyph)) {
+                if (font_bdf_line_has_encoding_local(line, encoding)) {
                     close((uint32_t)fd);
                     return 1;
                 }
@@ -366,7 +377,7 @@ static int font_hex_has_glyph_local(const char *glyph) {
     }
     if (line_len != 0u) {
         line[line_len] = '\0';
-        if (starts_with_text_local(line, glyph)) {
+        if (font_bdf_line_has_encoding_local(line, encoding)) {
             close((uint32_t)fd);
             return 1;
         }
@@ -385,15 +396,15 @@ static int font_utf8_check_local(void) {
         write_err_str("font: machine info query failed\n");
         return 1;
     }
-    if (!font_hex_file_available_local()) {
-        write_err_str("font: /system/font/font.hex not found\n");
+    if (!font_bdf_file_available_local()) {
+        write_err_str("font: /system/font/font.bdf not found\n");
         return 1;
     }
-    has_ac00 = font_hex_has_glyph_local("AC00:");
-    has_ae00 = font_hex_has_glyph_local("AE00:");
-    has_d55c = font_hex_has_glyph_local("D55C:");
+    has_ac00 = font_bdf_has_encoding_local(0xac00u);
+    has_ae00 = font_bdf_has_encoding_local(0xae00u);
+    has_d55c = font_bdf_has_encoding_local(0xd55cu);
     if (!has_ac00 || !has_ae00 || !has_d55c) {
-        write_err_str("font: missing Hangul glyphs in font.hex\n");
+        write_err_str("font: missing Hangul glyphs in font.bdf\n");
         return 1;
     }
     write_str("font: utf8/unifont check OK grid=");
@@ -586,9 +597,10 @@ int cmd_cat(int argc, char **argv) {
         }
     }
     for (;;) {
-        ssize_t read_rc = read(fd, buf, sizeof(buf));
+        ssize_t read_rc;
         uint32_t bytes;
 
+        read_rc = read(fd, buf, sizeof(buf));
         if (read_rc < 0) {
             write_err_str("cat: read failed\n");
             if (fd != STDIN_FILENO) {
@@ -601,8 +613,9 @@ int cmd_cat(int argc, char **argv) {
         }
         bytes = (uint32_t)read_rc;
         {
-            int write_rc = write_stdout_all_or_stop(buf, bytes);
+            int write_rc;
 
+            write_rc = write_stdout_all_or_stop(buf, bytes);
             if (write_rc < 0) {
                 output_closed = 1;
                 break;

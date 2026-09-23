@@ -99,6 +99,12 @@ void kernel_query_ac97_info(struct syscall_ac97_info *info) {
     info->codec_id = 0;
     info->global_status = 0;
     info->global_control = 0;
+    info->state = 0;
+    info->reset_count = 0;
+    info->play_count = 0;
+    info->error_count = 0;
+    info->last_error = 0;
+    info->last_stream_status = 0;
 
     if (!ac97_query_status(&status)) {
         return;
@@ -123,6 +129,12 @@ void kernel_query_ac97_info(struct syscall_ac97_info *info) {
     info->codec_id = status.codec_id;
     info->global_status = status.global_status;
     info->global_control = status.global_control;
+    info->state = status.state;
+    info->reset_count = status.reset_count;
+    info->play_count = status.play_count;
+    info->error_count = status.error_count;
+    info->last_error = status.last_error;
+    info->last_stream_status = status.last_stream_status;
 }
 
 void kernel_query_hda_info(struct syscall_hda_info *info) {
@@ -156,6 +168,11 @@ void kernel_query_hda_info(struct syscall_hda_info *info) {
     info->corb_size = 0;
     info->rirb_size = 0;
     info->codec_mask = 0;
+    info->state = 0;
+    info->reset_attempts = 0;
+    info->codec_detect_attempts = 0;
+    info->error_count = 0;
+    info->last_error = 0;
 
     if (!hda_query_status(&status)) {
         return;
@@ -185,6 +202,11 @@ void kernel_query_hda_info(struct syscall_hda_info *info) {
     info->corb_size = status.corb_size;
     info->rirb_size = status.rirb_size;
     info->codec_mask = status.codec_mask;
+    info->state = status.state;
+    info->reset_attempts = status.reset_attempts;
+    info->codec_detect_attempts = status.codec_detect_attempts;
+    info->error_count = status.error_count;
+    info->last_error = status.last_error;
 }
 
 void kernel_query_rtl8139_info(struct syscall_rtl8139_info *info) {
@@ -215,6 +237,17 @@ void kernel_query_rtl8139_info(struct syscall_rtl8139_info *info) {
     info->rx_config = 0;
     info->link_up = 0;
     info->speed_mbps = 0;
+    info->capr = 0;
+    info->cbr = 0;
+    info->rx_read_offset = 0;
+    info->state = 0;
+    info->reset_count = 0;
+    info->tx_count = 0;
+    info->rx_count = 0;
+    info->irq_count = 0;
+    info->error_count = 0;
+    info->last_error = 0;
+    info->last_isr = 0;
     for (i = 0; i < sizeof(info->mac); i++) {
         info->mac[i] = 0;
     }
@@ -248,6 +281,14 @@ void kernel_query_rtl8139_info(struct syscall_rtl8139_info *info) {
     info->capr = status.capr;
     info->cbr = status.cbr;
     info->rx_read_offset = status.rx_read_offset;
+    info->state = status.state;
+    info->reset_count = status.reset_count;
+    info->tx_count = status.tx_count;
+    info->rx_count = status.rx_count;
+    info->irq_count = status.irq_count;
+    info->error_count = status.error_count;
+    info->last_error = status.last_error;
+    info->last_isr = status.last_isr;
     for (i = 0; i < sizeof(info->mac); i++) {
         info->mac[i] = status.mac[i];
     }
@@ -341,11 +382,25 @@ int kernel_query_rtc_info(struct syscall_rtc_info *info) {
     info->month = 0u;
     info->year = 0u;
     info->unix_time = 0u;
+    info->query_count = 0u;
+    info->stable_read_count = 0u;
+    info->retry_count = 0u;
+    info->update_timeout_count = 0u;
+    info->unstable_count = 0u;
+    info->invalid_count = 0u;
+    info->last_error = 0u;
 
     if (!cmos_rtc_query(&rtc)) {
         info->present = rtc.present;
         info->updating = rtc.updating;
         info->valid = rtc.valid;
+        info->query_count = rtc.query_count;
+        info->stable_read_count = rtc.stable_read_count;
+        info->retry_count = rtc.retry_count;
+        info->update_timeout_count = rtc.update_timeout_count;
+        info->unstable_count = rtc.unstable_count;
+        info->invalid_count = rtc.invalid_count;
+        info->last_error = rtc.last_error;
         return 0;
     }
 
@@ -366,6 +421,13 @@ int kernel_query_rtc_info(struct syscall_rtc_info *info) {
     info->month = rtc.month;
     info->year = rtc.year;
     info->unix_time = rtc.unix_time;
+    info->query_count = rtc.query_count;
+    info->stable_read_count = rtc.stable_read_count;
+    info->retry_count = rtc.retry_count;
+    info->update_timeout_count = rtc.update_timeout_count;
+    info->unstable_count = rtc.unstable_count;
+    info->invalid_count = rtc.invalid_count;
+    info->last_error = rtc.last_error;
     return info->present != 0u;
 }
 

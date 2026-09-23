@@ -6,7 +6,29 @@
 struct block_device;
 
 enum {
-    BLOCKDEV_MAX_PARTITIONS = 128u
+    BLOCKDEV_MAX_PARTITIONS = 128u,
+    BLOCKDEV_REQUEST_QUEUE_DEPTH = 8u,
+    BLOCKDEV_MERGE_SECTORS_MAX = 64u
+};
+
+struct blockdev_async_request;
+typedef void (*blockdev_async_complete_fn)(struct blockdev_async_request *req,
+                                           int status,
+                                           void *context);
+
+struct blockdev_async_request {
+    struct block_device *dev;
+    uint64_t lba;
+    uint32_t count;
+    void *buffer;
+    const void *write_buffer;
+    uint8_t kind;
+    uint8_t valid;
+    uint8_t in_flight;
+    volatile uint8_t done;
+    int status;
+    void *context;
+    blockdev_async_complete_fn complete;
 };
 
 enum blockdev_state {
@@ -28,6 +50,7 @@ struct blockdev_info {
     uint64_t block_count;
     uint8_t writable;
     uint32_t partition_count;
+    uint32_t state;
     uint32_t failure_count;
     uint32_t consecutive_failures;
     uint32_t rebind_count;
@@ -105,3 +128,16 @@ int blockdev_partition_get_cached(struct block_device *dev, uint32_t index, stru
 int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *buffer);
 int blockdev_write(struct block_device *dev, uint64_t lba, uint32_t count, const void *buffer);
 int blockdev_flush(struct block_device *dev);
+int blockdev_submit_read_async(struct block_device *dev,
+                              uint64_t lba,
+                              uint32_t count,
+                              void *buffer,
+                              blockdev_async_complete_fn complete,
+                              void *context);
+int blockdev_submit_write_async(struct block_device *dev,
+                               uint64_t lba,
+                               uint32_t count,
+                               const void *buffer,
+                               blockdev_async_complete_fn complete,
+                               void *context);
+void blockdev_async_flush_pending(void);

@@ -58,6 +58,18 @@ DOOM32.ELF display audio input
 imgview display input
 /cmd/guidemo display input
 guidemo display input
+/cmd/prism display input
+prism display input
+/cmd/prism32 display input
+prism32 display input
+/cmd/desktop none
+desktop none
+/cmd/desktop32 none
+desktop32 none
+/cmd/prismsmoke none
+prismsmoke none
+/cmd/prismsmoke32 none
+prismsmoke32 none
 
 /cmd/test32 all
 test32 all

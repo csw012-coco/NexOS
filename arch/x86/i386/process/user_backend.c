@@ -3,6 +3,7 @@
 
 #include "abi/syscall_abi.h"
 #include "kernel/internal/proc/process_internal_base.h"
+#include "kernel/public/core/kprint.h"
 #include "kernel/public/proc/process_scheduler_ops.h"
 #include "../mm/paging.h"
 
@@ -139,6 +140,10 @@ int process32_run_command(const char *command,
                                           &plan,
                                           &image,
                                           &loaded)) {
+        kprint("process32: run_command load failed cmd=%s path=%s err=%u\n",
+               command != 0 ? command : "(null)",
+               plan.load_path,
+               g_process_exec_last_error);
         return 0;
     }
     return process_scheduler_run_loaded(&loaded, process);

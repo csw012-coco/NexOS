@@ -135,6 +135,7 @@ void process_exit_current(struct process_session *session, int32_t exit_code);
 uint32_t process_capacity(void);
 int process_get(uint32_t slot, struct process_snapshot *out);
 int process_get_last_exit(struct process_snapshot *out);
+int process_has_wait_child(uint32_t parent_pid, uint32_t requested_pid);
 int process_wait_last(struct process_snapshot *out);
 int process_wait_pid(uint32_t pid, struct process_snapshot *out);
 const char *process_cwd(const struct process *proc);

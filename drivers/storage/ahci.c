@@ -38,7 +38,27 @@ enum {
     ATA_CMD_IDENTIFY = 0xecu,
     ATA_CMD_READ_DMA_EXT = 0x25u,
     ATA_CMD_WRITE_DMA_EXT = 0x35u,
-    ATA_CMD_FLUSH_CACHE_EXT = 0xeau
+    ATA_CMD_FLUSH_CACHE_EXT = 0xeau,
+
+    AHCI_STATE_EMPTY = 0u,
+    AHCI_STATE_PROBING = 1u,
+    AHCI_STATE_READY = 2u,
+    AHCI_STATE_READING = 3u,
+    AHCI_STATE_WRITING = 4u,
+    AHCI_STATE_FLUSHING = 5u,
+    AHCI_STATE_RECOVERING = 6u,
+    AHCI_STATE_FAILED = 7u,
+
+    AHCI_ERROR_NONE = 0u,
+    AHCI_ERROR_ALLOC = 1u,
+    AHCI_ERROR_STOP_TIMEOUT = 2u,
+    AHCI_ERROR_START_TIMEOUT = 3u,
+    AHCI_ERROR_BUSY_TIMEOUT = 4u,
+    AHCI_ERROR_SLOT_UNAVAILABLE = 5u,
+    AHCI_ERROR_COMMAND_FAILED = 6u,
+    AHCI_ERROR_BOUNDS = 7u,
+    AHCI_ERROR_BAD_ARG = 8u,
+    AHCI_ERROR_IDENTIFY = 9u
 };
 
 static int ahci_driver_init_local(void) {
@@ -129,6 +149,16 @@ struct ahci_device {
     uint8_t *bounce;
     uint64_t sector_count;
     volatile uint32_t io_lock;
+    uint32_t state;
+    uint32_t reset_count;
+    uint32_t read_count;
+    uint32_t write_count;
+    uint32_t flush_count;
+    uint32_t error_count;
+    uint32_t last_error;
+    uint32_t last_is;
+    uint32_t last_tfd;
+    uint32_t last_ci;
     struct block_device blockdev;
 };
 
@@ -144,6 +174,36 @@ static void ahci_lock(volatile uint32_t *lock) {
 
 static void ahci_unlock(volatile uint32_t *lock) {
     __sync_lock_release(lock);
+}
+
+static void ahci_set_state(struct ahci_device *dev, uint32_t state) {
+    if (dev != 0) {
+        dev->state = state;
+    }
+}
+
+static void ahci_snapshot_port(struct ahci_device *dev) {
+    if (dev == 0 || dev->port == 0) {
+        return;
+    }
+    dev->last_is = dev->port->is;
+    dev->last_tfd = dev->port->tfd;
+    dev->last_ci = dev->port->ci;
+}
+
+static void ahci_note_error(struct ahci_device *dev, uint32_t error, const char *reason) {
+    if (dev == 0) {
+        return;
+    }
+    ahci_snapshot_port(dev);
+    dev->last_error = error;
+    if (error != AHCI_ERROR_NONE) {
+        dev->error_count++;
+        dev->state = AHCI_STATE_FAILED;
+        blockdev_record_failure(&dev->blockdev, -(int)error, reason != 0 ? reason : "ahci");
+    } else {
+        blockdev_record_success(&dev->blockdev);
+    }
 }
 
 static uint64_t ahci_alloc_page_phys(void) {
@@ -220,13 +280,28 @@ static int ahci_wait_clear(volatile uint32_t *reg, uint32_t mask) {
     return 0;
 }
 
-static int ahci_stop_port(volatile struct ahci_hba_port *port) {
+static int ahci_stop_port_dev(struct ahci_device *dev) {
+    volatile struct ahci_hba_port *port = dev != 0 ? dev->port : 0;
+
+    if (port == 0) {
+        return 0;
+    }
     port->cmd &= ~(AHCI_PORT_CMD_ST | AHCI_PORT_CMD_FRE);
-    return ahci_wait_clear(&port->cmd, AHCI_PORT_CMD_CR | AHCI_PORT_CMD_FR);
+    if (!ahci_wait_clear(&port->cmd, AHCI_PORT_CMD_CR | AHCI_PORT_CMD_FR)) {
+        ahci_note_error(dev, AHCI_ERROR_STOP_TIMEOUT, "ahci-stop");
+        return 0;
+    }
+    return 1;
 }
 
-static int ahci_start_port(volatile struct ahci_hba_port *port) {
+static int ahci_start_port_dev(struct ahci_device *dev) {
+    volatile struct ahci_hba_port *port = dev != 0 ? dev->port : 0;
+
+    if (port == 0) {
+        return 0;
+    }
     if (!ahci_wait_clear(&port->cmd, AHCI_PORT_CMD_CR)) {
+        ahci_note_error(dev, AHCI_ERROR_START_TIMEOUT, "ahci-start");
         return 0;
     }
     port->cmd |= AHCI_PORT_CMD_FRE;
@@ -303,11 +378,49 @@ static int ahci_find_slot(volatile struct ahci_hba_port *port) {
     return -1;
 }
 
-static int ahci_issue(volatile struct ahci_hba_port *port, uint32_t slot) {
+static int ahci_recover_port(struct ahci_device *dev) {
+    if (dev == 0 || dev->port == 0) {
+        return 0;
+    }
+    dev->reset_count++;
+    ahci_set_state(dev, AHCI_STATE_RECOVERING);
+    if (!ahci_stop_port_dev(dev)) {
+        return 0;
+    }
+    dev->port->serr = 0xffffffffu;
+    dev->port->is = 0xffffffffu;
+    dev->port->ci = 0u;
+    if (!ahci_start_port_dev(dev)) {
+        return 0;
+    }
+    blockdev_record_rebind(&dev->blockdev, "ahci-port-reset");
+    ahci_set_state(dev, AHCI_STATE_READY);
+    return 1;
+}
+
+static int ahci_reset_impl(struct block_device *bdev) {
+    struct ahci_device *dev = bdev != 0 ? (struct ahci_device *)bdev->driver_data : 0;
+    int ok;
+
+    if (dev == 0) {
+        return -1;
+    }
+    ahci_lock(&dev->io_lock);
+    ok = ahci_recover_port(dev);
+    ahci_unlock(&dev->io_lock);
+    return ok ? 0 : -1;
+}
+
+static int ahci_issue(struct ahci_device *dev, uint32_t slot) {
+    volatile struct ahci_hba_port *port = dev != 0 ? dev->port : 0;
     uint32_t bit = 1u << slot;
 
+    if (port == 0) {
+        return 0;
+    }
     port->is = 0xffffffffu;
     if (!ahci_wait_not_busy(port)) {
+        ahci_note_error(dev, AHCI_ERROR_BUSY_TIMEOUT, "ahci-busy");
         return 0;
     }
     __sync_synchronize();
@@ -316,14 +429,20 @@ static int ahci_issue(volatile struct ahci_hba_port *port, uint32_t slot) {
     for (uint32_t spin = 0; spin < 10000000u; spin++) {
         if ((port->ci & bit) == 0u) {
             __sync_synchronize();
-            return (port->is & AHCI_PORT_IS_TFES) == 0u;
+            if ((port->is & AHCI_PORT_IS_TFES) != 0u) {
+                ahci_note_error(dev, AHCI_ERROR_COMMAND_FAILED, "ahci-tfes");
+                return 0;
+            }
+            return 1;
         }
         if ((port->is & AHCI_PORT_IS_TFES) != 0u) {
             __sync_synchronize();
+            ahci_note_error(dev, AHCI_ERROR_COMMAND_FAILED, "ahci-tfes");
             return 0;
         }
     }
     __sync_synchronize();
+    ahci_note_error(dev, AHCI_ERROR_COMMAND_FAILED, "ahci-timeout");
     return 0;
 }
 
@@ -341,10 +460,12 @@ static int ahci_command_dma(struct ahci_device *dev,
 
     if (dev == 0 || dev->port == 0 || bytes > 4096u || buffer_phys > 0xffffffffull ||
         ((bytes == 0u || count == 0u) && (bytes != 0u || count != 0u))) {
+        ahci_note_error(dev, AHCI_ERROR_BAD_ARG, "ahci-arg");
         return 0;
     }
     slot = ahci_find_slot(dev->port);
     if (slot < 0) {
+        ahci_note_error(dev, AHCI_ERROR_SLOT_UNAVAILABLE, "ahci-slot");
         return 0;
     }
 
@@ -377,7 +498,15 @@ static int ahci_command_dma(struct ahci_device *dev,
     fis[12] = (uint8_t)(count & 0xffu);
     fis[13] = (uint8_t)((count >> 8) & 0xffu);
 
-    return ahci_issue(dev->port, (uint32_t)slot);
+    if (ahci_issue(dev, (uint32_t)slot)) {
+        ahci_note_error(dev, AHCI_ERROR_NONE, 0);
+        return 1;
+    }
+    if (ahci_recover_port(dev) && ahci_issue(dev, (uint32_t)slot)) {
+        ahci_note_error(dev, AHCI_ERROR_NONE, 0);
+        return 1;
+    }
+    return 0;
 }
 
 static int ahci_flush(struct ahci_device *dev) {
@@ -393,16 +522,19 @@ static int ahci_identify(struct ahci_device *dev) {
 
     if (identify_phys == 0u || identify_phys > 0xffffffffull) {
         ahci_free_page_phys(identify_phys);
+        ahci_note_error(dev, AHCI_ERROR_ALLOC, "ahci-ident-alloc");
         return 0;
     }
     identify = (uint16_t *)ahci_phys_map(identify_phys);
     if (identify == 0) {
         ahci_free_page_phys(identify_phys);
+        ahci_note_error(dev, AHCI_ERROR_ALLOC, "ahci-ident-map");
         return 0;
     }
     ahci_zero(identify, 512u);
     if (!ahci_command_dma(dev, ATA_CMD_IDENTIFY, 0u, 1u, identify_phys, 512u, 0)) {
         ahci_free_page_phys(identify_phys);
+        ahci_note_error(dev, AHCI_ERROR_IDENTIFY, "ahci-ident");
         return 0;
     }
     lba28_count = ((uint32_t)identify[61] << 16) | identify[60];
@@ -420,9 +552,11 @@ static int ahci_read_impl(struct block_device *bdev, uint64_t lba, uint32_t coun
 
     if (dev == 0 || !dev->present || buffer == 0 || count == 0u ||
         dev->bounce == 0 || lba >= dev->sector_count || (uint64_t)count > dev->sector_count - lba) {
+        ahci_note_error(dev, AHCI_ERROR_BOUNDS, "ahci-read-bounds");
         return -1;
     }
     ahci_lock(&dev->io_lock);
+    ahci_set_state(dev, AHCI_STATE_READING);
     while (done < count) {
         uint32_t chunk = count - done;
         uint32_t bytes;
@@ -445,6 +579,8 @@ static int ahci_read_impl(struct block_device *bdev, uint64_t lba, uint32_t coun
         memcpy(out + done * AHCI_SECTOR_SIZE, dev->bounce, bytes);
         done += chunk;
     }
+    dev->read_count += count;
+    ahci_set_state(dev, AHCI_STATE_READY);
     ahci_unlock(&dev->io_lock);
     return 0;
 }
@@ -456,9 +592,11 @@ static int ahci_write_impl(struct block_device *bdev, uint64_t lba, uint32_t cou
 
     if (dev == 0 || !dev->present || buffer == 0 || count == 0u ||
         dev->bounce == 0 || lba >= dev->sector_count || (uint64_t)count > dev->sector_count - lba) {
+        ahci_note_error(dev, AHCI_ERROR_BOUNDS, "ahci-write-bounds");
         return -1;
     }
     ahci_lock(&dev->io_lock);
+    ahci_set_state(dev, AHCI_STATE_WRITING);
     while (done < count) {
         uint32_t chunk = count - done;
         uint32_t bytes;
@@ -481,6 +619,8 @@ static int ahci_write_impl(struct block_device *bdev, uint64_t lba, uint32_t cou
         }
         done += chunk;
     }
+    dev->write_count += count;
+    ahci_set_state(dev, AHCI_STATE_READY);
     ahci_unlock(&dev->io_lock);
     return 0;
 }
@@ -493,7 +633,12 @@ static int ahci_flush_impl(struct block_device *bdev) {
         return -1;
     }
     ahci_lock(&dev->io_lock);
+    ahci_set_state(dev, AHCI_STATE_FLUSHING);
     rc = ahci_flush(dev) ? 0 : -1;
+    if (rc == 0) {
+        dev->flush_count++;
+        ahci_set_state(dev, AHCI_STATE_READY);
+    }
     ahci_unlock(&dev->io_lock);
     return rc;
 }
@@ -501,7 +646,7 @@ static int ahci_flush_impl(struct block_device *bdev) {
 static int ahci_setup_port(struct ahci_device *dev) {
     volatile struct ahci_hba_port *port = dev->port;
 
-    if (!ahci_stop_port(port)) {
+    if (!ahci_stop_port_dev(dev)) {
         return 0;
     }
     port->clb = (uint32_t)dev->cmd_list_phys;
@@ -511,7 +656,7 @@ static int ahci_setup_port(struct ahci_device *dev) {
     port->serr = 0xffffffffu;
     port->is = 0xffffffffu;
     port->ie = 0u;
-    return ahci_start_port(port);
+    return ahci_start_port_dev(dev);
 }
 
 void ahci_init(void) {
@@ -555,6 +700,7 @@ void ahci_init(void) {
         dev = &g_ahci_devices[g_ahci_device_count];
         memset(dev, 0, sizeof(*dev));
         dev->port_index = (uint8_t)port_index;
+        ahci_set_state(dev, AHCI_STATE_PROBING);
         dev->port = &g_ahci_hba->ports[port_index];
         ahci_write_name(dev->name, g_ahci_device_count);
         if (!ahci_alloc_port_memory(dev)) {
@@ -575,10 +721,22 @@ void ahci_init(void) {
         dev->blockdev.read = ahci_read_impl;
         dev->blockdev.write = ahci_write_impl;
         dev->blockdev.flush = ahci_flush_impl;
+        dev->blockdev.reset = ahci_reset_impl;
         dev->blockdev.driver_data = dev;
         dev->present = 1u;
+        ahci_note_error(dev, AHCI_ERROR_NONE, 0);
+        ahci_set_state(dev, AHCI_STATE_READY);
         if (blockdev_register(&dev->blockdev) == 0) {
-            kprint("ahci: port%u %s sectors=%lx\n", port_index, dev->name, dev->sector_count);
+            kprint("ahci: port%u %s sectors=%lx state=%u resets=%u errors=%u is=%x tfd=%x ci=%x\n",
+                   port_index,
+                   dev->name,
+                   dev->sector_count,
+                   dev->state,
+                   dev->reset_count,
+                   dev->error_count,
+                   dev->last_is,
+                   dev->last_tfd,
+                   dev->last_ci);
             g_ahci_device_count++;
         } else {
             ahci_free_port_memory(dev);

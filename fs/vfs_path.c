@@ -330,7 +330,9 @@ int vfs_contains_char(const char *text, char needle) {
 }
 
 int vfs_parse_path_for_vfs(const struct vfs *vfs, const char *path, struct vfs_path *out) {
-    char mount_name[NOS_NAME_BUFFER_SIZE];
+    char segment[NOS_NAME_BUFFER_SIZE];
+    const char *cursor;
+    const char *segment_end;
 
     if (out == 0) {
         return 0;
@@ -357,23 +359,110 @@ int vfs_parse_path_for_vfs(const struct vfs *vfs, const char *path, struct vfs_p
         out->has_child = 1;
         return 1;
     }
-    if (!vfs_parse_root_child(path, mount_name, sizeof(mount_name), out->child, sizeof(out->child))) {
+
+    cursor = path + 1u;
+    while (*cursor != '\0') {
+        uint32_t segment_len = 0u;
+        uint32_t slot;
+        const char *remainder;
+
+        while (cursor[segment_len] != '\0' && cursor[segment_len] != '/' && segment_len + 1u < sizeof(segment)) {
+            segment[segment_len] = cursor[segment_len];
+            segment_len++;
+        }
+        if (segment_len == 0u) {
+            cursor++;
+            continue;
+        }
+        segment[segment_len] = '\0';
+        segment_end = cursor + segment_len;
+        remainder = (*segment_end == '/') ? segment_end + 1u : segment_end;
+
+        if (streq(segment, "boot") || streq(segment, "fat")) {
+            out->mount_kind = VFS_MOUNT_FAT32;
+            if (*remainder == '\0') {
+                out->child_is_root = 1;
+            } else {
+                vfs_copy_name(out->child, sizeof(out->child), remainder);
+                out->has_child = 1;
+            }
+            return 1;
+        }
+        if (streq(segment, "nxfs")) {
+            out->mount_kind = VFS_MOUNT_NXFS;
+            if (*remainder == '\0') {
+                out->child_is_root = 1;
+            } else {
+                vfs_copy_name(out->child, sizeof(out->child), remainder);
+                out->has_child = 1;
+            }
+            return 1;
+        }
+        if (streq(segment, "dev")) {
+            out->mount_kind = VFS_MOUNT_DEVFS;
+            if (*remainder == '\0') {
+                out->child_is_root = 1;
+            } else {
+                vfs_copy_name(out->child, sizeof(out->child), remainder);
+                out->has_child = 1;
+            }
+            return 1;
+        }
+        if (streq(segment, "proc")) {
+            out->mount_kind = VFS_MOUNT_PROCFS;
+            if (*remainder == '\0') {
+                out->child_is_root = 1;
+            } else {
+                vfs_copy_name(out->child, sizeof(out->child), remainder);
+                out->has_child = 1;
+            }
+            return 1;
+        }
+        if (streq(segment, "event")) {
+            out->mount_kind = VFS_MOUNT_EVENTFS;
+            if (*remainder == '\0') {
+                out->child_is_root = 1;
+            } else {
+                vfs_copy_name(out->child, sizeof(out->child), remainder);
+                out->has_child = 1;
+            }
+            return 1;
+        }
+        if (vfs_find_dynamic_mount(vfs, segment, &slot)) {
+            out->mount_kind = vfs->mounts[slot].kind;
+            out->mount_slot = slot + 1u;
+            if (*remainder == '\0') {
+                out->child_is_root = 1;
+            } else {
+                vfs_copy_name(out->child, sizeof(out->child), remainder);
+                out->has_child = 1;
+            }
+            return 1;
+        }
+
+        if (*segment_end == '\0') {
+            break;
+        }
+        cursor = remainder;
+    }
+
+    if (!vfs_parse_root_child(path, segment, sizeof(segment), out->child, sizeof(out->child))) {
         return 0;
     }
-    if (streq(mount_name, "boot") || streq(mount_name, "fat")) {
+    if (streq(segment, "boot") || streq(segment, "fat")) {
         out->mount_kind = VFS_MOUNT_FAT32;
-    } else if (streq(mount_name, "nxfs")) {
+    } else if (streq(segment, "nxfs")) {
         out->mount_kind = VFS_MOUNT_NXFS;
-    } else if (streq(mount_name, "dev")) {
+    } else if (streq(segment, "dev")) {
         out->mount_kind = VFS_MOUNT_DEVFS;
-    } else if (streq(mount_name, "proc")) {
+    } else if (streq(segment, "proc")) {
         out->mount_kind = VFS_MOUNT_PROCFS;
-    } else if (streq(mount_name, "event")) {
+    } else if (streq(segment, "event")) {
         out->mount_kind = VFS_MOUNT_EVENTFS;
     } else {
         uint32_t slot;
 
-        if (vfs_find_dynamic_mount(vfs, mount_name, &slot)) {
+        if (vfs_find_dynamic_mount(vfs, segment, &slot)) {
             out->mount_kind = vfs->mounts[slot].kind;
             out->mount_slot = slot + 1u;
         } else {
@@ -395,14 +484,38 @@ int vfs_parse_path_for_vfs(const struct vfs *vfs, const char *path, struct vfs_p
 }
 
 int vfs_resolve_mount_target_name(const struct vfs *vfs, const char *target, char *name, uint32_t name_size) {
-    char child[2];
+    const char *last = target;
+    const char *scan;
+    uint32_t i = 0u;
 
     (void)vfs;
 
     if (target == 0 || name == 0 || name_size == 0 || target[0] != '/') {
         return 0;
     }
-    return vfs_parse_root_child(target, name, name_size, child, sizeof(child)) && child[0] == '\0';
+    if (streq(target, "/")) {
+        return 0;
+    }
+    scan = target;
+    while (*scan != '\0') {
+        if (*scan == '/' && scan[1] != '\0') {
+            last = scan + 1u;
+        }
+        scan++;
+    }
+    if (last[0] == '\0' || last[0] == '/') {
+        return 0;
+    }
+    i = 0u;
+    while (last[i] != '\0' && last[i] != '/' && i + 1u < name_size) {
+        name[i] = last[i];
+        i++;
+    }
+    if (last[i] != '\0' && last[i] != '/') {
+        return 0;
+    }
+    name[i] = '\0';
+    return name[0] != '\0';
 }
 
 int vfs_open(struct vfs *vfs, const char *path, uint32_t flags, struct vfs_node *out) {

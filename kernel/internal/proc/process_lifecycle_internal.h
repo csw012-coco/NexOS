@@ -48,6 +48,10 @@ int process_lifecycle_find_pid_slot(struct process *const *slots,
 int process_lifecycle_collect_exited_child(struct process *child,
                                            int32_t *status,
                                            struct process_snapshot *snapshot);
+void process_lifecycle_reap_orphan_zombies(
+    struct process **slots,
+    uint32_t capacity,
+    void (*reap_slot)(uint32_t slot));
 uint32_t process_lifecycle_wake_exit_waiters(
     struct process **slots,
     uint32_t capacity,
@@ -77,6 +81,7 @@ int process_clone_all_files(const struct process *parent,
                             struct file out[PROCESS_FILE_MAX]);
 void process_install_cloned_files(struct process *proc,
                                   struct file cloned[PROCESS_FILE_MAX]);
+void process_ensure_terminal_owner(struct process *proc);
 int job_process_ignores_sigint(const struct process *proc);
 void job_set_process_foreground_pid(const struct process *proc, uint32_t pid);
 void job_clear_process_foreground_pid(const struct process *proc);

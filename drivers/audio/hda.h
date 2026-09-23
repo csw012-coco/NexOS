@@ -28,6 +28,11 @@ struct hda_status {
     uint32_t corb_size;
     uint32_t rirb_size;
     uint32_t codec_mask;
+    uint32_t state;
+    uint32_t reset_attempts;
+    uint32_t codec_detect_attempts;
+    uint32_t error_count;
+    uint32_t last_error;
 };
 
 int hda_init(void);

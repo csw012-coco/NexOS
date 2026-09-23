@@ -4,8 +4,8 @@
 
 struct syscall_capability_event;
 struct audio_pcm_stream;
-struct bootx_boot_info;
-struct bootx_memmap_entry;
+struct janus_boot_info;
+struct janus_memmap_entry;
 struct vfs;
 
 struct syscall_common_gfx_blit_plan {
@@ -123,13 +123,24 @@ struct syscall_common_vm_page_ops {
 
 struct process;
 
+uint32_t syscall_common_request_core_process_fd_kind(
+    const struct process *proc,
+    uint32_t fd);
+int syscall_common_request_core_process_tty_query(
+    const struct process *proc,
+    uint32_t fd,
+    struct syscall_tty_info *info);
+int32_t syscall_common_request_core_process_fd_query(
+    const struct process *proc,
+    uint32_t fd,
+    struct syscall_fd_info *info);
 void syscall_common_request_core_query_state_init(
     struct vfs *vfs,
-    const struct bootx_boot_info *boot_info,
-    const struct bootx_memmap_entry *memmap,
+    const struct janus_boot_info *boot_info,
+    const struct janus_memmap_entry *memmap,
     uint32_t memmap_count);
 void syscall_common_request_core_fill_fb_info(
-    const struct bootx_boot_info *boot_info,
+    const struct janus_boot_info *boot_info,
     struct syscall_framebuffer_info *info);
 void syscall_common_request_core_set_root_token(const char *token);
 int syscall_common_request_core_backend(

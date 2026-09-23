@@ -6,6 +6,7 @@ KERNEL_C_SRCS := \
 	kernel/core/boot_log.c \
 	kernel/core/boot_state.c \
 	kernel/core/kernel_boot.c \
+	kernel/core/kernel_root.c \
 	kernel/core/kernel_init.c \
 	kernel/core/kernel_config.c \
 	kernel/core/clipboard.c \
@@ -61,6 +62,8 @@ KERNEL_C_SRCS := \
 	arch/x86/x86_64/driver/services.c \
 	arch/x86/x86_64/driver/elf_loader.c \
 	kernel/proc/process_elf.c \
+	arch/x86/common/arch_ops.c \
+	arch/x86/x86_64/ops.c \
 	arch/x86/x86_64/gdt.c \
 	arch/x86/x86_64/mm/paging.c \
 	arch/x86/x86_64/mm/pmm.c \

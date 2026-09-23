@@ -29,12 +29,9 @@ uint32_t g_ehci_hid_event_count;
 uint32_t g_ehci_hid_poll_divider;
 uint32_t g_ehci_hid_last_repeat_tick;
 uint32_t g_ehci_last_hotplug_tick;
-uint64_t g_ehci_async_head_phys;
-uint64_t g_ehci_async_dummy_qtd_phys;
-uint64_t g_ehci_periodic_list_phys;
-struct ehci_qh *g_ehci_async_head;
-struct ehci_qtd *g_ehci_async_dummy_qtd;
-uint32_t *g_ehci_periodic_list;
+struct ehci_regs g_ehci_controllers[EHCI_MAX_CONTROLLERS];
+uint32_t g_ehci_controller_count;
+static struct ehci_schedule g_ehci_schedules[EHCI_MAX_CONTROLLERS];
 
 static void ehci_bios_handoff(struct pci_ehci_controller *ehci) {
     uint32_t hccparams;
@@ -87,22 +84,16 @@ void ehci_init(void) {
     g_ehci_hid_poll_divider = 0u;
     g_ehci_hid_last_repeat_tick = 0u;
     g_ehci_last_hotplug_tick = 0u;
-    g_ehci_async_head_phys = 0u;
-    g_ehci_async_dummy_qtd_phys = 0u;
-    g_ehci_periodic_list_phys = 0u;
-    g_ehci_async_head = 0;
-    g_ehci_async_dummy_qtd = 0;
-    g_ehci_periodic_list = 0;
+    memset(&g_ehci, 0, sizeof(g_ehci));
+    memset(g_ehci_controllers, 0, sizeof(g_ehci_controllers));
+    memset(g_ehci_schedules, 0, sizeof(g_ehci_schedules));
+    g_ehci_controller_count = 0u;
     memset(g_ehci_msc, 0, sizeof(g_ehci_msc));
     memset(g_ehci_hubs, 0, sizeof(g_ehci_hubs));
     memset(g_ehci_hid_keyboards, 0, sizeof(g_ehci_hid_keyboards));
     memset(g_ehci_hid_mice, 0, sizeof(g_ehci_hid_mice));
-    if (!ehci_alloc_async_head()) {
-        kprint("ehci: async head allocation failed\n");
-        return;
-    }
-
-    for (uint32_t index = 0u; pci_find_ehci_controller_at(index, &ehci); index++) {
+    for (uint32_t index = 0u; index < EHCI_MAX_CONTROLLERS &&
+         pci_find_ehci_controller_at(index, &ehci); index++) {
         uint32_t mmio;
         uint32_t hcsparams;
 
@@ -112,6 +103,8 @@ void ehci_init(void) {
         if (mmio == 0u) {
             continue;
         }
+        memset(&g_ehci, 0, sizeof(g_ehci));
+        g_ehci.schedule = &g_ehci_schedules[index];
         g_ehci.cap = (volatile uint8_t *)hal_mmio_map(mmio, 0x1000u);
         if (g_ehci.cap == 0) {
             continue;
@@ -132,19 +125,32 @@ void ehci_init(void) {
                    (uint32_t)ehci.bus, (uint32_t)ehci.slot, (uint32_t)ehci.function);
             continue;
         }
+        if (!ehci_alloc_async_head()) {
+            kprint("ehci: controller%u schedule allocation failed\n", index);
+            continue;
+        }
         if (!ehci_start_controller()) {
             kprint("ehci: start timeout bdf=%u:%u.%u\n",
                    (uint32_t)ehci.bus, (uint32_t)ehci.slot, (uint32_t)ehci.function);
             continue;
         }
-        kprint("ehci: controller%u bdf=%u:%u.%u mmio=%x ports=%u rev=multi-ehci-v11\n",
+        kprint("ehci: controller%u bdf=%u:%u.%u mmio=%x ports=%u rev=multi-ehci-v12\n",
                index,
                (uint32_t)ehci.bus, (uint32_t)ehci.slot, (uint32_t)ehci.function,
                mmio, (uint32_t)g_ehci.port_count);
 
+        g_ehci_controllers[g_ehci_controller_count++] = g_ehci;
+        kprint("ehci: controller%u periodic_base=%x async_base=%x\n",
+               index, (uint32_t)g_ehci_periodic_list_phys,
+               (uint32_t)g_ehci_async_head_phys);
         for (uint32_t port = 0; port < g_ehci.port_count; port++) {
             (void)ehci_enumerate_port(port);
         }
+    }
+    if (g_ehci_controller_count != 0u) {
+        g_ehci = g_ehci_controllers[0];
+    } else {
+        memset(&g_ehci, 0, sizeof(g_ehci));
     }
 }
 
@@ -154,6 +160,40 @@ uint32_t ehci_msc_device_count(void) {
 
 uint32_t ehci_hid_keyboard_count(void) {
     return g_ehci_hid_keyboard_count;
+}
+
+static void ehci_log_hid_keyboard_poll_failure(uint32_t index, struct ehci_hid_keyboard *kbd) {
+    uint32_t count;
+
+    if (kbd == 0 || kbd->interrupt_error_count == kbd->interrupt_log_count) {
+        return;
+    }
+    count = kbd->interrupt_error_count;
+    kbd->interrupt_log_count = count;
+    if (count == EHCI_HID_RESET_ON_FAIL_COUNT || (count & 0x3fu) == 0u) {
+        kprint("ehci: hidkbd%u interrupt poll failed count=%u token=%x fail=%u\n",
+               index,
+               count,
+               kbd->last_interrupt_token,
+               (uint32_t)kbd->interrupt_fail_count);
+    }
+}
+
+static void ehci_log_hid_mouse_poll_failure(uint32_t index, struct ehci_hid_mouse *mouse) {
+    uint32_t count;
+
+    if (mouse == 0 || mouse->interrupt_error_count == mouse->interrupt_log_count) {
+        return;
+    }
+    count = mouse->interrupt_error_count;
+    mouse->interrupt_log_count = count;
+    if (count == EHCI_HID_RESET_ON_FAIL_COUNT || (count & 0x3fu) == 0u) {
+        kprint("ehci: hidmouse%u interrupt poll failed count=%u token=%x fail=%u\n",
+               index,
+               count,
+               mouse->last_interrupt_token,
+               (uint32_t)mouse->interrupt_fail_count);
+    }
 }
 
 int ehci_poll_keyboard_event(struct keyboard_event *out) {
@@ -179,11 +219,8 @@ int ehci_poll_keyboard_event(struct keyboard_event *out) {
             continue;
         }
         memset(report, 0, sizeof(report));
-        if (!ehci_hid_get_report(kbd, report)) {
-            if (!kbd->report_fail_logged) {
-                kprint("ehci: hidkbd%u report poll failed\n", i);
-                kbd->report_fail_logged = 1u;
-            }
+        if (!ehci_hid_keyboard_poll_interrupt_report(kbd, report)) {
+            ehci_log_hid_keyboard_poll_failure(i, kbd);
             continue;
         }
         kbd->report_fail_logged = 0u;
@@ -205,12 +242,8 @@ void ehci_poll_mouse_events(uint32_t tick) {
             continue;
         }
         memset(report, 0, sizeof(report));
-        if (!ehci_hid_mouse_poll_interrupt_report(mouse, report) &&
-            !ehci_hid_mouse_get_report(mouse, report)) {
-            if (!mouse->report_fail_logged) {
-                kprint("ehci: hidmouse%u report poll failed\n", i);
-                mouse->report_fail_logged = 1u;
-            }
+        if (!ehci_hid_mouse_poll_interrupt_report(mouse, report)) {
+            ehci_log_hid_mouse_poll_failure(i, mouse);
             continue;
         }
         mouse->report_fail_logged = 0u;

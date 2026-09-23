@@ -1,5 +1,5 @@
 #include <stdint.h>
-#include "bootx/bootx.h"
+#include "janus/janus.h"
 #include "drivers/bus/ioapic.h"
 #include "hal/hal.h"
 #include "kernel/internal/core/device_poll_internal.h"
@@ -49,6 +49,36 @@ enum {
 };
 
 static void kernel_boot_trace(const char *text);
+static void kernel_boot_settle_ticks(uint32_t ticks);
+
+static int kernel_cmdline_has_token(const struct janus_boot_info *boot_info, const char *token) {
+    const char *cmdline;
+    uint32_t token_len = 0u;
+
+    if (boot_info == 0 || boot_info->cmdline == 0u || token == 0 || token[0] == '\0') {
+        return 0;
+    }
+    cmdline = (const char *)(uintptr_t)boot_info->cmdline;
+    while (token[token_len] != '\0') {
+        token_len++;
+    }
+    while (*cmdline != '\0') {
+        while (*cmdline == ' ') {
+            cmdline++;
+        }
+        if (*cmdline == '\0') {
+            break;
+        }
+        if (starts_with(cmdline, token) &&
+            (cmdline[token_len] == '\0' || cmdline[token_len] == ' ')) {
+            return 1;
+        }
+        while (*cmdline != '\0' && *cmdline != ' ') {
+            cmdline++;
+        }
+    }
+    return 0;
+}
 
 static void kernel_fs_service_ensure_terminal_owner(
     const struct process *proc) {
@@ -140,6 +170,8 @@ static uint64_t kernel_handle_user_exception(uint32_t vector, const struct excep
         exit_code = -8;
     } else if (vector == 6u) {
         exit_code = -4;
+    } else if (vector == 14u) {
+        exit_code = -14;
     }
 
     fault_error = hal_exception_frame_error_code(frame);
@@ -204,12 +236,38 @@ static void kernel_boot_trace(const char *text) {
     }
 }
 
+static void kernel_boot_settle_ticks(uint32_t ticks) {
+    uint32_t start;
+    uint32_t stagnant = 0u;
+
+    if (ticks == 0u) {
+        return;
+    }
+    start = hal_timer_current_ticks();
+    while ((uint32_t)(hal_timer_current_ticks() - start) < ticks) {
+        uint32_t before = hal_timer_current_ticks();
+
+        hal_display_service_pending();
+        hal_cpu_wait_for_interrupt();
+        if (hal_timer_current_ticks() != before) {
+            stagnant = 0u;
+        } else {
+            stagnant++;
+            if (stagnant > 200000u) {
+                break;
+            }
+            hal_cpu_relax();
+        }
+    }
+}
+
 static int kernel_feed_keyboard_event(const struct keyboard_event *event, const struct syscall_frame *frame) {
     struct tty *target_tty;
     int ctrl_c;
     int ctrl_z;
     int sigint;
     int sigtstp;
+    uint32_t focus_pid;
 
     if (event == 0 || event->keycode == KEYBOARD_KEY_NONE) {
         return 0;
@@ -247,7 +305,10 @@ static int kernel_feed_keyboard_event(const struct keyboard_event *event, const 
     }
     ctrl_c = event->pressed && event->ctrl && event->keycode == KEYBOARD_KEY_C;
     ctrl_z = event->pressed && event->ctrl && event->keycode == KEYBOARD_KEY_Z;
-    sigint = ctrl_c && job_tty_deliver_sigint(target_tty) > 0;
+    focus_pid = input_focus_owner_pid();
+    sigint = ctrl_c &&
+             ((focus_pid != 0u && job_deliver_sigint_to_pid(focus_pid) > 0) ||
+              job_tty_deliver_sigint(target_tty) > 0);
     sigtstp = ctrl_z && job_tty_deliver_sigtstp(target_tty, frame) > 0;
     if (sigint) {
         input_focus_clear();
@@ -255,7 +316,7 @@ static int kernel_feed_keyboard_event(const struct keyboard_event *event, const 
     } else if (sigtstp) {
         input_focus_clear();
         tty_write_str(target_tty, "^Z\n", 0x0f);
-    } else if (input_focus_owner_pid() != 0u) {
+    } else if (focus_pid != 0u) {
         return 0;
     } else if (ctrl_c) {
         tty_feed_key_event(target_tty, event);
@@ -269,29 +330,41 @@ uint64_t irq_dispatch(uint32_t vector, const struct syscall_frame *frame) {
     uint8_t irq_line;
 
     if (vector == IRQ_VECTOR_TIMER) {
-        struct keyboard_event usb_event;
         struct keyboard_event uart_event;
+        struct keyboard_event usb_event;
+        int usb_due;
+        int uart_signal = 0;
         int usb_signal = 0;
 
         kernel_irq_state_record(0u, hal_syscall_frame_is_user(frame));
         hal_timer_notify_tick();
         timer_ticks++;
-        device_poll_poll_usb_mouse_events(&timer_ticks);
-        while (device_poll_poll_usb_keyboard_event(&usb_event)) {
-            if (kernel_feed_keyboard_event(&usb_event, frame)) {
-                usb_signal = 1;
+
+        usb_due = device_poll_note_timer_tick();
+
+        if (usb_due) {
+            (void)device_poll_service_usb_mouse_events(timer_ticks);
+            while (device_poll_poll_usb_keyboard_event(&usb_event)) {
+                if (kernel_feed_keyboard_event(&usb_event, frame)) {
+                    usb_signal = 1;
+                }
             }
         }
+
         while (device_poll_poll_uart_keyboard_event(&uart_event)) {
             if (kernel_feed_keyboard_event(&uart_event, frame)) {
-                usb_signal = 1;
+                uart_signal = 1;
             }
         }
+
         sched_on_timer_tick(timer_ticks);
         hal_irq_ack(0);
-        if (usb_signal && hal_syscall_frame_is_user(frame)) {
+
+        if (hal_syscall_frame_is_user(frame) && (usb_signal || uart_signal)) {
+            sched_preempt_current(process_current_session(), frame);
             return IRQ_DISPATCH_RESUME_KERNEL;
         }
+
         return IRQ_DISPATCH_CONTINUE;
     }
 
@@ -359,8 +432,8 @@ uint64_t kernel_panic_dispatch_exception(uint32_t vector, const struct exception
     return IRQ_DISPATCH_CONTINUE;
 }
 
-void kernel_main64(const struct bootx_boot_info *boot_info) {
-    const struct bootx_memmap_entry *memmap;
+void kernel_main64(const struct janus_boot_info *boot_info) {
+    const struct janus_memmap_entry *memmap;
     struct vfs *vfs;
     uint64_t kernel_phys_base;
     int init_started;
@@ -368,8 +441,7 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
     hal_cpu_cli();
     hal_cpu_enable_sse();
     string_runtime_init();
-    if (boot_info != 0 && boot_info->hdr.magic == BOOTX_MAGIC) {
-        hal_display_load_font(boot_info);
+    if (boot_info != 0 && boot_info->hdr.magic == JANUS_MAGIC) {
         hal_display_init(&boot_info->console);
         kernel_gfx_init(&boot_info->console);
     }
@@ -394,8 +466,9 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
                            "0.1.1",
                            hal_arch_name());
     kernel_irq_state_reset();
+    kernel_boot_log_arch_bootstrap(hal_arch_name());
 
-    memmap = (const struct bootx_memmap_entry *)(uintptr_t)boot_info->memmap;
+    memmap = (const struct janus_memmap_entry *)(uintptr_t)boot_info->memmap;
     kernel_log_boot_info(boot_info);
     kernel_log_memmap(memmap, boot_info->memmap_count);
     kernel_phys_base = kernel_detect_phys_base(boot_info);
@@ -407,20 +480,43 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
         kernel_boot_trace("kernel: pmm init failed");
         kernel_halt_forever();
     }
+    if (!hal_paging_guard_kernel_page(hal_kernel_rsp0_guard_address()) ||
+        !hal_paging_guard_kernel_page(hal_double_fault_guard_address())) {
+        kernel_boot_trace("kernel: arch stack guard failed");
+        kernel_halt_forever();
+    }
+    for (uint32_t i = 0u; i < USER_NESTED_KERNEL_STACK_LIMIT; i++) {
+        if (!hal_paging_guard_kernel_page(process_kernel_stack_guard_address(i))) {
+            kernel_boot_trace("kernel: process stack guard failed");
+            kernel_halt_forever();
+        }
+    }
+    hal_display_load_font(boot_info);
     kernel_reserve_boot_modules(boot_info);
-    if (boot_info->console.type == BOOTX_CONSOLE_FRAMEBUFFER) {
+    if (boot_info->console.type == JANUS_CONSOLE_FRAMEBUFFER) {
         uint64_t framebuffer_size =
             (uint64_t)boot_info->console.pitch * boot_info->console.height;
-        int framebuffer_wc =
-            hal_paging_set_write_combining(boot_info->console.framebuffer_addr,
-                                           framebuffer_size);
+        int framebuffer_wc;
+
+        kernel_boot_trace("kernel: framebuffer wc begin");
+        framebuffer_wc = hal_paging_set_write_combining(boot_info->console.framebuffer_addr,
+                                                        framebuffer_size);
 
         kernel_boot_log_framebuffer(boot_info->console.framebuffer_addr,
                                     framebuffer_size,
                                     1,
                                     (uint32_t)framebuffer_wc);
     }
-    kernel_boot_trace("kernel: framebuffer backbuffer skip");
+    if (kernel_cmdline_has_token(boot_info, "fb.backbuffer=1")) {
+        kernel_boot_trace("kernel: framebuffer backbuffer begin");
+        if (hal_display_enable_backbuffer()) {
+            kernel_boot_trace("kernel: framebuffer backbuffer enabled");
+        } else {
+            kernel_boot_trace("kernel: framebuffer backbuffer skip");
+        }
+    } else {
+        kernel_boot_trace("kernel: framebuffer backbuffer skip");
+    }
     kernel_log_pmm_info();
 
     kernel_boot_trace("kernel: block devices");
@@ -467,6 +563,8 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
         }
     }
     kernel_boot_trace("kernel: services online");
+    kernel_boot_trace("kernel: storage settle");
+    kernel_boot_settle_ticks(100u);
 
     kernel_boot_trace("kernel: system/init");
     init_started = kernel_try_run_init(vfs, &shell_tty, &g_kernel_boot_trace_row, boot_info);

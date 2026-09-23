@@ -8,5 +8,6 @@ int fs_service_get_mount_info(struct vfs *vfs, uint32_t index, struct vfs_mount_
 int fs_service_fill_builtin_mount_info(struct vfs *vfs,
                                        uint32_t index,
                                        struct syscall_mount_info *info,
-                                       uint32_t *offset_out);
+                                       uint32_t *offset_out,
+                                       uint32_t flags);
 void fs_service_fill_dynamic_space(struct vfs *vfs, uint32_t index, struct syscall_mount_info *info);

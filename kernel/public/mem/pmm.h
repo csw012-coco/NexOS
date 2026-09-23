@@ -1,9 +1,9 @@
 #pragma once
 
 #include <stdint.h>
-#include "bootx/bootx.h"
+#include "janus/janus.h"
 
-void pmm_init(const struct bootx_memmap_entry *memmap,
+void pmm_init(const struct janus_memmap_entry *memmap,
               uint32_t memmap_count,
               uint64_t kernel_phys_addr,
               uint64_t kernel_phys_size);

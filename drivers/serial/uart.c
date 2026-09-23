@@ -10,6 +10,7 @@ enum {
     UART_REG_LINE_STATUS = 5u,
     UART_REG_SCRATCH = 7u,
     UART_LINE_STATUS_DATA_READY = 0x01u,
+    UART_LINE_STATUS_ERRORS = 0x1eu,
     UART_LINE_STATUS_TX_EMPTY = 0x20u,
     UART_INTERRUPT_RX_AVAILABLE = 0x01u,
     UART_MODEM_DTR = 0x01u,
@@ -48,6 +49,16 @@ static uint32_t g_uart_tty_input_len;
 static uint8_t g_uart_tty_echo_enabled = 1u;
 static uint8_t g_uart_console_input_enabled = 1u;
 static uint8_t g_uart_tty_raw_mode;
+static uint8_t g_uart_input_enabled;
+static uint32_t g_uart_rx_count;
+static uint32_t g_uart_tx_count;
+static uint32_t g_uart_rx_dropped;
+static uint32_t g_uart_console_dropped;
+static uint32_t g_uart_tty_dropped;
+static uint32_t g_uart_tx_timeout_count;
+static uint32_t g_uart_line_error_count;
+static uint8_t g_uart_last_lsr;
+static uint8_t g_uart_last_error;
 
 static uint8_t uart_read_reg(uint8_t reg) {
     return hal_io_in8((uint16_t)(g_uart_base + reg));
@@ -63,10 +74,13 @@ static void uart_queue_clear(struct uart_input_queue *queue) {
     queue->count = 0u;
 }
 
-static void uart_queue_push(struct uart_input_queue *queue, uint8_t ch) {
+static void uart_queue_push(struct uart_input_queue *queue, uint8_t ch, uint32_t *dropped) {
     if (queue->count >= UART_RX_QUEUE_SIZE) {
         queue->tail = (queue->tail + 1u) % UART_RX_QUEUE_SIZE;
         queue->count--;
+        if (dropped != 0) {
+            (*dropped)++;
+        }
     }
     queue->data[queue->head] = ch;
     queue->head = (queue->head + 1u) % UART_RX_QUEUE_SIZE;
@@ -118,9 +132,9 @@ static void uart_tty_commit_input_line(void) {
     uint32_t i;
 
     for (i = 0; i < g_uart_tty_input_len; i++) {
-        uart_queue_push(&g_uart_tty_line_queue, (uint8_t)g_uart_tty_input[i]);
+        uart_queue_push(&g_uart_tty_line_queue, (uint8_t)g_uart_tty_input[i], &g_uart_tty_dropped);
     }
-    uart_queue_push(&g_uart_tty_line_queue, (uint8_t)'\n');
+    uart_queue_push(&g_uart_tty_line_queue, (uint8_t)'\n', &g_uart_tty_dropped);
     g_uart_tty_input_len = 0u;
     g_uart_tty_input[0] = '\0';
 }
@@ -145,7 +159,7 @@ static void uart_tty_handle_input_char(uint8_t ch) {
         if (g_uart_tty_echo_enabled != 0u) {
             uart_write("^C\r\n");
         }
-        uart_queue_push(&g_uart_tty_line_queue, ch);
+        uart_queue_push(&g_uart_tty_line_queue, ch, &g_uart_tty_dropped);
         return;
     }
     if (g_uart_tty_input_len + 1u >= UART_TTY_LINE_SIZE) {
@@ -180,6 +194,16 @@ void uart_init(void) {
     g_uart_tty_echo_enabled = 1u;
     g_uart_console_input_enabled = 1u;
     g_uart_tty_raw_mode = 0u;
+    g_uart_input_enabled = 0u;
+    g_uart_rx_count = 0u;
+    g_uart_tx_count = 0u;
+    g_uart_rx_dropped = 0u;
+    g_uart_console_dropped = 0u;
+    g_uart_tty_dropped = 0u;
+    g_uart_tx_timeout_count = 0u;
+    g_uart_line_error_count = 0u;
+    g_uart_last_lsr = 0u;
+    g_uart_last_error = 0u;
 }
 
 int uart_is_ready(void) {
@@ -187,9 +211,10 @@ int uart_is_ready(void) {
 }
 
 static void uart_queue_input_char(uint8_t ch) {
-    uart_queue_push(&g_uart_rx_queue, ch);
+    g_uart_rx_count++;
+    uart_queue_push(&g_uart_rx_queue, ch, &g_uart_rx_dropped);
     if (g_uart_console_input_enabled != 0u) {
-        uart_queue_push(&g_uart_console_queue, ch);
+        uart_queue_push(&g_uart_console_queue, ch, &g_uart_console_dropped);
     }
     if (g_uart_tty_raw_mode == 0u) {
         uart_tty_handle_input_char(ch);
@@ -210,6 +235,7 @@ void uart_enable_input(void) {
     uart_write_reg(UART_REG_FIFO_CONTROL,
                    UART_FIFO_ENABLE | UART_FIFO_CLEAR_RX | UART_FIFO_CLEAR_TX);
     uart_write_reg(UART_REG_INTERRUPT_ENABLE, UART_INTERRUPT_RX_AVAILABLE);
+    g_uart_input_enabled = 1u;
     hal_irq_set_mask(4u, 0);
 }
 
@@ -218,11 +244,43 @@ void uart_poll_input(void) {
         return;
     }
     for (uint32_t i = 0; i < UART_RX_QUEUE_SIZE; i++) {
-        if ((uart_read_reg(UART_REG_LINE_STATUS) & UART_LINE_STATUS_DATA_READY) == 0u) {
+        uint8_t lsr = uart_read_reg(UART_REG_LINE_STATUS);
+
+        g_uart_last_lsr = lsr;
+        if ((lsr & UART_LINE_STATUS_ERRORS) != 0u) {
+            g_uart_line_error_count++;
+            g_uart_last_error = (uint8_t)(lsr & UART_LINE_STATUS_ERRORS);
+        }
+        if ((lsr & UART_LINE_STATUS_DATA_READY) == 0u) {
             return;
         }
         uart_queue_input_char(uart_read_reg(UART_REG_DATA));
     }
+}
+
+int uart_query_status(struct uart_status *out) {
+    if (out == 0) {
+        return 0;
+    }
+    out->present = g_uart_ready != 0 ? 1u : 0u;
+    out->ready = g_uart_ready != 0 ? 1u : 0u;
+    out->input_enabled = g_uart_input_enabled;
+    out->console_input_enabled = g_uart_console_input_enabled;
+    out->tty_raw_mode = g_uart_tty_raw_mode;
+    out->base = g_uart_base;
+    out->rx_pending = g_uart_rx_queue.count;
+    out->console_pending = g_uart_console_queue.count;
+    out->tty_pending = g_uart_tty_line_queue.count;
+    out->rx_count = g_uart_rx_count;
+    out->tx_count = g_uart_tx_count;
+    out->rx_dropped = g_uart_rx_dropped;
+    out->console_dropped = g_uart_console_dropped;
+    out->tty_dropped = g_uart_tty_dropped;
+    out->tx_timeout_count = g_uart_tx_timeout_count;
+    out->line_error_count = g_uart_line_error_count;
+    out->last_lsr = g_uart_last_lsr;
+    out->last_error = g_uart_last_error;
+    return out->present != 0u;
 }
 
 int uart_pop_input_char(char *out) {
@@ -271,19 +329,30 @@ uint32_t uart_read_tty(char *buffer, uint32_t size, int raw) {
 
 void uart_write_char(char ch) {
     uint32_t spin = 0;
+    uint8_t lsr = 0u;
 
     uart_debugcon_write_char(ch);
     if (!g_uart_ready) {
         return;
     }
-    while ((uart_read_reg(UART_REG_LINE_STATUS) & UART_LINE_STATUS_TX_EMPTY) == 0 &&
-           spin < UART_TX_SPIN_LIMIT) {
+    while (spin < UART_TX_SPIN_LIMIT) {
+        lsr = uart_read_reg(UART_REG_LINE_STATUS);
+        g_uart_last_lsr = lsr;
+        if ((lsr & UART_LINE_STATUS_ERRORS) != 0u) {
+            g_uart_line_error_count++;
+            g_uart_last_error = (uint8_t)(lsr & UART_LINE_STATUS_ERRORS);
+        }
+        if ((lsr & UART_LINE_STATUS_TX_EMPTY) != 0u) {
+            break;
+        }
         spin++;
     }
     if (spin >= UART_TX_SPIN_LIMIT) {
+        g_uart_tx_timeout_count++;
         return;
     }
     uart_write_reg(UART_REG_DATA, (uint8_t)ch);
+    g_uart_tx_count++;
 }
 
 uint32_t uart_write_buffer(const char *data, uint32_t size) {

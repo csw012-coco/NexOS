@@ -12,7 +12,7 @@ _start:
 
     ; boot/x enters through a normal 32-bit cdecl call:
     ;   [esp]     return address
-    ;   [esp + 4] const struct bootx_boot_info *
+    ;   [esp + 4] const struct janus_boot_info *
     mov esi, [esp + 4]
 
     mov edi, __bss_start

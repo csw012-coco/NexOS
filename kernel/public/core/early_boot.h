@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-struct bootx_boot_info;
+struct janus_boot_info;
 
 struct kernel_early_boot_report {
     uint32_t paging_root;
@@ -55,10 +55,10 @@ struct kernel_early_boot_ops {
     int (*breakpoint_test)(void);
     int (*irq_test)(struct kernel_early_boot_report *report);
     int (*keyboard_test)(struct kernel_early_boot_report *report);
-    int (*paging_init)(const struct bootx_boot_info *boot_info,
+    int (*paging_init)(const struct janus_boot_info *boot_info,
                        struct kernel_early_boot_report *report);
     int (*page_fault_test)(struct kernel_early_boot_report *report);
-    int (*pmm_init)(const struct bootx_boot_info *boot_info,
+    int (*pmm_init)(const struct janus_boot_info *boot_info,
                     struct kernel_early_boot_report *report);
     int (*dynamic_mapping_test)(struct kernel_early_boot_report *report);
     int (*devices_init)(struct kernel_early_boot_report *report);
@@ -67,5 +67,5 @@ struct kernel_early_boot_ops {
     int (*scheduler_test)(struct kernel_early_boot_report *report);
 };
 
-void kernel_early_boot(const struct bootx_boot_info *boot_info,
+void kernel_early_boot(const struct janus_boot_info *boot_info,
                        const struct kernel_early_boot_ops *ops);

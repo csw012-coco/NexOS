@@ -323,6 +323,7 @@ static const struct cmdsuite_entry g_cmdsuite_entries[] = {
     {"dd", cmd_dd},
     {"mkfs", cmd_mkfs},
     {"mkfs.nxfs", cmd_mkfs},
+    {"mkfs.fat", cmd_mkfs},
     {"df", cmd_df},
     {"mounts", cmd_wrap_mounts},
     {"mount", cmd_mount},

@@ -1,7 +1,5 @@
 #include "abi/syscall_abi.h"
 #include "../context.h"
-#include "arch/x86/i386/services/shared_services.h"
-#include "kernel/internal/fs/file_internal.h"
 #include "kernel/internal/mem/address_space_internal.h"
 #include "kernel/internal/proc/process_lifecycle_internal.h"
 #include "kernel/public/arch/arch_ops.h"
@@ -134,6 +132,12 @@ static void scheduler_process_cleanup_files(struct scheduler_task *task) {
         return;
     }
     process_discard_file_array(task->process.files);
+}
+
+static void scheduler_process_reap_orphan_zombies(void) {
+    process_lifecycle_reap_orphan_zombies(task_processes,
+                                          I386_SCHEDULER_TASKS,
+                                          i386_scheduler_task_reap);
 }
 
 static void scheduler_process_cleanup_owned_resources(
@@ -287,6 +291,7 @@ static int32_t i386_scheduler_spawn_with_caps(uint32_t entry,
         return !scheduler_active ? -NEX_ERR_NOSYS : -NEX_ERR_INVAL;
     }
     parent_slot = scheduler_process_current_slot();
+    scheduler_process_reap_orphan_zombies();
     for (uint32_t slot = 0; slot < I386_SCHEDULER_TASKS; slot++) {
         if (tasks[slot].process.state == PROCESS_STATE_FREE) {
             char parent_cwd[NOS_PATH_BUFFER_SIZE];
@@ -408,6 +413,7 @@ int32_t i386_scheduler_fork(const struct process_context *context,
         return -NEX_ERR_NOMEM;
     }
 
+    scheduler_process_reap_orphan_zombies();
     for (uint32_t slot = 0u; slot < I386_SCHEDULER_TASKS; slot++) {
         if (tasks[slot].process.state == PROCESS_STATE_FREE) {
             char parent_name[NOS_NAME_BUFFER_SIZE];
@@ -520,6 +526,7 @@ uintptr_t i386_scheduler_exec(const struct process_context *context,
                                 sizeof(task->process.cwd_storage),
                                 cwd);
     process_install_cloned_files(&task->process, inherited);
+    process_ensure_terminal_owner(&task->process);
     task->process.state = PROCESS_STATE_RUNNING;
     i386_scheduler_backend_switch_to_task(slot);
     return (uintptr_t)&task->process.context;

@@ -1,6 +1,6 @@
 #include "kernel/internal/core/graphics_service_internal.h"
 
-#include "bootx/bootx.h"
+#include "janus/janus.h"
 #include "hal/hal.h"
 
 static uint32_t g_kernel_gfx_width;
@@ -8,8 +8,8 @@ static uint32_t g_kernel_gfx_height;
 static uint32_t g_kernel_gfx_pitch;
 static uint32_t g_kernel_gfx_bpp;
 
-void kernel_gfx_init(const struct bootx_console_info *console) {
-    if (console == 0 || console->type != BOOTX_CONSOLE_FRAMEBUFFER) {
+void kernel_gfx_init(const struct janus_console_info *console) {
+    if (console == 0 || console->type != JANUS_CONSOLE_FRAMEBUFFER) {
         g_kernel_gfx_width = 0u;
         g_kernel_gfx_height = 0u;
         g_kernel_gfx_pitch = 0u;

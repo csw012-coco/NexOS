@@ -58,7 +58,27 @@ enum {
     RTL8139_IRQ_MASK_DEFAULT =
         RTL8139_ISR_ROK | RTL8139_ISR_RER | RTL8139_ISR_TOK | RTL8139_ISR_TER |
         RTL8139_ISR_RXOVW | RTL8139_ISR_PUN | RTL8139_ISR_FOVW,
-    RTL8139_RX_STATUS_ROK = 0x0001u
+    RTL8139_RX_STATUS_ROK = 0x0001u,
+
+    RTL8139_STATE_ABSENT = 0u,
+    RTL8139_STATE_PCI_FOUND = 1u,
+    RTL8139_STATE_RESETTING = 2u,
+    RTL8139_STATE_READY = 3u,
+    RTL8139_STATE_TX = 4u,
+    RTL8139_STATE_RX = 5u,
+    RTL8139_STATE_RECOVERING = 6u,
+    RTL8139_STATE_FAILED = 7u,
+
+    RTL8139_ERROR_NONE = 0u,
+    RTL8139_ERROR_BAD_BAR = 1u,
+    RTL8139_ERROR_RESET_TIMEOUT = 2u,
+    RTL8139_ERROR_RX_ALLOC = 3u,
+    RTL8139_ERROR_TX_ALLOC = 4u,
+    RTL8139_ERROR_TX_BAD_FRAME = 5u,
+    RTL8139_ERROR_TX_TIMEOUT = 6u,
+    RTL8139_ERROR_RX_BAD_PACKET = 7u,
+    RTL8139_ERROR_RX_OVERFLOW = 8u,
+    RTL8139_ERROR_IRQ_ERROR = 9u
 };
 
 static struct rtl8139_status g_rtl8139_status;
@@ -68,6 +88,18 @@ static uint32_t g_rtl8139_tx_slot;
 static uint64_t g_rtl8139_rx_phys;
 static uint8_t *g_rtl8139_rx_buffer;
 static uint32_t g_rtl8139_rx_offset;
+
+static void rtl8139_set_state(uint32_t state) {
+    g_rtl8139_status.state = state;
+}
+
+static void rtl8139_note_error(uint32_t error) {
+    g_rtl8139_status.last_error = error;
+    if (error != RTL8139_ERROR_NONE) {
+        g_rtl8139_status.error_count++;
+        rtl8139_set_state(RTL8139_STATE_FAILED);
+    }
+}
 
 const struct kernel_driver rtl8139_kernel_driver = {
     .name = "RTL8139",
@@ -221,6 +253,25 @@ static int rtl8139_wait_reset_clear(uint16_t io_base) {
     return 0;
 }
 
+static void rtl8139_recover_rx_ring(uint16_t io_base) {
+    uint8_t command;
+
+    if (io_base == 0u || g_rtl8139_rx_phys == 0u) {
+        return;
+    }
+    g_rtl8139_status.reset_count++;
+    rtl8139_set_state(RTL8139_STATE_RECOVERING);
+    command = inb((uint16_t)(io_base + RTL8139_REG_CHIPCMD));
+    outb((uint16_t)(io_base + RTL8139_REG_CHIPCMD), (uint8_t)(command & ~RTL8139_CHIPCMD_RE));
+    g_rtl8139_rx_offset = 0u;
+    outl((uint16_t)(io_base + RTL8139_REG_RBSTART), (uint32_t)g_rtl8139_rx_phys);
+    outw((uint16_t)(io_base + RTL8139_REG_CAPR), 0u);
+    outw((uint16_t)(io_base + RTL8139_REG_ISR), RTL8139_ISR_RER | RTL8139_ISR_RXOVW | RTL8139_ISR_FOVW);
+    outb((uint16_t)(io_base + RTL8139_REG_CHIPCMD), RTL8139_CHIPCMD_RE | RTL8139_CHIPCMD_TE);
+    rtl8139_refresh_runtime_status();
+    rtl8139_set_state(RTL8139_STATE_READY);
+}
+
 static int rtl8139_prepare_tx_buffer(void) {
     uint32_t slot;
 
@@ -292,6 +343,7 @@ int rtl8139_init(void) {
 
     g_rtl8139_status.present = 0;
     g_rtl8139_status.initialized = 0;
+    rtl8139_set_state(RTL8139_STATE_ABSENT);
 
     if (!pci_find_device(RTL8139_VENDOR_ID, RTL8139_DEVICE_ID, &device)) {
         return 0;
@@ -306,9 +358,11 @@ int rtl8139_init(void) {
     g_rtl8139_status.irq_pin = device.irq_pin;
     g_rtl8139_status.vendor_id = device.vendor_id;
     g_rtl8139_status.device_id = device.device_id;
+    rtl8139_set_state(RTL8139_STATE_PCI_FOUND);
     io_base = rtl8139_io_base_from_bar(device.bar0);
     g_rtl8139_status.io_base = io_base;
     if (io_base == 0u) {
+        rtl8139_note_error(RTL8139_ERROR_BAD_BAR);
         return 1;
     }
 
@@ -318,14 +372,18 @@ int rtl8139_init(void) {
     g_rtl8139_status.pci_command = pci_config_read16(device.bus, device.slot, device.function, 0x04);
 
     outb((uint16_t)(io_base + RTL8139_REG_CONFIG1), 0x00u);
+    g_rtl8139_status.reset_count++;
+    rtl8139_set_state(RTL8139_STATE_RESETTING);
     outb((uint16_t)(io_base + RTL8139_REG_CHIPCMD), RTL8139_CHIPCMD_RST);
     if (!rtl8139_wait_reset_clear(io_base)) {
         rtl8139_refresh_runtime_status();
+        rtl8139_note_error(RTL8139_ERROR_RESET_TIMEOUT);
         return 1;
     }
 
     if (!rtl8139_prepare_rx_buffer()) {
         rtl8139_refresh_runtime_status();
+        rtl8139_note_error(RTL8139_ERROR_RX_ALLOC);
         return 1;
     }
 
@@ -342,6 +400,8 @@ int rtl8139_init(void) {
     }
     rtl8139_refresh_runtime_status();
     g_rtl8139_status.initialized = 1;
+    rtl8139_note_error(RTL8139_ERROR_NONE);
+    rtl8139_set_state(RTL8139_STATE_READY);
     rtl8139_emit_status_event_if_changed();
     kprint("rtl8139: controller bdf=%u:%u.%u io=%x irq=%u mac=%x:%x:%x:%x:%x:%x link=%u\n",
            (uint32_t)device.bus,
@@ -380,12 +440,15 @@ int rtl8139_send_frame(const uint8_t *data, uint32_t bytes) {
         return 0;
     }
     if (bytes < 14u || bytes > RTL8139_TX_BUFFER_BYTES) {
+        rtl8139_note_error(RTL8139_ERROR_TX_BAD_FRAME);
         return 0;
     }
     if (!rtl8139_prepare_tx_buffer()) {
+        rtl8139_note_error(RTL8139_ERROR_TX_ALLOC);
         return 0;
     }
 
+    rtl8139_set_state(RTL8139_STATE_TX);
     frame_size = bytes < 60u ? 60u : bytes;
     slot = g_rtl8139_tx_slot;
     tsad_reg = (uint16_t)(RTL8139_REG_TSAD0 + slot * 4u);
@@ -396,11 +459,15 @@ int rtl8139_send_frame(const uint8_t *data, uint32_t bytes) {
     outl((uint16_t)(io_base + tsd_reg), frame_size & RTL8139_TSD_SIZE_MASK);
     if (!rtl8139_wait_tx_complete(io_base)) {
         rtl8139_refresh_runtime_status();
+        rtl8139_note_error(RTL8139_ERROR_TX_TIMEOUT);
         return 0;
     }
 
     g_rtl8139_tx_slot = (slot + 1u) % RTL8139_TX_DESC_COUNT;
+    g_rtl8139_status.tx_count++;
     rtl8139_refresh_runtime_status();
+    rtl8139_note_error(RTL8139_ERROR_NONE);
+    rtl8139_set_state(RTL8139_STATE_READY);
     return 1;
 }
 
@@ -481,9 +548,12 @@ int rtl8139_receive_packet(struct rtl8139_rx_packet *out) {
     out->packet_length = packet_length;
     if ((packet_status & RTL8139_RX_STATUS_ROK) == 0u || packet_length < 4u) {
         rtl8139_refresh_runtime_status();
+        rtl8139_note_error(RTL8139_ERROR_RX_BAD_PACKET);
+        rtl8139_recover_rx_ring(io_base);
         return 0;
     }
 
+    rtl8139_set_state(RTL8139_STATE_RX);
     payload_length = (uint32_t)packet_length - 4u;
     bytes_copied = payload_length < sizeof(out->data) ? payload_length : sizeof(out->data);
     src += 4u;
@@ -495,7 +565,10 @@ int rtl8139_receive_packet(struct rtl8139_rx_packet *out) {
     next_offset = (g_rtl8139_rx_offset + (uint32_t)packet_length + 4u + 3u) & ~3u;
     g_rtl8139_rx_offset = next_offset & RTL8139_RX_RING_MASK;
     outw((uint16_t)(io_base + RTL8139_REG_CAPR), (uint16_t)((g_rtl8139_rx_offset - 16u) & RTL8139_RX_RING_MASK));
+    g_rtl8139_status.rx_count++;
     rtl8139_refresh_runtime_status();
+    rtl8139_note_error(RTL8139_ERROR_NONE);
+    rtl8139_set_state(RTL8139_STATE_READY);
     return 1;
 }
 
@@ -515,7 +588,16 @@ int rtl8139_handle_irq(uint8_t irq_line) {
         return 0;
     }
 
+    g_rtl8139_status.irq_count++;
+    g_rtl8139_status.last_isr = status;
     outw((uint16_t)(io_base + RTL8139_REG_ISR), status);
+    if ((status & (RTL8139_ISR_RER | RTL8139_ISR_TER | RTL8139_ISR_PUN)) != 0u) {
+        rtl8139_note_error(RTL8139_ERROR_IRQ_ERROR);
+    }
+    if ((status & (RTL8139_ISR_RXOVW | RTL8139_ISR_FOVW)) != 0u) {
+        rtl8139_note_error(RTL8139_ERROR_RX_OVERFLOW);
+        rtl8139_recover_rx_ring(io_base);
+    }
     rtl8139_refresh_runtime_status();
     return 1;
 }

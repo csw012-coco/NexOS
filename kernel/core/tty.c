@@ -66,10 +66,12 @@ void tty_clear(struct tty *tty) {
     tty->input_origin_valid = 0u;
     tty->input_render_rows = 1u;
     tty->prompt_cache_len = 0u;
+    hal_display_present();
 }
 
 void tty_putc(struct tty *tty, char ch, uint8_t color) {
     console_putc(&tty->console, ch, color);
+    hal_display_present();
 }
 
 uint32_t tty_write(struct tty *tty, const char *data, uint32_t len, uint8_t color) {
@@ -140,6 +142,9 @@ uint32_t tty_write(struct tty *tty, const char *data, uint32_t len, uint8_t colo
     kernel_profile_record(g_tty_profile_write,
                           kernel_profile_clock() - start,
                           written);
+    if (written != 0u) {
+        hal_display_present();
+    }
     return written;
 }
 
@@ -154,18 +159,22 @@ uint32_t tty_write_str(struct tty *tty, const char *text, uint8_t color) {
 
 void tty_write_dec(struct tty *tty, uint32_t value, uint8_t color) {
     console_write_dec(&tty->console, value, color);
+    hal_display_present();
 }
 
 void tty_write_hex64(struct tty *tty, uint64_t value, uint8_t color) {
     console_write_hex64(&tty->console, value, color);
+    hal_display_present();
 }
 
 void tty_clear_row(struct tty *tty, uint16_t row, uint8_t color) {
     console_clear_row(&tty->console, row, color);
+    hal_display_present();
 }
 
 void tty_set_cursor(struct tty *tty, uint16_t row, uint16_t col) {
     console_set_cursor(&tty->console, row, col);
+    hal_display_present();
 }
 
 uint16_t tty_cursor_row(const struct tty *tty) {
@@ -174,6 +183,7 @@ uint16_t tty_cursor_row(const struct tty *tty) {
 
 void tty_put_at(struct tty *tty, uint16_t row, uint16_t col, char ch, uint8_t color) {
     console_put_at(&tty->console, row, col, ch, color);
+    hal_display_present();
 }
 
 void tty_show_prompt(struct tty *tty) {

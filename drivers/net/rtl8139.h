@@ -30,6 +30,14 @@ struct rtl8139_status {
     uint32_t capr;
     uint32_t cbr;
     uint32_t rx_read_offset;
+    uint32_t state;
+    uint32_t reset_count;
+    uint32_t tx_count;
+    uint32_t rx_count;
+    uint32_t irq_count;
+    uint32_t error_count;
+    uint32_t last_error;
+    uint32_t last_isr;
 };
 
 struct rtl8139_rx_packet {

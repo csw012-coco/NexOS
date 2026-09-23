@@ -1,5 +1,6 @@
 #include "abi/syscall_abi.h"
 #include "drivers/audio/audio.h"
+#include "block/blockdev.h"
 #include "drivers/input/keyboard.h"
 #include "drivers/input/mouse.h"
 #include "kernel/internal/fs/fs_service_root_query_internal.h"
@@ -17,6 +18,7 @@
 #include "kernel/internal/proc/process_program_registry_internal.h"
 #include "kernel/internal/proc/process_lifecycle_internal.h"
 #include "kernel/internal/sys/syscall_common_request_core.h"
+#include "kernel/internal/sys/syscall_internal.h"
 #include "kernel/public/core/kprint.h"
 #include "kernel/public/core/profile.h"
 #include "kernel/public/input/input_focus.h"
@@ -25,16 +27,136 @@
 #include "kernel/public/proc/process.h"
 #include "lib/string.h"
 
-static const struct bootx_boot_info *g_common_query_boot_info;
-static const struct bootx_memmap_entry *g_common_query_memmap;
+static const struct janus_boot_info *g_common_query_boot_info;
+static const struct janus_memmap_entry *g_common_query_memmap;
 static uint32_t g_common_query_memmap_count;
 static struct syscall_framebuffer_info g_common_query_fb_info;
 static struct vfs *g_common_query_vfs;
+struct syscall_trace g_last_syscall_trace;
+
+static void syscall_common_query_fill_stability(
+    struct syscall_stability_info *info);
+
+static void syscall_common_query_copy_text(char *dst,
+                                           uint32_t dst_size,
+                                           const char *src) {
+    uint32_t i = 0u;
+
+    if (dst == 0 || dst_size == 0u) {
+        return;
+    }
+    while (src != 0 && src[i] != '\0' && i + 1u < dst_size) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+uint32_t syscall_common_request_core_process_fd_kind(
+    const struct process *proc,
+    uint32_t fd) {
+    if (proc == 0 || fd >= PROCESS_FILE_MAX) {
+        return KERNEL_FILE_NONE;
+    }
+    return proc->files[fd].kind;
+}
+
+static void syscall_common_process_tty_info_set(struct syscall_tty_info *info,
+                                                uint32_t kind,
+                                                uint32_t index,
+                                                const char *path) {
+    if (info == 0) {
+        return;
+    }
+    memset(info, 0, sizeof(*info));
+    info->kind = kind;
+    info->index = index;
+    info->active = kind == SYS_TTY_KIND_VIRTUAL && index == tty_active_index();
+    syscall_common_query_copy_text(info->path, sizeof(info->path), path);
+}
+
+static int syscall_common_process_tty_info_from_handle(
+    struct syscall_tty_info *info,
+    const void *handle) {
+    if (handle == 0) {
+        return 0;
+    }
+    for (uint32_t i = 0u; i < TTY_VIRTUAL_COUNT; i++) {
+        if (handle == tty_virtual(i)) {
+            if (i == 0u) {
+                syscall_common_process_tty_info_set(
+                    info, SYS_TTY_KIND_VIRTUAL, i, "/dev/tty");
+            } else if (i == 1u) {
+                syscall_common_process_tty_info_set(
+                    info, SYS_TTY_KIND_VIRTUAL, i, "/dev/tty2");
+            } else {
+                syscall_common_process_tty_info_set(
+                    info, SYS_TTY_KIND_VIRTUAL, i, "/dev/tty3");
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int syscall_common_request_core_process_tty_query(
+    const struct process *proc,
+    uint32_t fd,
+    struct syscall_tty_info *info) {
+    const struct file *file;
+    void *tty_handle;
+
+    if (proc == 0 || info == 0 || fd >= PROCESS_FILE_MAX) {
+        return 0;
+    }
+    file = &proc->files[fd];
+    if (!file_is_active(file)) {
+        return 0;
+    }
+    tty_handle = file_tty_private_handle(file);
+    if (tty_handle != 0 &&
+        syscall_common_process_tty_info_from_handle(info, tty_handle)) {
+        return 1;
+    }
+    if (file->kind == KERNEL_FILE_VFS &&
+        file->vfs_node.mount_kind == VFS_MOUNT_DEVFS &&
+        file->vfs_node.aux_index == VFS_DEV_TTYS0) {
+        syscall_common_process_tty_info_set(
+            info, SYS_TTY_KIND_SERIAL, 0u, "/dev/ttyS0");
+        return 1;
+    }
+    return 0;
+}
+
+int32_t syscall_common_request_core_process_fd_query(
+    const struct process *proc,
+    uint32_t fd,
+    struct syscall_fd_info *info) {
+    const struct file *file;
+
+    if (proc == 0 || info == 0 || fd >= PROCESS_FILE_MAX) {
+        return 0;
+    }
+    file = &proc->files[fd];
+    memset(info, 0, sizeof(*info));
+    info->fd = fd;
+    info->kind = file->kind;
+    info->flags = file->flags;
+    info->offset = file->offset;
+    info->node_kind = file->vfs_node.kind;
+    info->mount_kind = file->vfs_node.mount_kind;
+    info->readable = file_can_read(file) ? 1u : 0u;
+    info->writable = file_can_write(file) ? 1u : 0u;
+    syscall_common_query_copy_text(info->path,
+                                   sizeof(info->path),
+                                   file->opened_path);
+    return file->kind != KERNEL_FILE_NONE ? 1 : 0;
+}
 
 void syscall_common_request_core_query_state_init(
     struct vfs *vfs,
-    const struct bootx_boot_info *boot_info,
-    const struct bootx_memmap_entry *memmap,
+    const struct janus_boot_info *boot_info,
+    const struct janus_memmap_entry *memmap,
     uint32_t memmap_count) {
     g_common_query_vfs = vfs;
     g_common_query_boot_info = boot_info;
@@ -44,7 +166,7 @@ void syscall_common_request_core_query_state_init(
 }
 
 void syscall_common_request_core_fill_fb_info(
-    const struct bootx_boot_info *boot_info,
+    const struct janus_boot_info *boot_info,
     struct syscall_framebuffer_info *info) {
     if (info == 0) {
         return;
@@ -54,7 +176,7 @@ void syscall_common_request_core_fill_fb_info(
         return;
     }
     info->present =
-        boot_info->console.type == BOOTX_CONSOLE_FRAMEBUFFER ? 1u : 0u;
+        boot_info->console.type == JANUS_CONSOLE_FRAMEBUFFER ? 1u : 0u;
     info->type = boot_info->console.type;
     info->addr = boot_info->console.framebuffer_addr;
     info->width = boot_info->console.width;
@@ -668,6 +790,11 @@ int syscall_common_request_core_query_info(uint32_t kind,
                                            (struct syscall_block_info *)info) &&
                    syscall_common_query_set_size(
                        info_size, sizeof(struct syscall_block_info));
+        case SYS_QUERY_STABILITY:
+            syscall_common_query_fill_stability(
+                (struct syscall_stability_info *)info);
+            return syscall_common_query_set_size(
+                info_size, sizeof(struct syscall_stability_info));
         case SYS_QUERY_PART:
             return kernel_query_part_info((uint32_t)arg0,
                                           (uint32_t)arg1,
@@ -801,6 +928,7 @@ static int syscall_common_query_kind_supported(uint32_t kind) {
         case SYS_QUERY_VM:
         case SYS_QUERY_FB:
         case SYS_QUERY_BLOCK:
+        case SYS_QUERY_STABILITY:
         case SYS_QUERY_PART:
         case SYS_QUERY_PROGRAM:
         case SYS_QUERY_PCI:
@@ -865,6 +993,70 @@ static void syscall_common_query_copy_path(char *dst,
     for (uint32_t i = 0u; i + 1u < size && src[i] != '\0'; i++) {
         dst[i] = src[i];
     }
+}
+
+static void syscall_common_query_fill_stability(
+    struct syscall_stability_info *info) {
+    uint32_t count;
+    uint32_t best_index = 0u;
+    struct blockdev_info best;
+    int have_best = 0;
+
+    memset(info, 0, sizeof(*info));
+    {
+        const struct process *current = process_current();
+
+        if (current != 0) {
+            info->current_pid = current->pid;
+            info->current_uid = current->uid;
+            info->current_gid = current->gid;
+            info->current_caps = current->caps;
+        }
+    }
+    info->last_syscall_valid = g_last_syscall_trace.valid;
+    info->last_syscall_returned = g_last_syscall_trace.returned;
+    info->last_syscall_pid = g_last_syscall_trace.pid;
+    info->last_syscall_number = (uint32_t)g_last_syscall_trace.number;
+    info->last_syscall_arg0 = g_last_syscall_trace.arg0;
+    info->last_syscall_arg1 = g_last_syscall_trace.arg1;
+    info->last_syscall_arg2 = g_last_syscall_trace.arg2;
+    info->last_syscall_arg3 = g_last_syscall_trace.arg3;
+    info->last_syscall_ip = g_last_syscall_trace.instruction_pointer;
+    info->last_syscall_sp = g_last_syscall_trace.stack_pointer;
+    info->last_syscall_result = g_last_syscall_trace.result;
+
+    count = blockdev_count();
+    info->block_count = count;
+    memset(&best, 0, sizeof(best));
+    for (uint32_t i = 0u; i < count; i++) {
+        struct blockdev_info current;
+
+        if (blockdev_get_info(i, &current) != 0) {
+            continue;
+        }
+        if (!have_best ||
+            current.consecutive_failures > best.consecutive_failures ||
+            (current.consecutive_failures == best.consecutive_failures &&
+             current.failure_count > best.failure_count)) {
+            best = current;
+            best_index = i;
+            have_best = 1;
+        }
+    }
+    if (!have_best) {
+        return;
+    }
+    info->block_failure_count = best.failure_count;
+    info->block_consecutive_failures = best.consecutive_failures;
+    info->block_last_error = best.last_error;
+    info->block_state = best.state;
+    info->block_index = best_index;
+    syscall_common_query_copy_path(info->block_name,
+                                   sizeof(info->block_name),
+                                   best.name);
+    syscall_common_query_copy_path(info->block_last_error_reason,
+                                   sizeof(info->block_last_error_reason),
+                                   best.last_error_reason);
 }
 
 static int syscall_common_query_ops_info(
@@ -955,6 +1147,7 @@ uint64_t syscall_common_request_core_query_transfer(
         struct syscall_audio_info audio;
         struct syscall_rtc_info rtc;
         struct syscall_profile_info profile;
+        struct syscall_stability_info stability;
         struct syscall_root_entry_info root;
         struct syscall_fat_entry_info fat_root;
         struct syscall_kmsg_info kmsg;
@@ -1405,11 +1598,10 @@ uint64_t syscall_common_request_core_read_transfer(
     if (scheduled <= 0) {
         return (uint64_t)(int64_t)scheduled;
     }
-    return ops->copy_to_user(user_address,
-                             io_ops->io_buffer,
-                             (uint32_t)scheduled)
-        ? (uint64_t)(uint32_t)scheduled
-        : syscall_common_copy_bad_pointer(ops);
+    if (!ops->copy_to_user(user_address, io_ops->io_buffer, (uint32_t)scheduled)) {
+        return syscall_common_copy_bad_pointer(ops);
+    }
+    return (uint64_t)(uint32_t)scheduled;
 }
 
 uint64_t syscall_common_request_core_write_transfer(
@@ -1430,6 +1622,9 @@ uint64_t syscall_common_request_core_write_transfer(
         return (uint64_t)(uint32_t)-1;
     }
     written = fs_service_write(proc, vfs, fd, io_ops->io_buffer, size);
+    if ((int64_t)written > 0) {
+        kernel_runtime_display_present();
+    }
     return written;
 }
 
@@ -3394,6 +3589,10 @@ static void syscall_common_gui_event_from_keyboard(
     event->shift = record->event.shift;
     event->ctrl = record->event.ctrl;
     event->alt = record->event.alt;
+    event->extended = record->event.extended;
+    event->caps_lock = record->event.caps_lock;
+    event->num_lock = record->event.num_lock;
+    event->scroll_lock = record->event.scroll_lock;
 }
 
 static void syscall_common_gui_event_from_mouse(
@@ -3412,6 +3611,10 @@ static void syscall_common_gui_event_from_mouse(
     event->shift = 0u;
     event->ctrl = 0u;
     event->alt = 0u;
+    event->extended = 0u;
+    event->caps_lock = 0u;
+    event->num_lock = 0u;
+    event->scroll_lock = 0u;
 }
 
 int syscall_common_request_core_gui_event_cursor_init(
@@ -3474,7 +3677,8 @@ uint64_t syscall_common_request_core_gui_event_poll(
 
 uint64_t syscall_common_request_core_gui_event_grab(uint32_t current_pid,
                                                     int foreground_allowed) {
-    if (current_pid == 0u || !foreground_allowed) {
+    (void)foreground_allowed;
+    if (current_pid == 0u) {
         return (uint64_t)-1;
     }
     return input_focus_grab(current_pid) ? 0u : (uint64_t)-1;

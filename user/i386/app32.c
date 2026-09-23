@@ -31,7 +31,7 @@ int main(int argc, char **argv, char **envp) {
     free(large);
     printf("[app32] dynamic malloc 96KiB OK\n");
 
-    file = fopen("/BOOT/BOOTX.CFG", "r");
+    file = fopen("/BOOT/JANUS.CFG", "r");
     if (file == 0) {
         printf("[app32] fopen failed\n");
         return 5;

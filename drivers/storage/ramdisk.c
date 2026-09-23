@@ -142,8 +142,8 @@ static void ramdisk_name_to_83(char out[12], const char *name) {
     }
 }
 
-void ramdisk_init_from_boot_modules(const struct bootx_boot_info *boot_info) {
-    const struct bootx_module *modules;
+void ramdisk_init_from_boot_modules(const struct janus_boot_info *boot_info) {
+    const struct janus_module *modules;
     uint32_t registered = 0;
 
     g_ramdisk_first_disk_index = 0xffffffffu;
@@ -154,7 +154,7 @@ void ramdisk_init_from_boot_modules(const struct bootx_boot_info *boot_info) {
         return;
     }
 
-    modules = (const struct bootx_module *)(uintptr_t)boot_info->modules;
+    modules = (const struct janus_module *)(uintptr_t)boot_info->modules;
     for (uint32_t i = 0; i < boot_info->module_count && registered < RAMDISK_MAX; i++) {
         struct ramdisk_device *ramdisk = &g_ramdisks[registered];
         uint64_t size = modules[i].size;

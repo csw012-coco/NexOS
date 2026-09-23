@@ -1,5 +1,9 @@
 #include "fs/fat32_internal.h"
 
+enum {
+    FAT32_READ_CLUSTER_RUN_MAX = 128u
+};
+
 int fat32_truncate_file(struct fat32_volume *vol, struct fat32_file *file) {
     if (vol == 0 || !vol->mounted || file == 0 || (file->attributes & FAT32_ATTR_DIRECTORY) != 0) {
         return -1;
@@ -126,6 +130,43 @@ int fat32_read_file_range(struct fat32_volume *vol,
             written += copy_size;
             remaining -= copy_size;
             sector++;
+        }
+
+        if (remaining >= FAT32_SECTOR_SIZE && sector < vol->sectors_per_cluster) {
+            if (sector == 0u && remaining >= cluster_bytes) {
+                uint32_t run_clusters = 1u;
+                uint32_t scan_cluster = cluster;
+                uint32_t max_clusters = remaining / cluster_bytes;
+
+                if (max_clusters > FAT32_READ_CLUSTER_RUN_MAX) {
+                    max_clusters = FAT32_READ_CLUSTER_RUN_MAX;
+                }
+                while (run_clusters < max_clusters) {
+                    uint32_t next_cluster;
+
+                    if (fat32_next_cluster(vol, scan_cluster, &next_cluster) != 0 ||
+                        next_cluster != scan_cluster + 1u ||
+                        !fat32_cluster_is_data(vol, next_cluster)) {
+                        break;
+                    }
+                    scan_cluster = next_cluster;
+                    run_clusters++;
+                }
+                if (run_clusters > 1u) {
+                    uint32_t run_sectors = run_clusters * vol->sectors_per_cluster;
+
+                    if (fat32_read_sectors(vol,
+                                           cluster_lba,
+                                           run_sectors,
+                                           out + written) != 0) {
+                        return -1;
+                    }
+                    written += run_clusters * cluster_bytes;
+                    remaining -= run_clusters * cluster_bytes;
+                    cluster = scan_cluster;
+                    sector = vol->sectors_per_cluster;
+                }
+            }
         }
 
         if (remaining >= FAT32_SECTOR_SIZE && sector < vol->sectors_per_cluster) {

@@ -2,12 +2,12 @@
 
 static const char *memmap_type_name_local(uint32_t type) {
     switch (type) {
-        case BOOTX_MEMMAP_USABLE: return "usable";
-        case BOOTX_MEMMAP_RESERVED: return "reserved";
-        case BOOTX_MEMMAP_ACPI_RECLAIMABLE: return "acpi reclaim";
-        case BOOTX_MEMMAP_ACPI_NVS: return "acpi nvs";
-        case BOOTX_MEMMAP_BAD: return "bad";
-        case BOOTX_MEMMAP_BOOTLOADER_RECLAIMABLE: return "bootloader";
+        case JANUS_MEMMAP_USABLE: return "usable";
+        case JANUS_MEMMAP_RESERVED: return "reserved";
+        case JANUS_MEMMAP_ACPI_RECLAIMABLE: return "acpi reclaim";
+        case JANUS_MEMMAP_ACPI_NVS: return "acpi nvs";
+        case JANUS_MEMMAP_BAD: return "bad";
+        case JANUS_MEMMAP_BOOTLOADER_RECLAIMABLE: return "bootloader";
         default: return "unknown";
     }
 }
@@ -44,6 +44,86 @@ static void write_u64_dec_local(uint64_t value) {
         value /= 10u;
     } while (value != 0u);
     write_str(text + pos);
+}
+
+static const char *cmd_stability_block_state_name(uint32_t state) {
+    switch (state) {
+        case 0u: return "probing";
+        case 1u: return "online";
+        case 2u: return "recovering";
+        case 3u: return "offline";
+        case 4u: return "removing";
+        default: return "unknown";
+    }
+}
+
+static int cmd_dbg_stability_local(void) {
+    struct syscall_stability_info info;
+
+    if (stability_query(&info) <= 0) {
+        write_err_str("dbg stability: query failed\n");
+        return 1;
+    }
+    write_str("stability\n");
+    write_str("current: pid=");
+    write_dec(info.current_pid);
+    write_str(" uid=");
+    write_dec(info.current_uid);
+    write_str(" gid=");
+    write_dec(info.current_gid);
+    write_str(" caps=");
+    write_hex_u32(info.current_caps);
+    write_str("\n");
+    write_str("last_syscall: ");
+    if (!info.last_syscall_valid) {
+        write_str("none\n");
+    } else {
+        write_str("pid=");
+        write_dec(info.last_syscall_pid);
+        write_str(" no=");
+        write_dec(info.last_syscall_number);
+        write_str(" returned=");
+        write_str(info.last_syscall_returned ? "yes" : "no");
+        write_str(" result=");
+        write_hex_u64(info.last_syscall_result);
+        write_str(" ip=");
+        write_hex_u64(info.last_syscall_ip);
+        write_str(" sp=");
+        write_hex_u64(info.last_syscall_sp);
+        write_str("\nargs: ");
+        write_hex_u64(info.last_syscall_arg0);
+        write_str(" ");
+        write_hex_u64(info.last_syscall_arg1);
+        write_str(" ");
+        write_hex_u64(info.last_syscall_arg2);
+        write_str(" ");
+        write_hex_u64(info.last_syscall_arg3);
+        write_str("\n");
+    }
+    write_str("block: count=");
+    write_dec(info.block_count);
+    if (info.block_count == 0u || info.block_name[0] == '\0') {
+        write_str(" none\n");
+        return 0;
+    }
+    write_str(" worst=");
+    write_dec(info.block_index);
+    write_str("(");
+    write_str(info.block_name);
+    write_str(") state=");
+    write_str(cmd_stability_block_state_name(info.block_state));
+    write_str(" failures=");
+    write_dec(info.block_failure_count);
+    write_str(" consecutive=");
+    write_dec(info.block_consecutive_failures);
+    write_str(" last_error=");
+    write_sdec(info.block_last_error);
+    write_str(" reason=");
+    write_str(info.block_last_error_reason[0] != '\0'
+                  ? info.block_last_error_reason
+                  : "-");
+    write_str("\n");
+    return 0;
 }
 
 static int cmd_dbg_profile_local(int argc, char **argv) {
@@ -352,6 +432,19 @@ int cmd_ac97(void) {
     write_str(" init=");
     write_dec(info.initialized);
     write_str("\n");
+    write_str("state=");
+    write_dec(info.state);
+    write_str(" resets=");
+    write_dec(info.reset_count);
+    write_str(" plays=");
+    write_dec(info.play_count);
+    write_str(" errors=");
+    write_dec(info.error_count);
+    write_str(" last_error=");
+    write_dec(info.last_error);
+    write_str(" stream_sr=");
+    write_hex_u32(info.last_stream_status);
+    write_str("\n");
     return 0;
 }
 
@@ -415,6 +508,17 @@ int cmd_hda(void) {
     write_str(" rirb_size=");
     write_hex_u32(info.rirb_size);
     write_str("\n");
+    write_str("state=");
+    write_dec(info.state);
+    write_str(" resets=");
+    write_dec(info.reset_attempts);
+    write_str(" codec_detect=");
+    write_dec(info.codec_detect_attempts);
+    write_str(" errors=");
+    write_dec(info.error_count);
+    write_str(" last_error=");
+    write_dec(info.last_error);
+    write_str("\n");
     return 0;
 }
 
@@ -431,9 +535,9 @@ int cmd_meminfo(void) {
 
     while (memmap_query(entries, &meminfo) > 0) {
         total += meminfo.length;
-        if (meminfo.type == BOOTX_MEMMAP_USABLE) {
+        if (meminfo.type == JANUS_MEMMAP_USABLE) {
             usable += meminfo.length;
-        } else if (meminfo.type == BOOTX_MEMMAP_BOOTLOADER_RECLAIMABLE) {
+        } else if (meminfo.type == JANUS_MEMMAP_BOOTLOADER_RECLAIMABLE) {
             reclaimable += meminfo.length;
         } else {
             reserved += meminfo.length;
@@ -649,7 +753,7 @@ int cmd_dbg(int argc, char **argv) {
     uint32_t i;
 
     if (argc < 2) {
-        write_err_usage("dbg", " <mem|pmm|ticks|info|profile|pagealloc|pagefree|read>\n");
+        write_err_usage("dbg", " <mem|pmm|ticks|info|profile|stability|pagealloc|pagefree|read>\n");
         return 1;
     }
     if (streq_local(argv[1], "mem")) {
@@ -708,6 +812,13 @@ int cmd_dbg(int argc, char **argv) {
     }
     if (streq_local(argv[1], "profile")) {
         return cmd_dbg_profile_local(argc, argv);
+    }
+    if (streq_local(argv[1], "stability")) {
+        if (argc != 2) {
+            write_err_usage("dbg stability", "\n");
+            return 1;
+        }
+        return cmd_dbg_stability_local();
     }
     if (streq_local(argv[1], "pagealloc")) {
         uint64_t page = page_alloc();

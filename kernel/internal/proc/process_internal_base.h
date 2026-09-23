@@ -146,7 +146,12 @@ enum {
 };
 
 struct cpu_user_state {
-    uint8_t nested_kernel_stacks[USER_NESTED_KERNEL_STACK_LIMIT][NOS_KERNEL_STACK_SIZE] __attribute__((aligned(16)));
+    struct {
+        uint8_t guard[4096u];
+        uint8_t stack[NOS_KERNEL_STACK_SIZE];
+    } nested_kernel_stacks[USER_NESTED_KERNEL_STACK_LIMIT]
+        __attribute__((aligned(4096)));
+
     uint32_t nested_kernel_stack_depth;
     struct process_session *active_sessions[USER_NESTED_KERNEL_STACK_LIMIT];
     struct user_page_mapping *active_mappings[USER_NESTED_KERNEL_STACK_LIMIT];
@@ -157,6 +162,11 @@ extern struct cpu_user_state g_cpu_user_state[USER_CPU_COUNT];
 
 static inline struct cpu_user_state *current_cpu_user_state(void) {
     return &g_cpu_user_state[0];
+}
+
+static inline uint64_t process_kernel_stack_guard_address(uint32_t index) {
+    return (uint64_t)(uintptr_t)
+        &g_cpu_user_state[0].nested_kernel_stacks[index].guard[0];
 }
 
 extern struct process g_process_slots[USER_PROCESS_LIMIT];

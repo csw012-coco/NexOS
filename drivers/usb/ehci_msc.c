@@ -259,7 +259,10 @@ int ehci_clear_endpoint_halt(struct ehci_msc_device *dev, uint8_t ep) {
     return ehci_control_transfer(dev, dev->address, mps, &req, 0, 0u, 0u);
 }
 
-int ehci_msc_reset_recovery(struct ehci_msc_device *dev) {
+static int ehci_msc_reset_recovery_timed(struct ehci_msc_device *dev,
+                                         uint32_t reset_settle_ms,
+                                         uint32_t clear_settle_ms,
+                                         uint32_t final_settle_ms) {
     struct usb_ctrl_request req;
     uint16_t mps;
     int ok;
@@ -274,16 +277,30 @@ int ehci_msc_reset_recovery(struct ehci_msc_device *dev) {
     req.index = dev->msc_interface_number;
     req.length = 0u;
     ok = ehci_control_transfer(dev, dev->address, mps, &req, 0, 0u, 0u);
-    ehci_delay_ms(EHCI_MSC_RESET_SETTLE_MS);
+    ehci_delay_ms(reset_settle_ms);
     ok = ehci_clear_endpoint_halt(dev, dev->bulk_in_ep) && ok;
-    ehci_delay_ms(20u);
+    ehci_delay_ms(clear_settle_ms);
     ok = ehci_clear_endpoint_halt(dev, dev->bulk_out_ep) && ok;
-    ehci_delay_ms(20u);
+    ehci_delay_ms(clear_settle_ms);
     dev->bulk_in_toggle = 0u;
     dev->bulk_out_toggle = 0u;
     dev->read_cache_valid = 0u;
-    ehci_delay_ms(50u);
+    ehci_delay_ms(final_settle_ms);
     return ok;
+}
+
+static int ehci_msc_fast_reset_recovery(struct ehci_msc_device *dev) {
+    return ehci_msc_reset_recovery_timed(dev,
+                                         EHCI_MSC_RESET_FAST_SETTLE_MS,
+                                         EHCI_MSC_RESET_FAST_CLEAR_SETTLE_MS,
+                                         EHCI_MSC_RESET_FAST_FINAL_SETTLE_MS);
+}
+
+int ehci_msc_reset_recovery(struct ehci_msc_device *dev) {
+    return ehci_msc_reset_recovery_timed(dev,
+                                         EHCI_MSC_RESET_SETTLE_MS,
+                                         20u,
+                                         50u);
 }
 
 struct ehci_msc_device *ehci_find_hub_by_addr(uint8_t address) {
@@ -388,10 +405,25 @@ int ehci_msc_command_recover(struct ehci_msc_device *dev,
                      failed_phase == 2u ||
                      failed_phase == 3u ||
                      failed_phase == 4u)) {
-        int recovered = ehci_msc_reset_recovery(dev);
+        int recovered = ehci_msc_fast_reset_recovery(dev);
 
-        if (!recovered) {
+        if (recovered && ehci_msc_command(dev, cmd, cmd_len, data, data_len, data_in)) {
+            return 1;
+        }
+        recovered = ehci_msc_reset_recovery(dev);
+        if (recovered && ehci_msc_command(dev, cmd, cmd_len, data, data_len, data_in)) {
+            return 1;
+        }
+
+        if (!recovered ||
+            dev->last_msc_phase == 1u ||
+            dev->last_msc_phase == 2u ||
+            dev->last_msc_phase == 3u ||
+            dev->last_msc_phase == 4u) {
             recovered = ehci_msc_hard_reset_recovery(dev);
+        }
+        if (recovered && ehci_msc_command(dev, cmd, cmd_len, data, data_len, data_in)) {
+            return 1;
         }
         if (read10_csw_data_ok && recovered) {
             if (data == dev->data && dev->read_cache != 0) {

@@ -5,6 +5,8 @@ I386_COMMON_C_SRCS = \
 	kernel/core/kprint.c \
 	kernel/core/boot_log.c \
 	kernel/core/boot_state.c \
+	kernel/core/kernel_root.c \
+	kernel/core/kernel_config.c \
 	kernel/core/early_boot.c \
 	kernel/core/early_runtime_hooks.c \
 	kernel/core/kernel_init_flow.c \

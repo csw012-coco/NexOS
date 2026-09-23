@@ -23,6 +23,7 @@
 #define NEX_QUERY_TTY SYS_QUERY_TTY
 #define NEX_QUERY_PROFILE SYS_QUERY_PROFILE
 #define NEX_QUERY_FD SYS_QUERY_FD
+#define NEX_QUERY_STABILITY SYS_QUERY_STABILITY
 
 int sys_query(uint32_t kind, uint64_t arg0, uint64_t arg1, void *buffer);
 int kmsg_query(uint32_t offset, struct syscall_kmsg_info *info);
@@ -33,12 +34,13 @@ int rtc_query(struct syscall_rtc_info *info);
 int tty_query(uint32_t fd, struct syscall_tty_info *info);
 int fd_query(uint32_t fd, struct syscall_fd_info *info);
 int profile_query(uint32_t index, uint32_t flags, struct syscall_profile_info *info);
+int stability_query(struct syscall_stability_info *info);
 void clear(void);
 uint32_t ticks(void);
 uint64_t page_alloc(void);
 int page_free(uint64_t user_page_addr);
 void yield(void);
-void sleep(uint32_t ticks);
+void sleep(uint32_t ms);
 int reboot(void);
 int poweroff(void);
 int capability_event(const struct syscall_capability_event *event);

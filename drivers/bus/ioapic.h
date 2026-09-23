@@ -20,4 +20,6 @@ int ioapic_set_irq_mask(uint8_t irq, int masked);
 int ioapic_irq_enabled(uint8_t irq);
 uint32_t ioapic_enabled_irq_mask(void);
 int ioapic_configure_from_cmdline(const char *cmdline);
+int ioapic_enable_isa_default_irqs(void);
+int ioapic_enable_all_isa_irqs(void);
 int ioapic_query_status(struct ioapic_status *out);

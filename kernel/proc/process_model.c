@@ -1,6 +1,7 @@
 #include "kernel/internal/proc/process_lifecycle_internal.h"
 #include "kernel/internal/proc/process_types_internal.h"
 #include "kernel/internal/fs/file_internal.h"
+#include "kernel/public/core/tty.h"
 
 void process_model_reset(struct process *proc,
                          uint32_t slot,
@@ -13,6 +14,7 @@ void process_model_reset(struct process *proc,
     proc->state = state;
     proc->exit_code = 0;
     proc->has_saved_frame = 0u;
+    proc->stop_pending = 0u;
     proc->wake_tick = 0u;
     proc->parent.pid = 0u;
     proc->wait.pid = 0u;
@@ -50,7 +52,13 @@ void process_model_reset(struct process *proc,
 }
 
 uint32_t process_capabilities(const struct process *proc) {
-    return proc != 0 ? proc->caps : 0u;
+    if (proc == 0) {
+        return 0u;
+    }
+    if (proc->uid == 0u) {
+        return PROCESS_CAP_SYS_ADMIN;
+    }
+    return proc->caps;
 }
 
 void process_set_capabilities(struct process *proc, uint32_t caps) {
@@ -60,7 +68,13 @@ void process_set_capabilities(struct process *proc, uint32_t caps) {
 }
 
 int process_has_capability(const struct process *proc, uint32_t cap) {
-    return proc != 0 && cap != 0u && (proc->caps & cap) == cap;
+    if (proc == 0 || cap == 0u) {
+        return 0;
+    }
+    if (proc->uid == 0u) {
+        return (cap & PROCESS_CAP_SYS_ADMIN) == cap;
+    }
+    return (proc->caps & cap) == cap;
 }
 
 uint32_t process_uid(const struct process *proc) {
@@ -370,6 +384,43 @@ int process_lifecycle_collect_exited_child(struct process *child,
     return 1;
 }
 
+static int process_lifecycle_pid_active(struct process *const *slots,
+                                        uint32_t capacity,
+                                        uint32_t pid) {
+    if (pid == 0u) {
+        return 0;
+    }
+    for (uint32_t slot = 0u; slot < capacity; slot++) {
+        const struct process *proc = slots != 0 ? slots[slot] : 0;
+
+        if (proc != 0 &&
+            proc->pid == pid &&
+            proc->state != PROCESS_STATE_FREE &&
+            proc->state != PROCESS_STATE_EXITED) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void process_lifecycle_reap_orphan_zombies(
+    struct process **slots,
+    uint32_t capacity,
+    void (*reap_slot)(uint32_t slot)) {
+    if (slots == 0 || reap_slot == 0) {
+        return;
+    }
+    for (uint32_t slot = 0u; slot < capacity; slot++) {
+        const struct process *proc = slots[slot];
+
+        if (proc != 0 &&
+            proc->state == PROCESS_STATE_EXITED &&
+            !process_lifecycle_pid_active(slots, capacity, proc->parent.pid)) {
+            reap_slot(slot);
+        }
+    }
+}
+
 uint32_t process_lifecycle_wake_exit_waiters(
     struct process **slots,
     uint32_t capacity,
@@ -531,6 +582,23 @@ void process_install_cloned_files(struct process *proc,
         file_reset(&cloned[fd]);
     }
     process_refresh_console_from_files(proc);
+}
+
+void process_ensure_terminal_owner(struct process *proc) {
+    struct tty *tty;
+
+    if (proc == 0 || proc->pid == 0u) {
+        return;
+    }
+    process_refresh_console_from_files(proc);
+    tty = (struct tty *)proc->console_handle;
+    if (tty == 0) {
+        return;
+    }
+    if (tty_foreground_pid(tty) == 0u ||
+        tty_foreground_pid(tty) == proc->pid) {
+        tty_set_foreground_pid(tty, proc->pid);
+    }
 }
 
 const char *process_cwd(const struct process *proc) {

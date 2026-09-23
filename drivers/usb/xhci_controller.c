@@ -12,6 +12,49 @@ const struct kernel_driver xhci_kernel_driver = {
     .exit = NULL,
 };
 
+static void xhci_intel_route_ports_to_xhci(const struct pci_xhci_controller *xhci) {
+    enum {
+        PCI_VENDOR_INTEL = 0x8086u,
+        INTEL_XHCI_USB2_PORT_ROUTE = 0xd0u,
+        INTEL_XHCI_USB2_PORT_ROUTE_MASK = 0xd4u,
+        INTEL_XHCI_USB3_PORT_SS_ENABLE = 0xd8u,
+        INTEL_XHCI_USB3_PORT_SS_ENABLE_MASK = 0xdcu,
+        INTEL_XHCI_ROUTE_USB2_TO_XHCI = 0u
+    };
+    uint32_t usb2_mask;
+    uint32_t usb3_mask;
+
+    if (xhci == 0 || xhci->vendor_id != PCI_VENDOR_INTEL) {
+        return;
+    }
+    usb2_mask = pci_config_read32(xhci->bus,
+                                  xhci->slot,
+                                  xhci->function,
+                                  INTEL_XHCI_USB2_PORT_ROUTE_MASK);
+    usb3_mask = pci_config_read32(xhci->bus,
+                                  xhci->slot,
+                                  xhci->function,
+                                  INTEL_XHCI_USB3_PORT_SS_ENABLE_MASK);
+    if (INTEL_XHCI_ROUTE_USB2_TO_XHCI != 0u &&
+        usb2_mask != 0u && usb2_mask != 0xffffffffu) {
+        pci_config_write32(xhci->bus,
+                           xhci->slot,
+                           xhci->function,
+                           INTEL_XHCI_USB2_PORT_ROUTE,
+                           usb2_mask);
+    } else if (usb2_mask != 0u && usb2_mask != 0xffffffffu) {
+        XHCI_ENUM_TRACE("xhci: keeping Intel USB2 route mask on EHCI/default mask=%x\n",
+                        usb2_mask);
+    }
+    if (usb3_mask != 0u && usb3_mask != 0xffffffffu) {
+        pci_config_write32(xhci->bus,
+                           xhci->slot,
+                           xhci->function,
+                           INTEL_XHCI_USB3_PORT_SS_ENABLE,
+                           usb3_mask);
+    }
+}
+
 static int xhci_init_controller(uint8_t controller_index, const struct pci_xhci_controller *xhci) {
     uint64_t mmio;
     uint32_t hcs1;
@@ -27,6 +70,7 @@ static int xhci_init_controller(uint8_t controller_index, const struct pci_xhci_
 
     pci_config_write16(xhci->bus, xhci->slot, xhci->function, 0x04,
                        (uint16_t)(pci_config_read16(xhci->bus, xhci->slot, xhci->function, 0x04) | 0x0007u));
+    xhci_intel_route_ports_to_xhci(xhci);
     mmio = ((uint64_t)(xhci->mmio_base_hi & 0xffffffffu) << 32) | (uint64_t)(xhci->mmio_base_lo & 0xfffffff0u);
     if (mmio == 0u) {
         kprint("xhci: unsupported mmio=%lx\n", mmio);

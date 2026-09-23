@@ -19,6 +19,10 @@ struct idt_ptr64 {
 
 void idt64_init(void);
 void idt64_set_gate(uint8_t vector, void (*handler)(void), uint8_t type_attr);
+void idt64_set_gate_ist(uint8_t vector,
+                        void (*handler)(void),
+                        uint8_t type_attr,
+                        uint8_t ist);
 void pic_remap(void);
 void pic_set_mask(uint8_t irq_line, int masked);
 void pic_send_eoi(uint8_t irq_line);

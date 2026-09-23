@@ -150,6 +150,7 @@ int command_services_autostart_shell(void) {
     struct boot_user_init_config config;
 
     boot_user_services_init_config(&config);
+    boot_user_services_apply_kernel_config(&config);
     if (!boot_user_init_autostart_shell(&config)) {
         command_services_panic_init_exit("KERNEL PANIC: init failed");
     }

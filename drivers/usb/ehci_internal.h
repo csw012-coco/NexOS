@@ -16,6 +16,7 @@
 
 enum {
     EHCI_MAX_PORTS = 16u,
+    EHCI_MAX_CONTROLLERS = 16u,
     EHCI_MAX_MSC = 4u,
     EHCI_MAX_HUBS = 4u,
     EHCI_MAX_HID_KEYBOARDS = 4u,
@@ -24,7 +25,9 @@ enum {
     EHCI_HID_REPEAT_DELAY_TICKS = 35u,
     EHCI_HID_REPEAT_RATE_TICKS = 5u,
     EHCI_HOTPLUG_SCAN_TICKS = 25u,
-    EHCI_HID_INTERRUPT_POLL_SPINS = 20000u,
+    EHCI_HID_INTERRUPT_POLL_SPINS = 200000u,
+    EHCI_HID_RELEASE_ON_FAIL_COUNT = 3u,
+    EHCI_HID_RESET_ON_FAIL_COUNT = 8u,
     EHCI_MSC_DEBUG = 0u,
     EHCI_PAGE_SIZE = 4096u,
     EHCI_SECTOR_SIZE = 512u,
@@ -32,23 +35,28 @@ enum {
     EHCI_MSC_TRANSFER_BYTES = EHCI_MSC_TRANSFER_PAGES * EHCI_PAGE_SIZE,
     EHCI_MSC_TRANSFER_SECTORS = EHCI_MSC_TRANSFER_BYTES / EHCI_SECTOR_SIZE,
     EHCI_MSC_READAHEAD_MAX_SECTORS = EHCI_MSC_TRANSFER_SECTORS,
-    EHCI_MSC_READAHEAD_INITIAL_SECTORS = EHCI_MSC_TRANSFER_SECTORS,
+    EHCI_MSC_READAHEAD_INITIAL_SECTORS = 1u,
     EHCI_ASYNC_CONTROL_SPINS = 8000000u,
     EHCI_ASYNC_BULK_META_SPINS = 12000000u,
     EHCI_ASYNC_BULK_DATA_SPINS = 300000000u,
     EHCI_ASYNC_BULK_CSW_SPINS = 12000000u,
     EHCI_MSC_CBW_STAGE_SETTLE_MS = 0u,
     EHCI_MSC_DATA_CSW_SETTLE_MS = 0u,
+    EHCI_MSC_RESET_FAST_SETTLE_MS = 40u,
+    EHCI_MSC_RESET_FAST_CLEAR_SETTLE_MS = 5u,
+    EHCI_MSC_RESET_FAST_FINAL_SETTLE_MS = 10u,
     EHCI_MSC_RESET_SETTLE_MS = 250u,
     EHCI_SET_CONFIGURATION_SETTLE_MS = 200u,
     EHCI_PIT_RATE_HZ = 1193182u,
 
     EHCI_USBCMD_RS = 1u << 0,
     EHCI_USBCMD_HCRESET = 1u << 1,
+    EHCI_USBCMD_PSE = 1u << 4,
     EHCI_USBCMD_ASE = 1u << 5,
 
     EHCI_USBSTS_CLEAR = 0x3fu,
     EHCI_USBSTS_HCHALTED = 1u << 12,
+    EHCI_USBSTS_PSS = 1u << 14,
     EHCI_USBSTS_ASS = 1u << 15,
 
     EHCI_PORT_CONNECT = 1u << 0,
@@ -64,8 +72,12 @@ enum {
                                  EHCI_PORT_OVER_CURRENT_CHANGE,
 
     EHCI_LINK_TERMINATE = 1u,
+    EHCI_LINK_POINTER_MASK = 0xffffffe0u,
     EHCI_LINK_TYPE_QH = 1u << 1,
 
+    EHCI_QH_INTR_C_MASK_SHIFT = 8u,
+    EHCI_QH_INTR_S_MASK_1 = 1u,
+    EHCI_QH_INTR_C_MASK_FS = 0x1cu << 8,
     EHCI_QH_DTC = 1u << 14,
     EHCI_QH_HEAD = 1u << 15,
     EHCI_QH_EPS_FULL = 0u << 12,
@@ -160,11 +172,23 @@ struct ehci_qh {
     volatile uint32_t buffer_hi[5];
 };
 
+/* DMA schedules belong to one host controller, never to all EHCI devices. */
+struct ehci_schedule {
+    uint64_t async_head_phys;
+    uint64_t async_dummy_qtd_phys;
+    uint64_t periodic_list_phys;
+    uint32_t periodic_qh_head;
+    struct ehci_qh *async_head;
+    struct ehci_qtd *async_dummy_qtd;
+    uint32_t *periodic_list;
+};
+
 struct ehci_regs {
     volatile uint8_t *cap;
     volatile uint32_t *op;
     uint8_t cap_length;
     uint8_t port_count;
+    struct ehci_schedule *schedule;
 };
 
 struct usb_ctrl_request {
@@ -199,6 +223,8 @@ struct ehci_msc_device {
     uint8_t sync_cache_supported;
     uint8_t bulk_in_ep;
     uint8_t bulk_out_ep;
+    uint16_t interrupt_interval_frames;
+    uint16_t interrupt_phase_frames;
     uint16_t control_mps;
     uint16_t bulk_in_mps;
     uint16_t bulk_out_mps;
@@ -231,10 +257,16 @@ struct ehci_hid_keyboard {
     uint8_t configuration;
     uint8_t interface_number;
     uint8_t interrupt_in_ep;
+    uint8_t interrupt_armed;
+    uint8_t interrupt_fail_count;
+    uint8_t interrupt_in_interval;
     uint8_t report_fail_logged;
     uint8_t repeat_usage;
     uint8_t repeat_active;
     uint32_t repeat_ticks;
+    uint32_t interrupt_error_count;
+    uint32_t interrupt_log_count;
+    uint32_t last_interrupt_token;
     uint16_t interrupt_in_mps;
     uint8_t last_report[8];
     struct ehci_msc_device xfer;
@@ -246,7 +278,13 @@ struct ehci_hid_mouse {
     uint8_t configuration;
     uint8_t interface_number;
     uint8_t interrupt_in_ep;
+    uint8_t interrupt_armed;
+    uint8_t interrupt_fail_count;
+    uint8_t interrupt_in_interval;
     uint8_t report_fail_logged;
+    uint32_t interrupt_error_count;
+    uint32_t interrupt_log_count;
+    uint32_t last_interrupt_token;
     uint16_t interrupt_in_mps;
     uint8_t last_report[4];
     struct ehci_msc_device xfer;
@@ -269,12 +307,17 @@ extern uint32_t g_ehci_hid_event_count;
 extern uint32_t g_ehci_hid_poll_divider;
 extern uint32_t g_ehci_hid_last_repeat_tick;
 extern uint32_t g_ehci_last_hotplug_tick;
-extern uint64_t g_ehci_async_head_phys;
-extern uint64_t g_ehci_async_dummy_qtd_phys;
-extern uint64_t g_ehci_periodic_list_phys;
-extern struct ehci_qh *g_ehci_async_head;
-extern struct ehci_qtd *g_ehci_async_dummy_qtd;
-extern uint32_t *g_ehci_periodic_list;
+extern struct ehci_regs g_ehci_controllers[EHCI_MAX_CONTROLLERS];
+extern uint32_t g_ehci_controller_count;
+
+/* Keep existing transfer helpers bound to the selected controller's state. */
+#define g_ehci_async_head_phys (g_ehci.schedule->async_head_phys)
+#define g_ehci_async_dummy_qtd_phys (g_ehci.schedule->async_dummy_qtd_phys)
+#define g_ehci_periodic_list_phys (g_ehci.schedule->periodic_list_phys)
+#define g_ehci_periodic_qh_head (g_ehci.schedule->periodic_qh_head)
+#define g_ehci_async_head (g_ehci.schedule->async_head)
+#define g_ehci_async_dummy_qtd (g_ehci.schedule->async_dummy_qtd)
+#define g_ehci_periodic_list (g_ehci.schedule->periodic_list)
 
 uint8_t ehci_read8(volatile uint8_t *base, uint32_t offset);
 void ehci_use_device_controller(const struct ehci_msc_device *dev);
@@ -334,6 +377,21 @@ int ehci_bulk_transfer(struct ehci_msc_device *dev,
                        uint8_t in,
                        uint32_t *token_out,
                        uint32_t spin_limit);
+int ehci_interrupt_open(struct ehci_msc_device *dev,
+                        uint8_t ep_addr,
+                        uint16_t mps,
+                        uint8_t interval,
+                        uint8_t *toggle,
+                        uint64_t phys,
+                        uint32_t bytes,
+                        uint8_t in);
+int ehci_interrupt_poll(struct ehci_msc_device *dev, uint8_t *toggle, uint32_t *token_out);
+void ehci_interrupt_rearm(struct ehci_msc_device *dev,
+                          uint8_t *toggle,
+                          uint64_t phys,
+                          uint32_t bytes,
+                          uint8_t in);
+void ehci_interrupt_close(struct ehci_msc_device *dev);
 int ehci_get_descriptor(struct ehci_msc_device *dev,
                         uint8_t addr,
                         uint16_t mps,
@@ -383,6 +441,8 @@ int ehci_parse_hid_keyboard_config(struct ehci_hid_keyboard *kbd, const uint8_t 
 int ehci_hid_set_protocol(struct ehci_hid_keyboard *kbd, uint8_t protocol);
 int ehci_hid_set_idle(struct ehci_hid_keyboard *kbd);
 int ehci_hid_get_report(struct ehci_hid_keyboard *kbd, uint8_t report[8]);
+int ehci_hid_keyboard_arm_interrupt(struct ehci_hid_keyboard *kbd);
+int ehci_hid_keyboard_poll_interrupt_report(struct ehci_hid_keyboard *kbd, uint8_t report[8]);
 void ehci_hid_set_repeat_usage(struct ehci_hid_keyboard *kbd, uint8_t usage);
 void ehci_hid_tick_repeat(struct ehci_hid_keyboard *kbd);
 void ehci_hid_tick_repeats_once(void);
@@ -394,8 +454,11 @@ int ehci_parse_hid_mouse_config(struct ehci_hid_mouse *mouse, const uint8_t *cfg
 int ehci_hid_mouse_set_protocol(struct ehci_hid_mouse *mouse, uint8_t protocol);
 int ehci_hid_mouse_set_idle(struct ehci_hid_mouse *mouse);
 int ehci_hid_mouse_get_report(struct ehci_hid_mouse *mouse, uint8_t report[4]);
+int ehci_hid_mouse_arm_interrupt(struct ehci_hid_mouse *mouse);
 int ehci_hid_mouse_poll_interrupt_report(struct ehci_hid_mouse *mouse, uint8_t report[4]);
 void ehci_hid_mouse_process_report(struct ehci_hid_mouse *mouse, const uint8_t report[4], uint32_t tick);
+void ehci_hid_keyboard_detach(struct ehci_hid_keyboard *kbd);
+void ehci_hid_mouse_detach(struct ehci_hid_mouse *mouse);
 
 int ehci_config_has_hub_interface(const uint8_t *cfg, uint32_t length);
 struct ehci_msc_device *ehci_select_probe_xfer(void);

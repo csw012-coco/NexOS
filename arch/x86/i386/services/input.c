@@ -25,26 +25,37 @@ int input_services_pop_keyboard_event(struct keyboard_event *event) {
     if (event == 0) {
         return 0;
     }
-    input_services_usb_poll_tick++;
-    if ((input_services_usb_poll_tick & 0x3fu) == 0u) {
-        ehci_hotplug_poll();
-        xhci_hotplug_poll();
-    }
-    ehci_poll_mouse_events(tick);
-    xhci_poll_mouse_events(tick);
-    if (ehci_poll_keyboard_event(event)) {
+    for (;;) {
+        input_services_usb_poll_tick++;
+        if ((input_services_usb_poll_tick & 0x3fu) == 0u) {
+            ehci_hotplug_poll();
+            xhci_hotplug_poll();
+        }
+        ehci_poll_mouse_events(tick);
+        xhci_poll_mouse_events(tick);
+        if (ehci_poll_keyboard_event(event)) {
+            keyboard_event_queue_push(event, tick);
+            if (shared_services_handle_tty_switch(event)) {
+                continue;
+            }
+            return 1;
+        }
+        if (xhci_poll_keyboard_event(event)) {
+            keyboard_event_queue_push(event, tick);
+            if (shared_services_handle_tty_switch(event)) {
+                continue;
+            }
+            return 1;
+        }
+        scancode = hal_keyboard_read_scancode();
+        if (scancode == 0u) {
+            return 0;
+        }
+        *event = keyboard_handle_scancode(scancode);
         keyboard_event_queue_push(event, tick);
+        if (shared_services_handle_tty_switch(event)) {
+            continue;
+        }
         return 1;
     }
-    if (xhci_poll_keyboard_event(event)) {
-        keyboard_event_queue_push(event, tick);
-        return 1;
-    }
-    scancode = hal_keyboard_read_scancode();
-    if (scancode == 0u) {
-        return 0;
-    }
-    *event = keyboard_handle_scancode(scancode);
-    keyboard_event_queue_push(event, tick);
-    return 1;
 }

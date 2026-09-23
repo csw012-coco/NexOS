@@ -6,7 +6,7 @@ enum {
     SYSCALL_EXIT_TO_KERNEL = 0xfffffffffffffff0ull
 };
 
-struct bootx_boot_info;
+struct janus_boot_info;
 struct vfs;
 
 struct syscall_trace {
@@ -25,7 +25,7 @@ struct syscall_trace {
 
 extern volatile uint32_t *g_syscall_ticks;
 extern struct vfs *g_syscall_vfs;
-extern const struct bootx_boot_info *g_syscall_boot_info;
+extern const struct janus_boot_info *g_syscall_boot_info;
 
 extern struct syscall_trace g_last_syscall_trace;
 

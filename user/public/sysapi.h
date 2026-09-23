@@ -3,13 +3,13 @@
 #include <stdint.h>
 #include "abi/syscall_abi.h"
 
-enum bootx_memmap_type {
-    BOOTX_MEMMAP_USABLE = 1,
-    BOOTX_MEMMAP_RESERVED = 2,
-    BOOTX_MEMMAP_ACPI_RECLAIMABLE = 3,
-    BOOTX_MEMMAP_ACPI_NVS = 4,
-    BOOTX_MEMMAP_BAD = 5,
-    BOOTX_MEMMAP_BOOTLOADER_RECLAIMABLE = 0x1000
+enum janus_memmap_type {
+    JANUS_MEMMAP_USABLE = 1,
+    JANUS_MEMMAP_RESERVED = 2,
+    JANUS_MEMMAP_ACPI_RECLAIMABLE = 3,
+    JANUS_MEMMAP_ACPI_NVS = 4,
+    JANUS_MEMMAP_BAD = 5,
+    JANUS_MEMMAP_BOOTLOADER_RECLAIMABLE = 0x1000
 };
 
 
@@ -38,4 +38,5 @@ enum bootx_memmap_type {
  *   PROFILE:           arg0=index          arg1=flags      buffer=struct syscall_profile_info*
  *   FD:                arg0=fd             arg1=0          buffer=struct syscall_fd_info*
  *   FB:                arg0=0              arg1=0          buffer=struct syscall_framebuffer_info*
+ *   STABILITY:         arg0=0              arg1=0          buffer=struct syscall_stability_info*
  */

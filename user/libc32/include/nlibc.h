@@ -20,3 +20,4 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <nexos/prism.h>

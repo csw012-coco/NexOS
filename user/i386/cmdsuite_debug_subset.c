@@ -12,9 +12,9 @@ int cmd_meminfo(void) {
 
     while (memmap_query(entries, &meminfo) > 0) {
         total += meminfo.length;
-        if (meminfo.type == BOOTX_MEMMAP_USABLE) {
+        if (meminfo.type == JANUS_MEMMAP_USABLE) {
             usable += meminfo.length;
-        } else if (meminfo.type == BOOTX_MEMMAP_BOOTLOADER_RECLAIMABLE) {
+        } else if (meminfo.type == JANUS_MEMMAP_BOOTLOADER_RECLAIMABLE) {
             reclaimable += meminfo.length;
         } else {
             reserved += meminfo.length;

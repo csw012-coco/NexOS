@@ -18,6 +18,9 @@ struct process_mm_ops {
 };
 
 void process_mm_ops_register(const struct process_mm_ops *ops);
+int process_mm_user_page_valid(uint32_t user_page);
+int process_mm_phys_page_valid(uint32_t frame);
+void process_mm_rewind_heap_cursor(uint32_t *heap_next, uint32_t user_page);
 uint32_t process_mm_page_alloc(void);
 uint32_t process_mm_page_alloc_prot(int writable);
 uint32_t process_mm_page_alloc_at(uint32_t user_page, int writable);

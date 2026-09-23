@@ -1,5 +1,21 @@
 #include "arch/x86/x86_64/gdt.h"
 
+enum {
+    KERNEL_STACK_GUARD_SIZE = 4096u,
+    KERNEL_RSP0_STACK_SIZE = 16384u,
+    DOUBLE_FAULT_STACK_SIZE = 65536u
+};
+
+static struct {
+    uint8_t guard[KERNEL_STACK_GUARD_SIZE];
+    uint8_t stack[KERNEL_RSP0_STACK_SIZE];
+} kernel_rsp0_stack __attribute__((aligned(KERNEL_STACK_GUARD_SIZE)));
+
+static struct {
+    uint8_t guard[KERNEL_STACK_GUARD_SIZE];
+    uint8_t stack[DOUBLE_FAULT_STACK_SIZE];
+} double_fault_stack __attribute__((aligned(KERNEL_STACK_GUARD_SIZE)));
+
 struct gdt64_entry {
     uint16_t limit_low;
     uint16_t base_low;
@@ -36,7 +52,6 @@ struct gdt64_table {
 
 static struct gdt64_table gdt64;
 static struct tss64 kernel_tss;
-static uint8_t kernel_rsp0_stack[16384];
 
 extern void gdt64_flush(const struct gdt64_ptr *ptr);
 extern void tss64_flush(uint16_t selector);
@@ -75,11 +90,11 @@ void gdt64_init(void) {
     gdt64_set_entry(&gdt64.user_data, 0, 0, 0xf2, 0x00);
 
     kernel_tss.reserved0 = 0;
-    kernel_tss.rsp0 = (uint64_t)(uintptr_t)&kernel_rsp0_stack[sizeof(kernel_rsp0_stack)];
+    kernel_tss.rsp0 = (uint64_t)(uintptr_t)&kernel_rsp0_stack.stack[KERNEL_RSP0_STACK_SIZE];
     kernel_tss.rsp1 = 0;
     kernel_tss.rsp2 = 0;
     kernel_tss.reserved1 = 0;
-    kernel_tss.ist1 = 0;
+    kernel_tss.ist1 = (uint64_t)(uintptr_t)&double_fault_stack.stack[DOUBLE_FAULT_STACK_SIZE];
     kernel_tss.ist2 = 0;
     kernel_tss.ist3 = 0;
     kernel_tss.ist4 = 0;
@@ -121,4 +136,12 @@ uint64_t gdt64_kernel_rsp0(void) {
 
 void gdt64_set_kernel_rsp0(uint64_t rsp0) {
     kernel_tss.rsp0 = rsp0;
+}
+
+uint64_t gdt64_rsp0_guard_address(void) {
+    return (uint64_t)(uintptr_t)&kernel_rsp0_stack.guard[0];
+}
+
+uint64_t gdt64_double_fault_guard_address(void) {
+    return (uint64_t)(uintptr_t)&double_fault_stack.guard[0];
 }

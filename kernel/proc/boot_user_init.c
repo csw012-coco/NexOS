@@ -1,12 +1,51 @@
 #include "kernel/public/proc/boot_user_init.h"
 
+#include "fs/vfs.h"
+#include "kernel/public/core/kprint.h"
 #include "kernel/public/core/tty.h"
 
 static void boot_user_init_log(const struct boot_user_init_config *config,
                                const char *text) {
-    if (config != 0 && config->ops != 0 && config->ops->early_log != 0) {
+    if (config != 0 && config->ops != 0 && config->ops->early_log != 0 && text != 0) {
         config->ops->early_log(text);
     }
+}
+
+static void boot_user_init_log_path(const char *prefix, const char *path) {
+    if (prefix != 0 && path != 0) {
+        kprint("%s path=%s%s\n", prefix, path[0] == '/' ? "" : "/", path);
+    }
+}
+
+static int boot_user_init_probe_path(const struct boot_user_init_config *config,
+                                     const char *path) {
+    struct vfs_node node;
+    uint8_t buffer[4];
+    uint32_t offset = 0;
+    uint32_t bytes = 0;
+    int64_t read_rc;
+
+    if (config == 0 || config->shell_vfs == 0 || path == 0) {
+        return 0;
+    }
+    if (vfs_open(config->shell_vfs, path, 0, &node) != 0 || node.kind != VFS_NODE_FILE) {
+        kprint("kernel: init probe open fail\n");
+        return 0;
+    }
+    read_rc = vfs_read(config->shell_vfs,
+                       &node,
+                       &offset,
+                       buffer,
+                       (uint32_t)sizeof(buffer),
+                       VFS_READ_BLOCKING);
+    if (read_rc > 0) {
+        bytes = (uint32_t)read_rc;
+    }
+    kprint("kernel: init probe ok\n");
+    kprint("kernel: init probe kind %lx\n", (uint64_t)node.mount_kind);
+    kprint("kernel: init probe fsize %lx\n", (uint64_t)vfs_node_file_size(&node));
+    kprint("kernel: init probe read %lx\n", (uint64_t)bytes);
+    return 1;
 }
 
 int boot_user_init_run_selftest(const struct boot_user_init_config *config) {
@@ -78,6 +117,13 @@ int boot_user_init_autostart_shell(const struct boot_user_init_config *config) {
     command = config->shell_command;
     prefix = config->shell_log_prefix != 0 ? config->shell_log_prefix : "shell";
 
+    if (config->shell_init_path != 0) {
+        boot_user_init_log_path("kernel: init", config->shell_init_path);
+        if (config->shell_probe_init_path) {
+            (void)boot_user_init_probe_path(config, config->shell_init_path);
+        }
+    }
+    boot_user_init_log(config, config->shell_pre_start_log);
     boot_user_init_log(config,
                        config->shell_start_log != 0
                            ? config->shell_start_log

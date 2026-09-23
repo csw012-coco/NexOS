@@ -1,9 +1,12 @@
 # QEMU run and development targets.
 
 run-i386: $(I386_IMAGE) $(NXFS_IMAGE)
-	$(I386_QEMU) -m 128M -display gtk -serial stdio \
-		-drive if=ide,index=0,media=disk,format=raw,file=$(I386_IMAGE) \
-		-drive if=ide,index=1,media=disk,format=raw,file=$(NXFS_IMAGE)
+	$(I386_QEMU) -enable-kvm -machine pc,acpi=on \
+	$(QEMU_SERIAL) \
+	$(QEMU_NET) \
+	-drive if=ide,index=0,media=disk,format=raw,file=$(I386_IMAGE) \
+	-device AC97,audiodev=snd0 \
+	-audiodev $(QEMU_AUDIODEV)
 
 run: arch-run
 
@@ -12,12 +15,11 @@ run-x86_64: $(IMAGE) $(NXFS_IMAGE)
 	$(QEMU_SERIAL) \
 	$(QEMU_NET) \
 	-drive if=ide,index=0,media=disk,format=raw,file=$(IMAGE) \
-	$(QEMU_NXFS_SATA) \
 	-device AC97,audiodev=snd0 \
 	-audiodev $(QEMU_AUDIODEV)
 
 dev: $(IMAGE) $(NXFS_IMAGE)
-	$(QEMU_X86_64)  \
+	$(QEMU_X86_64) \
 	-no-reboot \
 	-no-shutdown \
 	-d int,cpu_reset \

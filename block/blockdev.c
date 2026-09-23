@@ -1,6 +1,7 @@
 #include "block/blockdev.h"
 #include "block/block_event.h"
 #include "hal/hal.h"
+#include "kernel/public/core/kprint.h"
 #include "kernel/public/core/profile.h"
 #include "lib/string.h"
 
@@ -32,6 +33,10 @@ static volatile uint32_t g_blockdev_lock;
 static volatile uint32_t g_blockdev_scan_lock;
 static struct blockdev_partition g_blockdev_scan_partitions[BLOCKDEV_MAX_PARTITIONS];
 
+static struct blockdev_async_request g_blockdev_request_queue[BLOCKDEV_REQUEST_QUEUE_DEPTH];
+static uint32_t g_blockdev_request_queue_count;
+static volatile uint32_t g_blockdev_request_queue_lock;
+
 struct blockdev_read_cache_entry {
     struct block_device *dev;
     uint64_t lba;
@@ -60,6 +65,115 @@ static void blockdev_scan_lock(void) {
 
 static void blockdev_scan_unlock(void) {
     __sync_lock_release(&g_blockdev_scan_lock);
+}
+
+static void blockdev_request_lock(struct block_device *dev);
+static void blockdev_request_unlock(struct block_device *dev);
+
+static void blockdev_request_queue_lock(void) {
+    while (__sync_lock_test_and_set(&g_blockdev_request_queue_lock, 1u) != 0u) {
+        __asm__ __volatile__("pause");
+    }
+}
+
+static void blockdev_request_queue_unlock(void) {
+    __sync_lock_release(&g_blockdev_request_queue_lock);
+}
+
+static void blockdev_request_queue_reset(void) {
+    memset(g_blockdev_request_queue, 0, sizeof(g_blockdev_request_queue));
+    g_blockdev_request_queue_count = 0u;
+}
+
+static int blockdev_request_queue_can_merge(const struct blockdev_async_request *left,
+                                            const struct blockdev_async_request *right) {
+    uint64_t left_end;
+    uintptr_t left_end_ptr;
+
+    if (left == 0 || right == 0) {
+        return 0;
+    }
+    if (!left->valid || !right->valid || left->dev != right->dev ||
+        left->kind != right->kind || left->complete != 0 || right->complete != 0 ||
+        left->context != 0 || right->context != 0 ||
+        left->count == 0u || right->count == 0u) {
+        return 0;
+    }
+    left_end = left->lba + left->count;
+    if (left_end < left->lba || left_end != right->lba) {
+        return 0;
+    }
+    if (left->kind == 1u) {
+        if (left->buffer == 0 || right->buffer == 0) {
+            return 0;
+        }
+        left_end_ptr = (uintptr_t)left->buffer + (uintptr_t)left->count * (uintptr_t)left->dev->block_size;
+        return left_end_ptr == (uintptr_t)right->buffer;
+    }
+    if (left->kind == 2u) {
+        if (left->write_buffer == 0 || right->write_buffer == 0) {
+            return 0;
+        }
+        left_end_ptr = (uintptr_t)left->write_buffer +
+                       (uintptr_t)left->count * (uintptr_t)left->dev->block_size;
+        return left_end_ptr == (uintptr_t)right->write_buffer;
+    }
+    return 0;
+}
+
+static void blockdev_request_queue_complete(struct blockdev_async_request *req, int status) {
+    if (req == 0) {
+        return;
+    }
+    req->status = status;
+    req->done = 1u;
+    if (req->complete != 0) {
+        req->complete(req, status, req->context);
+    }
+}
+
+static void blockdev_request_queue_drain_locked(void) {
+    for (uint32_t i = 0u; i < g_blockdev_request_queue_count; i++) {
+        struct blockdev_async_request *req = &g_blockdev_request_queue[i];
+        int rc = 0;
+
+        if (!req->valid || req->in_flight != 0u) {
+            continue;
+        }
+        req->in_flight = 1u;
+        blockdev_request_lock(req->dev);
+        if (req->kind == 1u) {
+            rc = req->dev->read(req->dev, req->lba, req->count, req->buffer);
+        } else if (req->kind == 2u) {
+            rc = req->dev->write(req->dev, req->lba, req->count, req->write_buffer);
+        } else {
+            rc = 0;
+        }
+        blockdev_request_unlock(req->dev);
+        blockdev_request_queue_complete(req, rc);
+        req->valid = 0u;
+        req->in_flight = 0u;
+    }
+    blockdev_request_queue_reset();
+}
+
+static void blockdev_request_queue_submit_locked(struct blockdev_async_request *req) {
+    struct blockdev_async_request *last;
+
+    if (req == 0 || !req->valid) {
+        return;
+    }
+    if (g_blockdev_request_queue_count > 0u) {
+        last = &g_blockdev_request_queue[g_blockdev_request_queue_count - 1u];
+        if (blockdev_request_queue_can_merge(last, req)) {
+            last->count += req->count;
+            return;
+        }
+    }
+    if (g_blockdev_request_queue_count >= BLOCKDEV_REQUEST_QUEUE_DEPTH) {
+        blockdev_request_queue_drain_locked();
+    }
+    g_blockdev_request_queue[g_blockdev_request_queue_count++] = *req;
 }
 
 static void blockdev_request_lock(struct block_device *dev) {
@@ -106,14 +220,17 @@ static int blockdev_io_begin(struct block_device *dev) {
             continue;
         }
         registered = 1;
-        if (dev->removing == 0u && dev->state == BLOCKDEV_STATE_ONLINE) {
+        if (dev->removing == 0u &&
+            (dev->state == BLOCKDEV_STATE_ONLINE || dev->rootfs_protected != 0u)) {
             dev->io_refs++;
             dev->request_cancelled = 0u;
             dev->request_deadline = hal_timer_current_ticks() + BLOCKDEV_IO_TIMEOUT_TICKS;
         }
         break;
     }
-    if (registered && (dev->removing != 0u || dev->state != BLOCKDEV_STATE_ONLINE)) {
+    if (registered &&
+        (dev->removing != 0u ||
+         (dev->state != BLOCKDEV_STATE_ONLINE && dev->rootfs_protected == 0u))) {
         blockdev_unlock();
         return -1;
     }
@@ -505,6 +622,8 @@ int blockdev_rescan_partitions(struct block_device *dev) {
 void blockdev_init(void) {
     g_blockdev_lock = 0u;
     g_blockdev_scan_lock = 0u;
+    g_blockdev_request_queue_lock = 0u;
+    blockdev_request_queue_reset();
     device_count = 0;
     for (uint32_t i = 0; i < BLOCKDEV_MAX; i++) {
         devices[i] = 0;
@@ -829,7 +948,8 @@ int blockdev_acquire_device(struct block_device *dev) {
             continue;
         }
         found = 1;
-        if (dev->removing == 0u && dev->state == BLOCKDEV_STATE_ONLINE) {
+        if (dev->removing == 0u &&
+            (dev->state == BLOCKDEV_STATE_ONLINE || dev->rootfs_protected != 0u)) {
             dev->io_refs++;
         } else {
             found = 0;
@@ -884,6 +1004,7 @@ int blockdev_get_info(uint32_t index, struct blockdev_info *out) {
     out->block_count = dev->block_count;
     out->writable = dev->write != 0;
     out->partition_count = dev->partition_cache_valid ? dev->partition_count : 0u;
+    out->state = dev->state;
     out->failure_count = dev->failure_count;
     out->consecutive_failures = dev->consecutive_failures;
     out->rebind_count = dev->rebind_count;
@@ -1065,6 +1186,7 @@ int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *
         g_block_profile_read = kernel_profile_register("block.read");
     }
     start = kernel_profile_clock();
+
     blockdev_request_lock(dev);
     rc = dev->read(dev, lba, count, buffer);
     blockdev_request_unlock(dev);
@@ -1097,51 +1219,66 @@ int blockdev_read(struct block_device *dev, uint64_t lba, uint32_t count, void *
     return rc;
 }
 
-int blockdev_write(struct block_device *dev, uint64_t lba, uint32_t count, const void *buffer) {
+int blockdev_write(struct block_device *dev,
+                   uint64_t lba,
+                   uint32_t count,
+                   const void *buffer) {
     int rc;
     int acquired;
+    uint64_t start;
 
     if (dev == 0 || buffer == 0 || count == 0) {
         return -1;
     }
+
     acquired = blockdev_io_begin(dev);
     if (acquired < 0 || dev->write == 0) {
         blockdev_io_end(dev, acquired);
         return -1;
     }
-    if (g_block_profile_write == 0u) {
-        g_block_profile_write = kernel_profile_register("block.write");
-    }
-    {
-        uint64_t start = kernel_profile_clock();
 
-        blockdev_request_lock(dev);
-        rc = dev->write(dev, lba, count, buffer);
-        blockdev_request_unlock(dev);
-        if (rc == 0) {
-            blockdev_record_success(dev);
-        } else {
-            blockdev_record_failure(dev, rc, 0);
-        }
-        kernel_profile_record(g_block_profile_write,
-                              kernel_profile_clock() - start,
-                              rc == 0 ? (uint64_t)count * dev->block_size : 0u);
+    if (g_block_profile_write == 0u) {
+        g_block_profile_write =
+            kernel_profile_register("block.write");
     }
-    blockdev_lock();
+
+    start = kernel_profile_clock();
+
+    blockdev_request_lock(dev);
+    rc = dev->write(dev, lba, count, buffer);
+    blockdev_request_unlock(dev);
+
     if (rc == 0) {
-        blockdev_cache_invalidate_range(dev, lba, count);
+        blockdev_record_success(dev);
     } else {
-        blockdev_cache_invalidate_range(dev, lba, count);
+        blockdev_record_failure(dev, rc, 0);
+    }
+
+    kernel_profile_record(
+        g_block_profile_write,
+        kernel_profile_clock() - start,
+        rc == 0 ? (uint64_t)count * dev->block_size : 0u
+    );
+
+    blockdev_lock();
+
+    blockdev_cache_invalidate_range(dev, lba, count);
+
+    if (rc != 0) {
         dev->partition_cache_valid = 0u;
     }
+
     if (rc == 0 && lba == 0u) {
         blockdev_unlock();
         blockdev_io_end(dev, acquired);
+
         (void)blockdev_rescan_partitions(dev);
         return rc;
     }
+
     blockdev_unlock();
     blockdev_io_end(dev, acquired);
+
     return rc;
 }
 
@@ -1178,4 +1315,62 @@ int blockdev_flush(struct block_device *dev) {
                           0u);
     blockdev_io_end(dev, acquired);
     return rc;
+}
+
+int blockdev_submit_read_async(struct block_device *dev,
+                              uint64_t lba,
+                              uint32_t count,
+                              void *buffer,
+                              blockdev_async_complete_fn complete,
+                              void *context) {
+    struct blockdev_async_request req;
+
+    if (dev == 0 || buffer == 0 || count == 0u) {
+        return -1;
+    }
+    memset(&req, 0, sizeof(req));
+    req.dev = dev;
+    req.lba = lba;
+    req.count = count;
+    req.buffer = buffer;
+    req.kind = 1u;
+    req.valid = 1u;
+    req.complete = complete;
+    req.context = context;
+    blockdev_request_queue_lock();
+    blockdev_request_queue_submit_locked(&req);
+    blockdev_request_queue_unlock();
+    return 0;
+}
+
+int blockdev_submit_write_async(struct block_device *dev,
+                               uint64_t lba,
+                               uint32_t count,
+                               const void *buffer,
+                               blockdev_async_complete_fn complete,
+                               void *context) {
+    struct blockdev_async_request req;
+
+    if (dev == 0 || buffer == 0 || count == 0u) {
+        return -1;
+    }
+    memset(&req, 0, sizeof(req));
+    req.dev = dev;
+    req.lba = lba;
+    req.count = count;
+    req.write_buffer = buffer;
+    req.kind = 2u;
+    req.valid = 1u;
+    req.complete = complete;
+    req.context = context;
+    blockdev_request_queue_lock();
+    blockdev_request_queue_submit_locked(&req);
+    blockdev_request_queue_unlock();
+    return 0;
+}
+
+void blockdev_async_flush_pending(void) {
+    blockdev_request_queue_lock();
+    blockdev_request_queue_drain_locked();
+    blockdev_request_queue_unlock();
 }

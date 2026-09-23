@@ -19,7 +19,8 @@ static uint16_t g_device_poll_mouse_col;
 static struct console *g_device_poll_mouse_selection_console;
 static uint32_t g_input_focus_owner_pid;
 static uint32_t g_device_poll_usb_tick;
-static uint8_t g_device_poll_usb_hid_due;
+static volatile uint8_t g_device_poll_usb_hid_due;
+static volatile uint8_t g_device_poll_usb_hotplug_due;
 
 enum {
     DEVICE_POLL_USB_HID_DIVISOR = 2u,
@@ -31,6 +32,8 @@ int input_focus_grab(uint32_t pid) {
         return 0;
     }
     g_input_focus_owner_pid = pid;
+    hal_display_disable_cursor();
+    hal_display_set_mouse_cursor_enabled(0);
     return 1;
 }
 
@@ -39,11 +42,15 @@ int input_focus_release(uint32_t pid) {
         return 0;
     }
     g_input_focus_owner_pid = 0u;
+    hal_display_enable_cursor(14, 15);
+    hal_display_set_mouse_cursor_enabled(g_device_poll_mouse_cursor_enabled);
     return 1;
 }
 
 void input_focus_clear(void) {
     g_input_focus_owner_pid = 0u;
+    hal_display_enable_cursor(14, 15);
+    hal_display_set_mouse_cursor_enabled(g_device_poll_mouse_cursor_enabled);
 }
 
 uint32_t input_focus_owner_pid(void) {
@@ -95,6 +102,7 @@ static void device_poll_mouse_cursor_event(const struct mouse_event_record *even
 }
 
 void device_poll_init_input(void) {
+    keyboard_ps2_init();
     mouse_init();
     uart_enable_input();
 }
@@ -124,7 +132,7 @@ void device_poll_push_keyboard_event(const struct keyboard_event *event, volatil
 }
 
 int device_poll_poll_usb_keyboard_event(struct keyboard_event *out) {
-    if (out == 0 || !g_device_poll_usb_hid_due) {
+    if (out == 0) {
         return 0;
     }
     if (ehci_poll_keyboard_event(out)) {
@@ -171,27 +179,38 @@ int device_poll_poll_uart_keyboard_event(struct keyboard_event *out) {
     return 1;
 }
 
-void device_poll_poll_usb_mouse_events(volatile uint32_t *ticks) {
-    uint32_t tick = 0;
+int device_poll_note_timer_tick(void) {
+    g_device_poll_usb_tick++;
+    if ((g_device_poll_usb_tick % DEVICE_POLL_USB_HID_DIVISOR) == 0u) {
+        __atomic_store_n(&g_device_poll_usb_hid_due, 1u, __ATOMIC_RELAXED);
+    }
+    if ((g_device_poll_usb_tick % DEVICE_POLL_USB_HOTPLUG_DIVISOR) == 0u) {
+        __atomic_store_n(&g_device_poll_usb_hotplug_due, 1u, __ATOMIC_RELAXED);
+    }
+    return __atomic_load_n(&g_device_poll_usb_hid_due, __ATOMIC_RELAXED) ||
+           __atomic_load_n(&g_device_poll_usb_hotplug_due, __ATOMIC_RELAXED);
+}
 
-    if (ticks != 0) {
-        tick = *ticks;
+int device_poll_service_usb_mouse_events(uint32_t tick) {
+    int hid_due = __atomic_exchange_n(&g_device_poll_usb_hid_due, 0u, __ATOMIC_RELAXED);
+    int hotplug_due = __atomic_exchange_n(&g_device_poll_usb_hotplug_due, 0u, __ATOMIC_RELAXED);
+
+    if (!hid_due && !hotplug_due) {
+        return 0;
     }
     mouse_poll_ps2(tick);
-    g_device_poll_usb_tick++;
-    g_device_poll_usb_hid_due =
-        (g_device_poll_usb_tick % DEVICE_POLL_USB_HID_DIVISOR) == 0u;
-    if ((g_device_poll_usb_tick % DEVICE_POLL_USB_HOTPLUG_DIVISOR) == 0u) {
+    if (hotplug_due) {
         ehci_hotplug_poll();
         xhci_hotplug_poll();
     }
-    if (!g_device_poll_usb_hid_due) {
+    if (!hid_due) {
         device_poll_update_mouse_cursor();
-        return;
+        return 0;
     }
     ehci_poll_mouse_events(tick);
     xhci_poll_mouse_events(tick);
     device_poll_update_mouse_cursor();
+    return 1;
 }
 
 void device_poll_update_mouse_cursor(void) {
@@ -215,7 +234,7 @@ void device_poll_handle_mouse_irq(volatile uint32_t *ticks) {
     if (ticks != 0) {
         tick = *ticks;
     }
-    mouse_handle_data(hal_io_in8(0x60), tick);
+    mouse_poll_ps2(tick);
     device_poll_update_mouse_cursor();
 }
 

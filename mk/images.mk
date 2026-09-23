@@ -2,20 +2,20 @@
 
 images: check-host-tools-image $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE)
 
-$(I386_BOOT_FS_IMAGE): $(BOOTX_STAGE3) \
+$(I386_BOOT_FS_IMAGE): $(JANUS_STAGE3) \
 		$(I386_KERNEL) $(I386_USER) $(I386_SCHED_USER) $(I386_TEST_USER) \
 		$(I386_APP_USER) \
 		$(I386_NEXBOX_USER) \
 		$(I386_NEXBOX_SUBSET_USER) \
 		$(I386_USH_USER) \
 		$(RAMDISK_IMAGE) \
-		$(I386_BOOTX_CONFIG) $(BOOT_FONT_HEX) | $(I386_BUILD)
+		$(I386_JANUS_CONFIG_RENDERED) $(BOOT_FONT_SELECTION) $(BOOT_FONT_MODULE) | $(I386_BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s 48M $@
-	$(Q)mkfs.fat -F 32 $@
+	$(Q)$(MKFS_FAT) $(MKFS_FAT_FLAGS) $@
 	$(Q)mmd -i $@ ::/BOOT
-	$(Q)mcopy -i $@ $(BOOTX_STAGE3) ::/BOOT/STAGE3.SYS
+	$(Q)mcopy -i $@ $(JANUS_STAGE3) ::/BOOT/STAGE3.SYS
 	$(Q)mcopy -i $@ $(I386_KERNEL) ::/BOOT/NEX386.ELF
 	$(Q)mcopy -i $@ $(I386_USER) ::/BOOT/USER32.ELF
 	$(Q)mcopy -i $@ $(I386_SCHED_USER) ::/BOOT/SCHED32.ELF
@@ -24,9 +24,25 @@ $(I386_BOOT_FS_IMAGE): $(BOOTX_STAGE3) \
 	$(Q)mcopy -i $@ $(I386_NEXBOX_USER) ::/BOOT/NEXBOX32.ELF
 	$(Q)mcopy -i $@ $(I386_NEXBOX_SUBSET_USER) ::/BOOT/NEXBOX32S.ELF
 	$(Q)mcopy -i $@ $(I386_USH_USER) ::/BOOT/USH32.ELF
-	$(Q)mcopy -i $@ $(BOOT_FONT_HEX) ::/BOOT/FONT.HEX
+	$(Q)mcopy -i $@ $(BOOT_FONT_MODULE) ::/BOOT/$(BOOT_FONT_MODULE_NAME)
 	$(Q)mcopy -i $@ $(RAMDISK_IMAGE) ::/BOOT/RAMDISK.IMG
-	$(Q)mcopy -i $@ $(I386_BOOTX_CONFIG) ::/BOOT/BOOTX.CFG
+	$(Q)mcopy -i $@ $(I386_JANUS_CONFIG_RENDERED) ::/BOOT/JANUS.CFG
+
+$(I386_JANUS_CONFIG_RENDERED): $(I386_JANUS_CONFIG) $(I386_ROOT_FS_IMAGE) $(NXFS_TOOL) $(BOOT_FONT_SELECTION) | $(I386_BUILD)
+	$(call log_cmd,GEN,$@)
+	$(Q)uuid="$$( $(NXFS_TOOL) uuid $(I386_ROOT_FS_IMAGE) )"; \
+	uuid="$${uuid#uuid=}"; \
+	sed -e "s/root=[^ ]*/root=UUID=$$uuid/g" \
+		-e "s/init=[^ ]*/init=\/system\/init/g" \
+		-e "s/BOOT\/FONT\.HEX/BOOT\/$(BOOT_FONT_MODULE_NAME)/g" \
+		$(I386_JANUS_CONFIG) > $@
+
+$(I386_JANUS_SMOKE_CONFIG): $(I386_JANUS_CONFIG_RENDERED) | $(I386_BUILD)
+	$(call log_cmd,GEN,$@)
+	$(Q)awk 'BEGIN { emit = 0; seen = 0 } \
+		/^menuentry / { if (seen) exit; seen = 1; emit = 1 } \
+		emit { print } \
+		emit && /^}/ { exit }' $< > $@
 
 $(SCRIPT_SMOKE_SH): Makefile | $(BUILD)
 	$(call log_cmd,GEN,$@)
@@ -42,9 +58,9 @@ $(I386_AUDIO_SMOKE_WAV): | $(I386_BUILD)
 $(I386_ROOT_FS_IMAGE): $(NXFS_TOOL) \
 		$(I386_TEST_USER) $(I386_APP_USER) \
 		$(I386_NEXBOX_USER) $(I386_NEXBOX_SUBSET_USER) $(I386_USH_USER) \
-		$(I386_DOOM_USER) \
+		$(I386_DOOM_USER) $(I386_PRISM_USER) $(I386_DESKTOP_USER) $(I386_PRISM_SMOKE_USER) \
 		$(I386_TEST_DRIVER) $(I386_AC97_DRIVER) $(I386_HDA_DRIVER) \
-		$(OS_CONFIG) $(FSTAB_CONFIG) $(CAP_POLICY) $(PASSWD_CONFIG) $(SERVICE_FILES) $(FONT_HEX) $(ROOT_INIT_SCRIPT) $(SCRIPT_SMOKE_SH) \
+		$(OS_CONFIG) $(FSTAB_CONFIG) $(CAP_POLICY) $(PASSWD_CONFIG) $(SERVICE_FILES) $(FONT_BDF) $(ROOT_INIT_SCRIPT) $(SCRIPT_SMOKE_SH) \
 		$(I386_AUDIO_SMOKE_WAV) | $(I386_BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
@@ -68,7 +84,7 @@ $(I386_ROOT_FS_IMAGE): $(NXFS_TOOL) \
 	$(Q)for svc in $(SERVICE_FILES); do \
 		$(NXFS_TOOL) write $@ "$$svc" /system/service/$$(basename "$$svc"); \
 	done
-	$(Q)$(NXFS_TOOL) write $@ $(FONT_HEX) /system/font/font.hex
+	$(Q)$(NXFS_TOOL) write $@ $(FONT_BDF) /system/font/font.bdf
 	$(Q)$(NXFS_TOOL) write $@ $(SCRIPT_SMOKE_SH) /system/script-smoke.sh
 	$(Q)$(NXFS_TOOL) chmod $@ 755 /system/script-smoke.sh
 	$(Q)$(NXFS_TOOL) write $@ $(I386_AUDIO_SMOKE_WAV) /system/audio-smoke.wav
@@ -86,25 +102,35 @@ $(I386_ROOT_FS_IMAGE): $(NXFS_TOOL) \
 	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/app32
 	$(Q)$(NXFS_TOOL) write $@ $(I386_DOOM_USER) /cmd/doom32
 	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/doom32
+	$(Q)$(NXFS_TOOL) write $@ $(I386_PRISM_USER) /cmd/prism32
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/prism32
+	$(Q)$(NXFS_TOOL) write $@ $(I386_DESKTOP_USER) /cmd/desktop32
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/desktop32
+	$(Q)$(NXFS_TOOL) write $@ $(I386_PRISM_SMOKE_USER) /cmd/prismsmoke32
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/prismsmoke32
 	$(Q)$(NXFS_TOOL) write $@ $(I386_TEST_DRIVER) /drivers/I386TEST.DRV
 	$(Q)$(NXFS_TOOL) write $@ $(I386_AC97_DRIVER) /drivers/AC9732.DRV
 	$(Q)$(NXFS_TOOL) write $@ $(I386_HDA_DRIVER) /drivers/HDA32.DRV
-	$(Q)$(NXFS_TOOL) write $@ assets/audio/test.wav /home/test.wav
 	$(Q)rm -rf $(I386_CMD_SUITE_WRAPPER_DIR)
 	$(Q)mkdir -p $(I386_CMD_SUITE_WRAPPER_DIR)
 	$(Q)for alias in $(CMD_SUITE_NAMES); do \
 		lower=$$(printf '%s' "$$alias" | tr 'A-Z' 'a-z'); \
-		if [ "$$lower" = nexbox ]; then continue; fi; \
-		$(NXFS_TOOL) write $@ $(I386_NEXBOX_USER) /cmd/$$lower; \
+		if [ "$$lower" = nexbox ] || [ "$$lower" = su ] || [ "$$lower" = sudo ]; then continue; fi; \
+		wrapper="$(I386_CMD_SUITE_WRAPPER_DIR)/$$lower"; \
+		printf '%s\n' '#!/cmd/ush' "/cmd/nexbox $$lower \$$@" > "$$wrapper"; \
+		chmod 755 "$$wrapper"; \
+		$(NXFS_TOOL) write $@ "$$wrapper" /cmd/$$lower; \
 		$(NXFS_TOOL) chmod $@ 755 /cmd/$$lower; \
 	done
+	$(Q)$(NXFS_TOOL) write $@ $(I386_NEXBOX_USER) /cmd/su
 	$(Q)$(NXFS_TOOL) chown $@ 0 0 /cmd/su
 	$(Q)$(NXFS_TOOL) chmod $@ 4755 /cmd/su
+	$(Q)$(NXFS_TOOL) write $@ $(I386_NEXBOX_USER) /cmd/sudo
 	$(Q)$(NXFS_TOOL) chown $@ 0 0 /cmd/sudo
 	$(Q)$(NXFS_TOOL) chmod $@ 4755 /cmd/sudo
 	$(Q)$(NXFS_TOOL) apply-caps $@ $(CAP_POLICY)
 
-$(I386_IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(I386_BOOT_FS_IMAGE) $(I386_ROOT_FS_IMAGE) | $(IMAGE_DIR)
+$(I386_IMAGE): $(JANUS_STAGE1) $(JANUS_STAGE2) $(I386_BOOT_FS_IMAGE) $(I386_ROOT_FS_IMAGE) | $(IMAGE_DIR)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s $(OS_IMAGE_SIZE) $@
@@ -112,9 +138,9 @@ $(I386_IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(I386_BOOT_FS_IMAGE) $(I386_ROOT
 	$(Q)parted -s $@ mkpart primary fat32 1MiB 49MiB
 	$(Q)parted -s $@ mkpart primary 49MiB 100%
 	$(Q)parted -s $@ set 1 boot on
-	$(Q)dd if=$(BOOTX_STAGE1) of=$@ conv=notrunc bs=446 count=1
-	$(Q)dd if=$(BOOTX_STAGE1) of=$@ conv=notrunc bs=1 skip=510 seek=510 count=2
-	$(Q)dd if=$(BOOTX_STAGE2) of=$@ conv=notrunc bs=512 seek=1
+	$(Q)dd if=$(JANUS_STAGE1) of=$@ conv=notrunc bs=446 count=1
+	$(Q)dd if=$(JANUS_STAGE1) of=$@ conv=notrunc bs=1 skip=510 seek=510 count=2
+	$(Q)dd if=$(JANUS_STAGE2) of=$@ conv=notrunc bs=512 seek=1
 	$(Q)dd if=$(I386_BOOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(BOOT_PART_LBA)
 	$(Q)dd if=$(I386_ROOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(ROOT_PART_LBA)
 
@@ -124,7 +150,7 @@ $(RAMDISK_IMAGE): $(BUILD)/USH.ELF $(BUILD)/NEXBOX.ELF $(RAMDISK_INIT_SCRIPT) $(
 	$(Q)truncate -s $(RAMDISK_SIZE) $@
 	$(Q)parted -s $@ mklabel msdos
 	$(Q)parted -s $@ mkpart primary fat32 1MiB 100%
-	$(Q)mkfs.fat -F 32 --offset 2048 $@
+	$(Q)$(MKFS_FAT) $(MKFS_FAT_FLAGS) --offset 2048 $@
 	$(Q)mmd -i $@@@1048576 ::/CMD
 	$(Q)mmd -i $@@@1048576 ::/DRIVERS
 	$(Q)mcopy -i $@@@1048576 $(RAMDISK_INIT_SCRIPT) ::/init
@@ -145,41 +171,53 @@ $(IMAGE_DIR): | $(BUILD)
 
 $(NXFS_TOOL): $(ROOT)/tools/nxfs_host.c $(ROOT)/fs/nxfs.c $(ROOT)/fs/nxfs_io.c $(ROOT)/fs/nxfs_internal.h $(ROOT)/fs/nxfs.h $(ROOT)/kernel/public/fs/nxfs_types.h $(ROOT)/lib/string.c | $(BUILD)
 	$(call log_cmd,HOSTCC,$@)
-	$(Q)$(HOSTCC) -O2 -Wall -Wextra -fno-builtin -I$(ROOT) -I$(ROOT)/include -I$(BOOTX_DIR)/include $(ROOT)/tools/nxfs_host.c $(ROOT)/fs/nxfs.c $(ROOT)/fs/nxfs_io.c $(ROOT)/lib/string.c -o $@
+	$(Q)$(HOSTCC) -O2 -Wall -Wextra -fno-builtin -I$(ROOT) -I$(ROOT)/include -I$(JANUS_DIR)/include $(ROOT)/tools/nxfs_host.c $(ROOT)/fs/nxfs.c $(ROOT)/fs/nxfs_io.c $(ROOT)/lib/string.c -o $@
+
+$(MKFS_NXFS_TOOL): $(NXFS_TOOL) | $(BUILD)
+	$(call log_cmd,LN,$@)
+	$(Q)ln -sf nxfs_host $@
+
+$(MKFS_FAT_TOOL): $(ROOT)/tools/mkfs_fat_wrapper.sh | $(BUILD)
+	$(call log_cmd,CP,$@)
+	$(Q)cp $< $@
+	$(Q)chmod 755 $@
 
 $(NXFS_FS): $(NXFS_TOOL)
 	$(call log_cmd,GEN,$@)
 	$(Q)rm -f $@
 	$(Q)$< mkfs $@
 
-$(BOOT_FONT_HEX): $(FONT_HEX) $(ROOT)/tools/font_subset.py | $(BUILD)
-	$(call log_cmd,GEN,$@)
-	$(Q)python3 $(ROOT)/tools/font_subset.py $< $@
+$(BOOT_FONT_SELECTION): FORCE | $(BUILD)
+	$(Q)selection="$(BOOT_FONT_MODULE_NAME):$(BOOT_FONT_MODULE)"; \
+	if [ ! -f $@ ] || [ "$$(cat $@)" != "$$selection" ]; then \
+		printf '%s\n' "$$selection" > $@; \
+	fi
 
-$(BOOTX_CONFIG_RENDERED): $(BOOTX_CONFIG) $(ROOT_FS_IMAGE) $(NXFS_TOOL) | $(BUILD)
+$(JANUS_CONFIG_RENDERED): $(JANUS_CONFIG) $(ROOT_FS_IMAGE) $(NXFS_TOOL) $(BOOT_FONT_SELECTION) | $(BUILD)
 	$(call log_cmd,GEN,$@)
 	$(Q)uuid="$$( $(NXFS_TOOL) uuid $(ROOT_FS_IMAGE) )"; \
 	uuid="$${uuid#uuid=}"; \
 	sed -e "s/root=[^ ]*/root=UUID=$$uuid/g" \
 		-e "s/init=[^ ]*/init=\/system\/init/g" \
-		$(BOOTX_CONFIG) > $@
+		-e "s/BOOT\/FONT\.HEX/BOOT\/$(BOOT_FONT_MODULE_NAME)/g" \
+		$(JANUS_CONFIG) > $@
 
-$(BOOT_FS_IMAGE): $(BOOTX_STAGE3) $(BOOTX_UEFI) $(BUILD)/kernel64.elf $(RAMDISK_IMAGE) $(BOOTX_CONFIG_RENDERED) $(BOOT_FONT_HEX) | $(BUILD)
+$(BOOT_FS_IMAGE): $(JANUS_STAGE3) $(JANUS_UEFI) $(BUILD)/kernel64.elf $(RAMDISK_IMAGE) $(JANUS_CONFIG_RENDERED) $(BOOT_FONT_SELECTION) $(BOOT_FONT_MODULE) | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s 48M $@
-	$(Q)mkfs.fat -F 32 $@
+	$(Q)$(MKFS_FAT) $(MKFS_FAT_FLAGS) $@
 	$(Q)mmd -i $@ ::/BOOT
 	$(Q)mmd -i $@ ::/EFI
 	$(Q)mmd -i $@ ::/EFI/BOOT
-	$(Q)mcopy -i $@ $(BOOTX_STAGE3) ::/BOOT/STAGE3.SYS
-	$(Q)mcopy -i $@ $(BOOTX_UEFI) ::/EFI/BOOT/BOOTX64.EFI
+	$(Q)mcopy -i $@ $(JANUS_STAGE3) ::/BOOT/STAGE3.SYS
+	$(Q)mcopy -i $@ $(JANUS_UEFI) ::/EFI/BOOT/BOOTX64.EFI
 	$(Q)mcopy -i $@ $(BUILD)/kernel64.elf ::/BOOT/NEX.ELF
 	$(Q)mcopy -i $@ $(RAMDISK_IMAGE) ::/BOOT/RAMDISK.IMG
-	$(Q)mcopy -i $@ $(BOOT_FONT_HEX) ::/BOOT/FONT.HEX
-	$(Q)mcopy -i $@ $(BOOTX_CONFIG_RENDERED) ::/BOOT/BOOTX.CFG
+	$(Q)mcopy -i $@ $(BOOT_FONT_MODULE) ::/BOOT/$(BOOT_FONT_MODULE_NAME)
+	$(Q)mcopy -i $@ $(JANUS_CONFIG_RENDERED) ::/BOOT/JANUS.CFG
 
-$(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(TEST_C_SOURCE) $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/apps/elf/user.ld $(FONT_HEX) $(ROOT_INIT_SCRIPT) $(OS_CONFIG) $(FSTAB_CONFIG) $(CAP_POLICY) $(PASSWD_CONFIG) $(SERVICE_FILES) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS $(SCRIPT_SMOKE_SH) | $(BUILD)
+$(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(TEST_C_SOURCE) $(USER_CRT0) $(USER_CRT_START) $(USER_NLIBC) $(ROOT)/user/apps/elf/user.ld $(ROOT_INIT_SCRIPT) $(OS_CONFIG) $(FSTAB_CONFIG) $(CAP_POLICY) $(PASSWD_CONFIG) $(SERVICE_FILES) $(FASM_TEST_SOURCE) $(ROOT)/config/ACTION.CAPS $(SCRIPT_SMOKE_SH) $(FONT_BDF) | $(BUILD)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s $(ROOT_FS_SIZE) $@
@@ -201,7 +239,7 @@ $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(TEST_C_SOURCE) $(USER_CRT0) $(
 	$(Q)for svc in $(SERVICE_FILES); do \
 		$(NXFS_TOOL) write $@ "$$svc" /system/service/$$(basename "$$svc"); \
 	done
-	$(Q)$(NXFS_TOOL) write $@ $(FONT_HEX) /system/font/font.hex
+	$(Q)$(NXFS_TOOL) write $@ $(FONT_BDF) /system/font/font.bdf
 	$(Q)$(NXFS_TOOL) write $@ $(SCRIPT_SMOKE_SH) /system/script-smoke.sh
 	$(Q)$(NXFS_TOOL) chmod $@ 755 /system/script-smoke.sh
 	$(Q)$(NXFS_TOOL) write $@ $(MOTD_CFG) /system/config/motd.scf
@@ -240,20 +278,33 @@ $(ROOT_FS_IMAGE): $(NXFS_TOOL) $(USER_ELF_BINS) $(TEST_C_SOURCE) $(USER_CRT0) $(
 	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/hello
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/SECTEST.ELF /cmd/sectest
 	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/sectest
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/MMSTRESS.ELF /cmd/mmstress
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/mmstress
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/GUIDEMO.ELF /cmd/guidemo
 	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/guidemo
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/PRISM.ELF /cmd/prism
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/prism
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/DESKTOP.ELF /cmd/desktop
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/desktop
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/PRISMSMOKE.ELF /cmd/prismsmoke
+	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/prismsmoke
 	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/FORTH.ELF /cmd/forth
 	$(Q)$(NXFS_TOOL) chmod $@ 755 /cmd/forth
 	$(Q)rm -rf $(CMD_SUITE_WRAPPER_DIR)
 	$(Q)mkdir -p $(CMD_SUITE_WRAPPER_DIR)
 	$(Q)for alias in $(CMD_SUITE_NAMES); do \
-		lower=$$(printf '%s' "$$alias" | tr 'A-Z' 'a-z'); \
-		if [ "$$lower" = nexbox ]; then continue; fi; \
-		$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/$$lower; \
-		$(NXFS_TOOL) chmod $@ 755 /cmd/$$lower; \
-	done
+        lower=$$(printf '%s' "$$alias" | tr 'A-Z' 'a-z'); \
+        if [ "$$lower" = nexbox ] || [ "$$lower" = su ] || [ "$$lower" = sudo ]; then continue; fi; \
+        wrapper="$(CMD_SUITE_WRAPPER_DIR)/$$lower"; \
+        printf '%s\n' '#!/cmd/ush' "/cmd/nexbox $$lower \$$@" > "$$wrapper"; \
+        chmod 755 "$$wrapper"; \
+        $(NXFS_TOOL) write $@ "$$wrapper" /cmd/$$lower; \
+        $(NXFS_TOOL) chmod $@ 755 /cmd/$$lower; \
+    done
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/su
 	$(Q)$(NXFS_TOOL) chown $@ 0 0 /cmd/su
 	$(Q)$(NXFS_TOOL) chmod $@ 4755 /cmd/su
+	$(Q)$(NXFS_TOOL) write $@ $(BUILD)/NEXBOX.ELF /cmd/sudo
 	$(Q)$(NXFS_TOOL) chown $@ 0 0 /cmd/sudo
 	$(Q)$(NXFS_TOOL) chmod $@ 4755 /cmd/sudo
 	$(Q)$(NXFS_TOOL) apply-caps $@ $(CAP_POLICY)
@@ -271,7 +322,7 @@ $(NXFS_IMAGE): $(NXFS_TOOL) | $(IMAGE_DIR)
 	$(Q)parted -s $@ mkpart primary 1MiB 100%
 	$(Q)dd if=$(NXFS_PART_IMAGE) of=$@ conv=notrunc bs=512 seek=2048
 
-$(IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOT_FS_IMAGE) $(ROOT_FS_IMAGE) | $(IMAGE_DIR)
+$(IMAGE): $(JANUS_STAGE1) $(JANUS_STAGE2) $(BOOT_FS_IMAGE) $(ROOT_FS_IMAGE) | $(IMAGE_DIR)
 	$(call log_cmd,IMAGE,$@)
 	$(Q)rm -f $@
 	$(Q)truncate -s $(OS_IMAGE_SIZE) $@
@@ -279,9 +330,9 @@ $(IMAGE): $(BOOTX_STAGE1) $(BOOTX_STAGE2) $(BOOT_FS_IMAGE) $(ROOT_FS_IMAGE) | $(
 	$(Q)parted -s $@ mkpart primary fat32 1MiB 49MiB
 	$(Q)parted -s $@ mkpart primary 49MiB 100%
 	$(Q)parted -s $@ set 1 boot on
-	$(Q)dd if=$(BOOTX_STAGE1) of=$@ conv=notrunc bs=446 count=1
-	$(Q)dd if=$(BOOTX_STAGE1) of=$@ conv=notrunc bs=1 skip=510 seek=510 count=2
-	$(Q)dd if=$(BOOTX_STAGE2) of=$@ conv=notrunc bs=512 seek=1
+	$(Q)dd if=$(JANUS_STAGE1) of=$@ conv=notrunc bs=446 count=1
+	$(Q)dd if=$(JANUS_STAGE1) of=$@ conv=notrunc bs=1 skip=510 seek=510 count=2
+	$(Q)dd if=$(JANUS_STAGE2) of=$@ conv=notrunc bs=512 seek=1
 	$(Q)dd if=$(BOOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(BOOT_PART_LBA)
 	$(Q)dd if=$(ROOT_FS_IMAGE) of=$@ conv=notrunc bs=512 seek=$(ROOT_PART_LBA)
 
@@ -320,8 +371,8 @@ check-image: check-host-tools-image $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE) $(NXFS_
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'NEX +ELF'
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'STAGE3 +SYS'
 	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'RAMDISK +IMG'
-	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'FONT +HEX'
-	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'BOOTX +CFG'
+	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'FONT +(HEX|BDF)'
+	@mdir -i $(IMAGE)@@1048576 ::/BOOT | grep -Eq 'JANUS +CFG'
 	@mdir -i $(IMAGE)@@1048576 ::/EFI/BOOT | grep -Eq 'BOOTX64 +EFI'
 	@printf '%s\n' '[check] verifying named BIOS image'
 	@mdir -i $(BIOS_IMAGE)@@1048576 ::/BOOT | grep -Eq 'NEX +ELF'
@@ -335,8 +386,11 @@ check-image: check-host-tools-image $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE) $(NXFS_
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/ush
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/nexbox
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/hello
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/mmstress
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/ls
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/echo
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/mkfs.nxfs
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/mkfs.fat
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/vi
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/nexctl
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /cmd/sysinfo
@@ -348,7 +402,7 @@ check-image: check-host-tools-image $(IMAGE) $(BIOS_IMAGE) $(UEFI_IMAGE) $(NXFS_
 	@if [ -f "$(DOOM2_WAD)" ]; then $(NXFS_TOOL) exists $(ROOT_FS_IMAGE) $(DOOM2_GUEST_WAD); else printf '%s\n' '[check] skipping missing DOOM2.WAD'; fi
 	@if [ -f "$(TNT_WAD)" ]; then $(NXFS_TOOL) exists $(ROOT_FS_IMAGE) $(TNT_GUEST_WAD); else printf '%s\n' '[check] skipping missing TNT.WAD'; fi
 	@if [ -f "$(PLUTONIA_WAD)" ]; then $(NXFS_TOOL) exists $(ROOT_FS_IMAGE) $(PLUTONIA_GUEST_WAD); else printf '%s\n' '[check] skipping missing PLUTONIA.WAD'; fi
-	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/font/font.hex
+	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/font/font.bdf
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/session/images
 	@$(NXFS_TOOL) exists $(ROOT_FS_IMAGE) /system/service
 	@printf '%s\n' '[check] verifying ramdisk contents'

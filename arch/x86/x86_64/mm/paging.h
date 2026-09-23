@@ -72,6 +72,7 @@ int paging_set_write_combining(uint64_t virt_addr, uint64_t size);
 int paging_unmap_page(uint64_t virt_addr, uint64_t *phys_addr);
 int paging_get_mapping(uint64_t virt_addr, uint64_t *phys_addr);
 int paging_get_mapping_info(uint64_t virt_addr, uint64_t *phys_addr, uint64_t *flags);
+int paging_guard_kernel_page(uint64_t virt_addr);
 void *paging_phys_direct_map(uint64_t phys_addr);
 int paging_get_walk_entries(uint64_t virt_addr,
                             uint64_t *pml4e,
@@ -89,6 +90,7 @@ int paging_get_walk_entries_in_root(uint64_t root_cr3,
                                     uint64_t *pde,
                                     uint64_t *pte);
 int paging_get_walk_info_in_root(uint64_t root_cr3, uint64_t virt_addr, struct paging_walk_info *info_out);
+int paging_validate_root(uint64_t root_cr3);
 void paging_get_last_switch_trace(struct paging_switch_trace *trace_out);
 void paging_get_last_clone_trace(struct paging_clone_trace *trace_out);
 int paging_cpu_supports_nx(void);

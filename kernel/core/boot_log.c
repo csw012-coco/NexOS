@@ -7,11 +7,15 @@ void kernel_boot_log_stage(const char *stage) {
     }
 }
 
+void kernel_boot_log_arch_bootstrap(const char *arch) {
+    kprint("%s: architecture bootstrap passed\n", arch != 0 ? arch : "unknown");
+}
+
 void kernel_boot_log_system(const char *arch) {
     kprint("system: NexOS %s\n", arch != 0 ? arch : "unknown");
 }
 
-void kernel_boot_log_boot_info_common(const struct bootx_boot_info *boot_info) {
+void kernel_boot_log_boot_info_common(const struct janus_boot_info *boot_info) {
     if (boot_info == 0) {
         return;
     }
@@ -22,11 +26,11 @@ void kernel_boot_log_boot_info_common(const struct bootx_boot_info *boot_info) {
            boot_info->module_count);
 }
 
-void kernel_boot_log_console(const struct bootx_console_info *console) {
+void kernel_boot_log_console(const struct janus_console_info *console) {
     if (console == 0) {
         return;
     }
-    if (console->type == BOOTX_CONSOLE_FRAMEBUFFER) {
+    if (console->type == JANUS_CONSOLE_FRAMEBUFFER) {
         uint32_t cell_height =
             (console->height < 25u * 16u || console->width < 80u * 8u) ? 8u : 16u;
 
@@ -71,12 +75,15 @@ void kernel_boot_log_framebuffer(uint64_t addr,
                                  uint64_t size,
                                  int write_combining_known,
                                  uint32_t write_combining) {
-    if (write_combining_known) {
-        kprint("paging: framebuffer=%lx size=%lx write_combining=%u\n",
-               addr,
-               size,
-               write_combining);
-    } else {
-        kprint("paging: framebuffer=%lx size=%lx\n", addr, size);
-    }
+    (void)write_combining_known;
+    kprint("paging: framebuffer=%lx size=%lx write_combining=%u\n",
+           addr,
+           size,
+           write_combining);
+}
+
+void kernel_boot_log_mount(const char *target, const char *fs) {
+    kprint("mount: target=%s fs=%s\n",
+           target != 0 ? target : "unknown",
+           fs != 0 ? fs : "unknown");
 }

@@ -63,6 +63,17 @@ static int file_device_tty_foreground_allowed(const struct tty *tty) {
     return 0;
 }
 
+static int file_device_process_interrupted(void) {
+    const struct process *proc = process_current();
+
+    if (proc == NULL) {
+        return 0;
+    }
+    return proc->state == PROCESS_STATE_EXITED ||
+           proc->state == PROCESS_STATE_STOPPED ||
+           proc->stop_pending != 0u;
+}
+
 static int64_t file_device_tty_read(struct file *file,
                                     const struct vfs *vfs,
                                     void *buffer,
@@ -98,8 +109,26 @@ static int64_t file_device_tty_write(struct file *file,
         return 0;
     }
 
-    (void)uart_write_buffer((const char *)buffer, size);
-    return (int64_t)tty_write(tty, (const char *)buffer, size, 0x0f);
+    uint32_t total = 0;
+    while (total < size) {
+        uint32_t chunk = size - total;
+        uint32_t written;
+
+        if (file_device_process_interrupted() ||
+            !file_device_tty_foreground_allowed(tty)) {
+            break;
+        }
+        if (chunk > 64u) {
+            chunk = 64u;
+        }
+        (void)uart_write_buffer((const char *)buffer + total, chunk);
+        written = tty_write(tty, (const char *)buffer + total, chunk, 0x0f);
+        total += written;
+        if (written < chunk) {
+            break;
+        }
+    }
+    return (int64_t)total;
 }
 
 static int64_t file_device_close(struct file *file) {
@@ -134,7 +163,25 @@ static int64_t file_device_uart_write(struct file *file,
     if (buffer == 0 || size == 0u) {
         return 0;
     }
-    return (int64_t)uart_write_buffer((const char *)buffer, size);
+    uint32_t total = 0;
+    while (total < size) {
+        uint32_t chunk = size - total;
+        uint32_t written;
+
+        if (file_device_process_interrupted() ||
+            !file_device_serial_foreground_allowed()) {
+            break;
+        }
+        if (chunk > 64u) {
+            chunk = 64u;
+        }
+        written = uart_write_buffer((const char *)buffer + total, chunk);
+        total += written;
+        if (written < chunk) {
+            break;
+        }
+    }
+    return (int64_t)total;
 }
 
 static const struct file_ops g_file_ops_tty_in = {

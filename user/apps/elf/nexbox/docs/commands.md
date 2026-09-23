@@ -135,7 +135,7 @@ Notes:
 - `date --iso`, `date +%s`, and `date --raw` expose the CMOS RTC in ISO, Unix-time, and diagnostic forms.
 - `hwclock` prints CMOS RTC mode, validity, raw status registers, and Unix time.
 - `tty` prints the terminal connected to standard input, such as `/dev/tty`, `/dev/tty2`, `/dev/tty3`, or `/dev/ttyS0`.
-- `font` shows the active text grid, cell size, and `/system/font/font.hex` availability; `font sample` prints a glyph sample.
+- `font` shows the active text grid, cell size, and `/system/font/font.bdf` availability; `font sample` prints a glyph sample.
 - `/proc/rtc` exposes the same RTC snapshot for scripts.
 - Friendly NexBox commands also use action capability checks through the Mapper Layer table.
   For example, `cat a.txt` is checked as `file.read` with `fs.read`.
@@ -157,7 +157,7 @@ Notes:
 - `service set <name> max_retries <count>` limits retries; `0` means unlimited.
 - `service set <name> after <a,b>` orders startup after the named services.
 - `service set <name> requires <a,b>` starts required services and fails if one cannot start.
-- `service set <name> stdout|stderr <path>` appends service output to files.
+- `service set <name> stdin|stdout|stderr <path>` binds service standard I/O.
 - `service info <name>` includes PID, start/exit ticks, exit code, and restart count.
 - `config` manages layered settings. Effective lookup order is runtime, user, then system.
 - `config get <key>`, `config set [--user|--system|--runtime] <key> <value>`, `config unset ...`, `config list`, `config source <key>`, `config schema [key]`, and `config validate` are supported.
@@ -220,9 +220,12 @@ Notes:
 - `run` executes through the normal resolver path.
 - `runelf` forces ELF execution.
 - `runbg` starts the command as a background job.
-- `fdisk` currently targets MBR-style partition editing.
+- `fdisk` edits MBR tables with `set`, `add`, `resize`, `clear`, `boot`, and `wipe`.
+- `fdisk <disk> gpt init` creates a GPT with a protective MBR; `gpt add`, `gpt clear`, `gpt resize`, and `gpt show` edit GPT entries.
+- `fdisk <disk> shell` opens a small whitespace-based fdisk command shell.
 - `dd if=<src> of=<dst> [bs=512] [count=n] [skip=n] [seek=n]` copies files or `/dev/diskX[pY]` block targets.
 - `mkfs nxfs /dev/diskXpY` or `mkfs.nxfs /dev/diskXpY` creates an empty NXFS filesystem.
+- `mkfs fat32 /dev/diskXpY` or `mkfs.fat -F 32 /dev/diskXpY` creates an empty FAT32 filesystem.
 - `stat <path>` prints type, size, and raw filesystem attributes; `stat --table <path>` emits a typed table.
 - `du [-a] [-s] [path]` summarizes file or directory usage; `du --table <path>` emits `path`, `size`, and `type`.
 - `tree [path]` prints a recursive directory tree; `tree --table [path]` emits `path`, `depth`, `type`, and `size`.
@@ -346,7 +349,7 @@ Notes:
 
 ### Boot Root
 
-`mount boot <target>` mounts the partition bootx loaded NexOS from. This avoids
+`mount boot <target>` mounts the partition Janus loaded NexOS from. This avoids
 hard-coding `/dev/disk0p1`, which can change on real hardware depending on disk
 enumeration order.
 
@@ -354,7 +357,7 @@ enumeration order.
 
 The current built-in applet list exposed by `help` is:
 
-`help actions action mapper echo yes clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot poweroff switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg`
+`help actions action mapper echo yes clear pwd tty env font which type ls cat less hexdump grep date hwclock sleep watch on events clipboard wc head tail find as pick select sort-by count-by to view ed vi vim touch mv cp mkdir rmdir rm asm stat du tree file blk parts fdisk mkfs mkfs.nxfs mkfs.fat df mounts progs fatls fatfind fatread cpio mount umount hotplug run runelf runbg ps session service jobs wait alarm timeout kill fg bg reboot poweroff switch_root dmesg lspci ac97 hda rtl8139 rtl8139tx rtl8139rx arp route netstat ping dns dhcp ifconfig http wget nc audio tone wav mplay doctor nexctl sysinfo meminfo minfo uname cpuinfo config dbg`
 
 ## Naming Notes
 

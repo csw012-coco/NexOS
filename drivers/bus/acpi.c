@@ -109,6 +109,7 @@ static uint8_t g_acpi_poweroff_ready;
 static uint16_t g_acpi_reset_port;
 static uint8_t g_acpi_reset_value;
 static uint8_t g_acpi_reset_ready;
+static uint64_t g_acpi_rsdp_override;
 
 struct acpi_fadt_legacy {
     struct acpi_sdt_header header;
@@ -279,6 +280,30 @@ static const struct acpi_rsdp_v1 *acpi_find_rsdp_local(void) {
         }
     }
     return acpi_scan_range_local(ACPI_RSDP_SCAN_START, ACPI_RSDP_SCAN_END);
+}
+
+static int acpi_read_rsdp_phys_local(uint64_t phys, struct acpi_rsdp_v2 *out) {
+    struct acpi_rsdp_v1 v1;
+
+    if (out == 0 || phys == 0u ||
+        !acpi_phys_read_local(phys, &v1, sizeof(v1)) ||
+        !acpi_rsdp_signature_is_local(&v1) ||
+        acpi_checksum_local(&v1, sizeof(v1)) != 0u) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    memcpy(&out->v1, &v1, sizeof(v1));
+    if (v1.revision < 2u) {
+        return 1;
+    }
+    if (!acpi_phys_read_local(phys, out, sizeof(*out)) ||
+        out->length < sizeof(*out) ||
+        out->length > 4096u ||
+        acpi_phys_checksum_local(phys, out->length) != 0) {
+        memset(out, 0, sizeof(*out));
+        return 0;
+    }
+    return 1;
 }
 
 static int acpi_sdt_valid_phys_local(uint64_t phys,
@@ -645,19 +670,34 @@ static void acpi_parse_xsdt_local(uint64_t phys) {
     g_acpi_status.table_count = count;
 }
 
+void acpi_set_rsdp_override(uint64_t rsdp_phys) {
+    g_acpi_rsdp_override = rsdp_phys;
+}
+
 int acpi_init(void) {
     const struct acpi_rsdp_v1 *rsdp;
+    struct acpi_rsdp_v2 rsdp_override;
 
     memset(&g_acpi_status, 0, sizeof(g_acpi_status));
     acpi_reset_routes_local();
-    rsdp = acpi_find_rsdp_local();
+    rsdp = 0;
+    if (g_acpi_rsdp_override != 0u &&
+        acpi_read_rsdp_phys_local(g_acpi_rsdp_override, &rsdp_override)) {
+        rsdp = &rsdp_override.v1;
+        g_acpi_status.rsdp_phys = (uint32_t)g_acpi_rsdp_override;
+    }
+    if (rsdp == 0) {
+        rsdp = acpi_find_rsdp_local();
+    }
     if (rsdp == 0) {
         return 0;
     }
 
     g_acpi_status.present = 1u;
     g_acpi_status.revision = rsdp->revision;
-    g_acpi_status.rsdp_phys = (uint32_t)(uintptr_t)rsdp;
+    if (g_acpi_status.rsdp_phys == 0u) {
+        g_acpi_status.rsdp_phys = (uint32_t)(uintptr_t)rsdp;
+    }
     if (rsdp->revision >= 2u) {
         const struct acpi_rsdp_v2 *rsdp2 = (const struct acpi_rsdp_v2 *)rsdp;
         acpi_parse_xsdt_local(rsdp2->xsdt_address);

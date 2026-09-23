@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
-#include "bootx/bootx.h"
+#include "janus/janus.h"
 #include "kernel/public/sys/system_limits.h"
 #include "abi/syscall_abi.h"
 
@@ -30,6 +30,7 @@ struct vfs;
  *   AUDIO:             arg0=index          arg1=0          buffer=struct syscall_audio_info*
  *   MACHINE_INFO:      arg0=0              arg1=0          buffer=struct syscall_machine_info*
  *   RTC:               arg0=0              arg1=0          buffer=struct syscall_rtc_info*
+ *   STABILITY:         arg0=0              arg1=0          buffer=struct syscall_stability_info*
  */
 
 
@@ -59,7 +60,7 @@ struct syscall_frame {
 void syscall_init(struct tty *tty,
                   volatile uint32_t *timer_ticks,
                   struct vfs *vfs,
-                  const struct bootx_boot_info *boot_info,
-                  const struct bootx_memmap_entry *memmap,
+                  const struct janus_boot_info *boot_info,
+                  const struct janus_memmap_entry *memmap,
                   uint32_t memmap_count);
 uint64_t syscall_dispatch(struct syscall_frame *frame);

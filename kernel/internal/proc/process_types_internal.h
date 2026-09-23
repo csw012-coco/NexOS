@@ -30,6 +30,7 @@ struct process {
     enum process_state state;
     int32_t exit_code;
     uint8_t has_saved_frame;
+    uint8_t stop_pending;
     uint32_t wake_tick;
     struct process_parent_record parent;
     struct process_wait_record wait;

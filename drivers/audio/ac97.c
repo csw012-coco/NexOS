@@ -35,7 +35,25 @@ enum {
     AC97_BUFFER_PAGE_BYTES = 4096u,
     AC97_BUFFER_PAGE_FRAMES = AC97_BUFFER_PAGE_BYTES / 4u,
     AC97_BDL_ENTRIES = 32u,
-    AC97_STREAM_MAX_FRAMES = AC97_BUFFER_PAGE_FRAMES * AC97_BDL_ENTRIES
+    AC97_STREAM_MAX_FRAMES = AC97_BUFFER_PAGE_FRAMES * AC97_BDL_ENTRIES,
+
+    AC97_STATE_ABSENT = 0u,
+    AC97_STATE_PCI_FOUND = 1u,
+    AC97_STATE_RESETTING = 2u,
+    AC97_STATE_CODEC_READY = 3u,
+    AC97_STATE_READY = 4u,
+    AC97_STATE_PLAYING = 5u,
+    AC97_STATE_RECOVERING = 6u,
+    AC97_STATE_FAILED = 7u,
+
+    AC97_ERROR_NONE = 0u,
+    AC97_ERROR_BAD_BAR = 1u,
+    AC97_ERROR_CODEC_TIMEOUT = 2u,
+    AC97_ERROR_DMA_ALLOC = 3u,
+    AC97_ERROR_CHANNEL_RESET_TIMEOUT = 4u,
+    AC97_ERROR_PLAYBACK_TIMEOUT = 5u,
+    AC97_ERROR_BAD_FORMAT = 6u,
+    AC97_ERROR_RATE_UNSUPPORTED = 7u
 };
 
 struct ac97_bdl_entry {
@@ -52,6 +70,18 @@ static uint8_t *g_ac97_buffers[AC97_BDL_ENTRIES];
 static uint8_t g_ac97_stream_scratch[AC97_BUFFER_PAGE_BYTES];
 static uint32_t g_ac97_buffer_count;
 static uint8_t g_ac97_audio_registered;
+
+static void ac97_set_state(uint32_t state) {
+    g_ac97_status.state = state;
+}
+
+static void ac97_note_error(uint32_t error) {
+    g_ac97_status.last_error = error;
+    if (error != AC97_ERROR_NONE) {
+        g_ac97_status.error_count++;
+        ac97_set_state(AC97_STATE_FAILED);
+    }
+}
 
 const struct kernel_driver ac97_kernel_driver = {
     .name = "AC97",
@@ -129,6 +159,42 @@ static int ac97_wait_codec_ready(uint16_t nabmbar) {
     return 0;
 }
 
+static void ac97_refresh_status_registers(void) {
+    uint16_t nambar = (uint16_t)g_ac97_status.nambar;
+    uint16_t nabmbar = (uint16_t)g_ac97_status.nabmbar;
+
+    if (nambar != 0u) {
+        g_ac97_status.mixer_reset = ac97_mixer_read16(nambar, AC97_MIXER_RESET);
+        g_ac97_status.powerdown = ac97_mixer_read16(nambar, AC97_POWERDOWN);
+        g_ac97_status.ext_audio_id = ac97_mixer_read16(nambar, AC97_EXT_AUDIO_ID);
+        g_ac97_status.ext_audio_ctrl = ac97_mixer_read16(nambar, AC97_EXT_AUDIO_CTRL);
+        g_ac97_status.codec_id =
+            ((uint32_t)ac97_mixer_read16(nambar, AC97_CODEC_VENDOR_ID1) << 16) |
+            (uint32_t)ac97_mixer_read16(nambar, AC97_CODEC_VENDOR_ID2);
+    }
+    if (nabmbar != 0u) {
+        g_ac97_status.global_control = ac97_bus_read32(nabmbar, AC97_GLOB_CNT);
+        g_ac97_status.global_status = ac97_bus_read32(nabmbar, AC97_GLOB_STA);
+        g_ac97_status.last_stream_status = ac97_bus_read16(nabmbar, AC97_PO_SR);
+    }
+}
+
+static int ac97_reset_controller(uint16_t nambar, uint16_t nabmbar) {
+    g_ac97_status.reset_count++;
+    ac97_set_state(AC97_STATE_RESETTING);
+    ac97_bus_write32(nabmbar, AC97_GLOB_CNT, AC97_GLOB_CNT_COLD);
+    ac97_delay_local(200000u);
+    if (!ac97_wait_codec_ready(nabmbar)) {
+        ac97_refresh_status_registers();
+        ac97_note_error(AC97_ERROR_CODEC_TIMEOUT);
+        return 0;
+    }
+    ac97_set_state(AC97_STATE_CODEC_READY);
+    ac97_mixer_write16(nambar, AC97_MIXER_RESET, 0);
+    ac97_delay_local(200000u);
+    return 1;
+}
+
 static int ac97_prepare_bdl_page(void) {
     if (g_ac97_bdl != 0) {
         return 1;
@@ -172,7 +238,11 @@ static int ac97_prepare_buffer_pages(uint32_t page_count) {
 }
 
 static int ac97_prepare_dma_memory(void) {
-    return ac97_prepare_bdl_page() && ac97_prepare_buffer_pages(1u);
+    if (!ac97_prepare_bdl_page() || !ac97_prepare_buffer_pages(1u)) {
+        ac97_note_error(AC97_ERROR_DMA_ALLOC);
+        return 0;
+    }
+    return 1;
 }
 
 static int16_t *ac97_tone_buffer(void) {
@@ -403,20 +473,30 @@ static int ac97_convert_pcm_pages(const uint8_t *src,
 }
 
 static int ac97_start_and_wait(uint16_t nabmbar, uint32_t descriptors, uint32_t duration_ms) {
+    uint32_t previous_state = g_ac97_status.state;
+
     ac97_stop_channel(nabmbar);
     ac97_bus_write8(nabmbar, AC97_PO_CR, AC97_PO_CR_RESET);
     if (!ac97_wait_channel_reset(nabmbar)) {
+        ac97_note_error(AC97_ERROR_CHANNEL_RESET_TIMEOUT);
         return 0;
     }
     ac97_bus_write32(nabmbar, AC97_PO_BDBAR, (uint32_t)g_ac97_bdl_phys);
     ac97_bus_write8(nabmbar, AC97_PO_LVI, (uint8_t)(descriptors - 1u));
     ac97_bus_write16(nabmbar, AC97_PO_SR, AC97_PO_SR_CLEAR);
     ac97_bus_write8(nabmbar, AC97_PO_CR, AC97_PO_CR_START);
+    ac97_set_state(AC97_STATE_PLAYING);
     if (!ac97_wait_channel_done(nabmbar, duration_ms)) {
         ac97_stop_channel(nabmbar);
+        ac97_refresh_status_registers();
+        ac97_note_error(AC97_ERROR_PLAYBACK_TIMEOUT);
         return 0;
     }
     ac97_stop_channel(nabmbar);
+    ac97_refresh_status_registers();
+    g_ac97_status.play_count++;
+    ac97_note_error(AC97_ERROR_NONE);
+    ac97_set_state(previous_state == AC97_STATE_READY ? AC97_STATE_READY : AC97_STATE_CODEC_READY);
     return 1;
 }
 
@@ -436,6 +516,7 @@ static int ac97_play_tone_local(void *ctx, uint32_t hz, uint32_t duration_ms) {
         duration_ms = 150u;
     }
     if (!ac97_configure_output_rate(nambar, AC97_SAMPLE_RATE)) {
+        ac97_note_error(AC97_ERROR_RATE_UNSUPPORTED);
         return 0;
     }
 
@@ -480,9 +561,11 @@ static int ac97_play_pcm_local(void *ctx,
         return 0;
     }
     if (channels == 0u || channels > 2u) {
+        ac97_note_error(AC97_ERROR_BAD_FORMAT);
         return 0;
     }
     if (bits_per_sample != 8u && bits_per_sample != 16u) {
+        ac97_note_error(AC97_ERROR_BAD_FORMAT);
         return 0;
     }
     src_frame_bytes = channels * (bits_per_sample / 8u);
@@ -498,9 +581,11 @@ static int ac97_play_pcm_local(void *ctx,
     }
     pages = (frames + AC97_BUFFER_PAGE_FRAMES - 1u) / AC97_BUFFER_PAGE_FRAMES;
     if (!ac97_prepare_bdl_page() || !ac97_prepare_buffer_pages(pages)) {
+        ac97_note_error(AC97_ERROR_DMA_ALLOC);
         return 0;
     }
     if (!ac97_configure_output_rate(nambar, sample_rate)) {
+        ac97_note_error(AC97_ERROR_RATE_UNSUPPORTED);
         return 0;
     }
     if (!ac97_convert_pcm_pages((const uint8_t *)data, frames, channels, bits_per_sample)) {
@@ -585,6 +670,7 @@ int ac97_init(void) {
 
     g_ac97_status.present = 0;
     g_ac97_status.initialized = 0;
+    ac97_set_state(AC97_STATE_ABSENT);
 
     if (!pci_find_ac97_controller(&controller)) {
         return 0;
@@ -599,11 +685,13 @@ int ac97_init(void) {
     g_ac97_status.irq_pin = controller.irq_pin;
     g_ac97_status.vendor_id = controller.vendor_id;
     g_ac97_status.device_id = controller.device_id;
+    ac97_set_state(AC97_STATE_PCI_FOUND);
     nambar = ac97_io_base_from_bar(controller.nambar);
     nabmbar = ac97_io_base_from_bar(controller.nabmbar);
     g_ac97_status.nambar = nambar;
     g_ac97_status.nabmbar = nabmbar;
     if (nambar == 0 || nabmbar == 0) {
+        ac97_note_error(AC97_ERROR_BAD_BAR);
         return 1;
     }
 
@@ -611,11 +699,10 @@ int ac97_init(void) {
     command |= (uint16_t)(PCI_COMMAND_IO | PCI_COMMAND_BUS_MASTER);
     pci_config_write16(controller.bus, controller.slot, controller.function, 0x04, command);
 
-    ac97_bus_write32(nabmbar, AC97_GLOB_CNT, AC97_GLOB_CNT_COLD);
-    ac97_delay_local(200000u);
-    (void)ac97_wait_codec_ready(nabmbar);
-    ac97_mixer_write16(nambar, AC97_MIXER_RESET, 0);
-    ac97_delay_local(200000u);
+    if (!ac97_reset_controller(nambar, nabmbar)) {
+        ac97_refresh_status_registers();
+        return 1;
+    }
     ac97_mixer_write16(nambar, AC97_MASTER_VOLUME, 0x0000u);
     ac97_mixer_write16(nambar, AC97_PCM_OUT_VOLUME, 0x0000u);
     ac97_mixer_write16(nambar, AC97_POWERDOWN, 0x0000u);
@@ -625,16 +712,10 @@ int ac97_init(void) {
     }
     ac97_delay_local(200000u);
 
-    g_ac97_status.mixer_reset = ac97_mixer_read16(nambar, AC97_MIXER_RESET);
-    g_ac97_status.powerdown = ac97_mixer_read16(nambar, AC97_POWERDOWN);
-    g_ac97_status.ext_audio_id = ac97_mixer_read16(nambar, AC97_EXT_AUDIO_ID);
-    g_ac97_status.ext_audio_ctrl = ac97_mixer_read16(nambar, AC97_EXT_AUDIO_CTRL);
-    g_ac97_status.codec_id =
-        ((uint32_t)ac97_mixer_read16(nambar, AC97_CODEC_VENDOR_ID1) << 16) |
-        (uint32_t)ac97_mixer_read16(nambar, AC97_CODEC_VENDOR_ID2);
-    g_ac97_status.global_control = ac97_bus_read32(nabmbar, AC97_GLOB_CNT);
-    g_ac97_status.global_status = ac97_bus_read32(nabmbar, AC97_GLOB_STA);
+    ac97_refresh_status_registers();
     g_ac97_status.initialized = 1;
+    ac97_note_error(AC97_ERROR_NONE);
+    ac97_set_state(AC97_STATE_READY);
 
     if (!g_ac97_audio_registered) {
         info.present = 1;
@@ -657,6 +738,7 @@ int ac97_query_status(struct ac97_status *out) {
     if (out == 0) {
         return 0;
     }
+    ac97_refresh_status_registers();
     *out = g_ac97_status;
     return g_ac97_status.present != 0;
 }

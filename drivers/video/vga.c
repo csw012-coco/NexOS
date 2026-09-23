@@ -3,14 +3,27 @@
 
 static volatile uint16_t *const vga = (volatile uint16_t *)0xB8000;
 static const char digits[] = "0123456789ABCDEF";
+static struct vga_status g_vga_status;
+
+void vga_query_status(struct vga_status *out) {
+    if (out != 0) {
+        *out = g_vga_status;
+    }
+}
 
 void vga_clear_screen(uint8_t color) {
+    g_vga_status.clears++;
     for (uint16_t i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
         vga[i] = (uint16_t)color << 8 | ' ';
     }
 }
 
 void vga_clear_row(uint16_t row, uint8_t color) {
+    if (row >= VGA_HEIGHT) {
+        g_vga_status.rejected_ops++;
+        return;
+    }
+    g_vga_status.clears++;
     for (uint16_t col = 0; col < VGA_WIDTH; col++) {
         vga[row * VGA_WIDTH + col] = (uint16_t)color << 8 | ' ';
     }
@@ -25,19 +38,24 @@ uint16_t vga_read_cell(uint16_t row, uint16_t col) {
 
 void vga_write_cell(uint16_t row, uint16_t col, uint16_t value) {
     if (row >= VGA_HEIGHT || col >= VGA_WIDTH) {
+        g_vga_status.rejected_ops++;
         return;
     }
+    g_vga_status.writes++;
     vga[row * VGA_WIDTH + col] = value;
 }
 
 void vga_put_at(uint16_t row, uint16_t col, uint8_t color, char ch) {
     if (row >= VGA_HEIGHT || col >= VGA_WIDTH) {
+        g_vga_status.rejected_ops++;
         return;
     }
+    g_vga_status.writes++;
     vga[row * VGA_WIDTH + col] = (uint16_t)color << 8 | (uint8_t)ch;
 }
 
 void vga_enable_cursor(uint8_t start, uint8_t end) {
+    g_vga_status.cursor_updates++;
     hal_io_out8(0x3d4, 0x0a);
     hal_io_out8(0x3d5, (uint8_t)((hal_io_in8(0x3d5) & 0xc0u) | start));
 
@@ -45,9 +63,16 @@ void vga_enable_cursor(uint8_t start, uint8_t end) {
     hal_io_out8(0x3d5, (uint8_t)((hal_io_in8(0x3d5) & 0xe0u) | end));
 }
 
+void vga_disable_cursor(void) {
+    g_vga_status.cursor_updates++;
+    hal_io_out8(0x3d4, 0x0a);
+    hal_io_out8(0x3d5, (uint8_t)(hal_io_in8(0x3d5) | 0x20u));
+}
+
 void vga_set_cursor(uint16_t row, uint16_t col) {
     uint16_t pos;
 
+    g_vga_status.cursor_updates++;
     if (row >= VGA_HEIGHT) {
         row = VGA_HEIGHT - 1;
     }
@@ -64,8 +89,10 @@ void vga_set_cursor(uint16_t row, uint16_t col) {
 
 void vga_scroll_rows(uint16_t top_row, uint16_t bottom_row, uint8_t clear_color) {
     if (top_row >= bottom_row || top_row >= VGA_HEIGHT) {
+        g_vga_status.rejected_ops++;
         return;
     }
+    g_vga_status.scrolls++;
     if (bottom_row >= VGA_HEIGHT) {
         bottom_row = VGA_HEIGHT - 1u;
     }

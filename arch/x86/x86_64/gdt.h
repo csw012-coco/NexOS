@@ -35,3 +35,5 @@ uint16_t gdt64_user_code_selector(void);
 uint16_t gdt64_user_data_selector(void);
 uint64_t gdt64_kernel_rsp0(void);
 void gdt64_set_kernel_rsp0(uint64_t rsp0);
+uint64_t gdt64_rsp0_guard_address(void);
+uint64_t gdt64_double_fault_guard_address(void);

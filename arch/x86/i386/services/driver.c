@@ -48,7 +48,12 @@ static const struct kernel_driver driver_services_eventfs_driver = {
     0
 };
 
+static int driver_services_builtins_registered;
+
 static void driver_services_register_builtins(void) {
+    if (driver_services_builtins_registered) {
+        return;
+    }
     driver_manager_init();
     (void)driver_register(&driver_services_ata_driver);
     (void)driver_register(&ahci_kernel_driver);
@@ -59,6 +64,13 @@ static void driver_services_register_builtins(void) {
     (void)driver_register(&driver_services_devfs_driver);
     (void)driver_register(&driver_services_procfs_driver);
     (void)driver_register(&driver_services_eventfs_driver);
+    driver_services_builtins_registered = 1;
+}
+
+void driver_services_init_builtins(int verbose) {
+    driver_set_boot_verbose(verbose);
+    driver_services_register_builtins();
+    (void)driver_init_all();
 }
 
 void driver_services_init(struct vfs *vfs, int verbose) {

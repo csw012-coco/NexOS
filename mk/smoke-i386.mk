@@ -1,12 +1,12 @@
 # i386 QEMU smoke and backend validation targets.
 
-check-i386-nexbox32-full: check-host-tools-image check-host-tools-qemu-i386 check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-nexbox32-full: check-host-tools-image check-host-tools-qemu-i386 check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32,$(I386_NEXBOX_USER))
-	$(Q)rm -f $(I386_NEXBOX_FULL_BOOT_LOG) $(I386_BUILD)/NexOS-i386-nexbox32-full.img $(I386_BUILD)/bootx-i386-nexbox32-full.cfg
+	$(Q)rm -f $(I386_NEXBOX_FULL_BOOT_LOG) $(I386_BUILD)/NexOS-i386-nexbox32-full.img $(I386_BUILD)/janus-i386-nexbox32-full.cfg
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-nexbox32-full.img
-	$(Q)sed 's/$$/ selftest=1 i386.fullsmoke=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-nexbox32-full.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ selftest=1 i386.fullsmoke=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-nexbox32-full.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-nexbox32-full.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-nexbox32-full.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-nexbox32-full.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 40s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
@@ -64,16 +64,16 @@ check-i386-nexbox32-full: check-host-tools-image check-host-tools-qemu-i386 chec
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox audio' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: RUN /cmd/nexbox rtl8139' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)grep -q 'nexbox32: full applet smoke PASS' $(I386_NEXBOX_FULL_BOOT_LOG)
-	$(Q)grep -q 'kernel: init starting /system/init' $(I386_NEXBOX_FULL_BOOT_LOG)
+	$(Q)grep -q 'kernel: init starting path=/system/init' $(I386_NEXBOX_FULL_BOOT_LOG)
 	$(Q)echo "i386 NEXBOX32 full smoke passed ($(I386_NEXBOX_FULL_BOOT_LOG))"
 
-check-i386-strict-mm: check-host-tools-image check-host-tools-qemu-i386 check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-strict-mm: check-host-tools-image check-host-tools-qemu-i386 check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32-MM,$(I386_TEST_USER))
-	$(Q)rm -f $(I386_STRICT_MM_BOOT_LOG) $(I386_BUILD)/NexOS-i386-strict-mm.img $(I386_BUILD)/bootx-i386-strict-mm.cfg
+	$(Q)rm -f $(I386_STRICT_MM_BOOT_LOG) $(I386_BUILD)/NexOS-i386-strict-mm.img $(I386_BUILD)/janus-i386-strict-mm.cfg
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-strict-mm.img
-	$(Q)sed 's/$$/ i386.strictmm=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-strict-mm.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ i386.strictmm=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-strict-mm.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-strict-mm.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-strict-mm.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-strict-mm.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 20s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
@@ -114,13 +114,13 @@ check-i386-backend-long: check-i386-driver-active check-i386-gfx-editor-smoke ch
 check-i386-driver-active: check-i386-backend-audio check-i386-backend-hda check-i386-backend-ahci check-i386-backend-ehci check-i386-backend-xhci check-i386-backend-ehci-hid check-i386-backend-xhci-hid check-i386-backend-rtl8139
 	$(Q)echo "i386 driver active path smoke passed"
 
-check-i386-backend-audio: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-backend-audio: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32-BACKEND,$(I386_NEXBOX_USER))
-	$(Q)rm -f $(I386_BACKEND_AUDIO_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-audio.img $(I386_BUILD)/bootx-i386-backend-audio.cfg
+	$(Q)rm -f $(I386_BACKEND_AUDIO_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-audio.img $(I386_BUILD)/janus-i386-backend-audio.cfg
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-backend-audio.img
-	$(Q)sed 's/$$/ i386.ac97smoke=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-backend-audio.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ i386.ac97smoke=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-backend-audio.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-backend-audio.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-backend-audio.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-backend-audio.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 20s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
@@ -149,13 +149,13 @@ check-i386-backend-audio: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_AUDIO_BOOT_LOG)
 	$(Q)echo "i386 backend audio smoke passed ($(I386_BACKEND_AUDIO_BOOT_LOG))"
 
-check-i386-backend-hda: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-backend-hda: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32-BACKEND,$(I386_NEXBOX_USER))
-	$(Q)rm -f $(I386_BACKEND_HDA_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-hda.img $(I386_BUILD)/bootx-i386-backend-hda.cfg
+	$(Q)rm -f $(I386_BACKEND_HDA_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-hda.img $(I386_BUILD)/janus-i386-backend-hda.cfg
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-backend-hda.img
-	$(Q)sed 's/$$/ i386.hdasmoke=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-backend-hda.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ i386.hdasmoke=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-backend-hda.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-backend-hda.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-backend-hda.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-backend-hda.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 20s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
@@ -183,13 +183,13 @@ check-i386-backend-hda: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_HDA_BOOT_LOG)
 	$(Q)echo "i386 backend HDA smoke passed ($(I386_BACKEND_HDA_BOOT_LOG))"
 
-check-i386-gfx-editor-smoke: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-gfx-editor-smoke: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32-GFX,$(I386_NEXBOX_USER))
-	$(Q)rm -f $(I386_GFX_EDITOR_BOOT_LOG) $(I386_BUILD)/NexOS-i386-gfx-editor.img $(I386_BUILD)/bootx-i386-gfx-editor.cfg
+	$(Q)rm -f $(I386_GFX_EDITOR_BOOT_LOG) $(I386_BUILD)/NexOS-i386-gfx-editor.img $(I386_BUILD)/janus-i386-gfx-editor.cfg
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-gfx-editor.img
-	$(Q)sed 's/$$/ i386.gfxeditorsmoke=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-gfx-editor.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ i386.gfxeditorsmoke=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-gfx-editor.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-gfx-editor.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-gfx-editor.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-gfx-editor.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 20s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
@@ -214,14 +214,14 @@ check-i386-gfx-editor-smoke: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 	$(Q)grep -q 'kernel: services online' $(I386_GFX_EDITOR_BOOT_LOG)
 	$(Q)echo "i386 gfx/editor smoke passed ($(I386_GFX_EDITOR_BOOT_LOG))"
 
-check-i386-backend-ahci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-backend-ahci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32-BACKEND,$(I386_NEXBOX_USER))
-	$(Q)rm -f $(I386_BACKEND_AHCI_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-ahci.img $(I386_BUILD)/bootx-i386-backend-ahci.cfg $(I386_BUILD)/nxfs-ahci-smoke.img
+	$(Q)rm -f $(I386_BACKEND_AHCI_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-ahci.img $(I386_BUILD)/janus-i386-backend-ahci.cfg $(I386_BUILD)/nxfs-ahci-smoke.img
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-backend-ahci.img
 	$(Q)cp $(NXFS_IMAGE) $(I386_BUILD)/nxfs-ahci-smoke.img
-	$(Q)sed 's/$$/ i386.ahcismoke=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-backend-ahci.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ i386.ahcismoke=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-backend-ahci.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-backend-ahci.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-backend-ahci.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-backend-ahci.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 20s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
@@ -250,14 +250,14 @@ check-i386-backend-ahci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_AHCI_BOOT_LOG)
 	$(Q)echo "i386 backend AHCI smoke passed ($(I386_BACKEND_AHCI_BOOT_LOG))"
 
-check-i386-backend-ehci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-backend-ehci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32-BACKEND,$(I386_NEXBOX_USER))
-	$(Q)rm -f $(I386_BACKEND_EHCI_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-ehci.img $(I386_BUILD)/bootx-i386-backend-ehci.cfg $(I386_BUILD)/nxfs-ehci-smoke.img
+	$(Q)rm -f $(I386_BACKEND_EHCI_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-ehci.img $(I386_BUILD)/janus-i386-backend-ehci.cfg $(I386_BUILD)/nxfs-ehci-smoke.img
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-backend-ehci.img
 	$(Q)cp $(NXFS_IMAGE) $(I386_BUILD)/nxfs-ehci-smoke.img
-	$(Q)sed 's/$$/ i386.usbsmoke=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-backend-ehci.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ i386.usbsmoke=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-backend-ehci.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-backend-ehci.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-backend-ehci.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-backend-ehci.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 24s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
@@ -286,14 +286,14 @@ check-i386-backend-ehci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_EHCI_BOOT_LOG)
 	$(Q)echo "i386 backend EHCI MSC smoke passed ($(I386_BACKEND_EHCI_BOOT_LOG))"
 
-check-i386-backend-xhci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-backend-xhci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32-BACKEND,$(I386_NEXBOX_USER))
-	$(Q)rm -f $(I386_BACKEND_XHCI_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-xhci.img $(I386_BUILD)/bootx-i386-backend-xhci.cfg $(I386_BUILD)/nxfs-xhci-smoke.img
+	$(Q)rm -f $(I386_BACKEND_XHCI_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-xhci.img $(I386_BUILD)/janus-i386-backend-xhci.cfg $(I386_BUILD)/nxfs-xhci-smoke.img
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-backend-xhci.img
 	$(Q)cp $(NXFS_IMAGE) $(I386_BUILD)/nxfs-xhci-smoke.img
-	$(Q)sed 's/$$/ i386.usbsmoke=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-backend-xhci.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ i386.usbsmoke=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-backend-xhci.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-backend-xhci.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-backend-xhci.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-backend-xhci.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 24s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
@@ -321,13 +321,13 @@ check-i386-backend-xhci: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_XHCI_BOOT_LOG)
 	$(Q)echo "i386 backend XHCI MSC smoke passed ($(I386_BACKEND_XHCI_BOOT_LOG))"
 
-check-i386-backend-ehci-hid: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-backend-ehci-hid: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32-BACKEND,$(I386_NEXBOX_USER))
-	$(Q)rm -f $(I386_BACKEND_EHCI_HID_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-ehci-hid.img $(I386_BUILD)/bootx-i386-backend-ehci-hid.cfg
+	$(Q)rm -f $(I386_BACKEND_EHCI_HID_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-ehci-hid.img $(I386_BUILD)/janus-i386-backend-ehci-hid.cfg
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-backend-ehci-hid.img
-	$(Q)sed 's/$$/ i386.usbhidsmoke=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-backend-ehci-hid.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ i386.usbhidsmoke=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-backend-ehci-hid.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-backend-ehci-hid.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-backend-ehci-hid.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-backend-ehci-hid.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 20s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
@@ -352,13 +352,13 @@ check-i386-backend-ehci-hid: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_EHCI_HID_BOOT_LOG)
 	$(Q)echo "i386 backend EHCI HID smoke passed ($(I386_BACKEND_EHCI_HID_BOOT_LOG))"
 
-check-i386-backend-xhci-hid: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-backend-xhci-hid: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32-BACKEND,$(I386_NEXBOX_USER))
-	$(Q)rm -f $(I386_BACKEND_XHCI_HID_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-xhci-hid.img $(I386_BUILD)/bootx-i386-backend-xhci-hid.cfg
+	$(Q)rm -f $(I386_BACKEND_XHCI_HID_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-xhci-hid.img $(I386_BUILD)/janus-i386-backend-xhci-hid.cfg
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-backend-xhci-hid.img
-	$(Q)sed 's/$$/ i386.usbhidsmoke=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-backend-xhci-hid.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ i386.usbhidsmoke=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-backend-xhci-hid.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-backend-xhci-hid.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-backend-xhci-hid.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-backend-xhci-hid.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 20s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \
@@ -382,13 +382,13 @@ check-i386-backend-xhci-hid: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
 	$(Q)grep -q 'kernel: services online' $(I386_BACKEND_XHCI_HID_BOOT_LOG)
 	$(Q)echo "i386 backend XHCI HID smoke passed ($(I386_BACKEND_XHCI_HID_BOOT_LOG))"
 
-check-i386-backend-rtl8139: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE)
+check-i386-backend-rtl8139: check-i386-elf $(I386_IMAGE) $(NXFS_IMAGE) $(I386_JANUS_SMOKE_CONFIG)
 	$(call log_cmd,QEMU32-BACKEND,$(I386_NEXBOX_USER))
-	$(Q)rm -f $(I386_BACKEND_RTL8139_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-rtl8139.img $(I386_BUILD)/bootx-i386-backend-rtl8139.cfg
+	$(Q)rm -f $(I386_BACKEND_RTL8139_BOOT_LOG) $(I386_BUILD)/NexOS-i386-backend-rtl8139.img $(I386_BUILD)/janus-i386-backend-rtl8139.cfg
 	$(Q)cp $(I386_IMAGE) $(I386_BUILD)/NexOS-i386-backend-rtl8139.img
-	$(Q)sed 's/$$/ i386.rtl8139smoke=1/' $(I386_BOOTX_CONFIG) > $(I386_BUILD)/bootx-i386-backend-rtl8139.cfg
+	$(Q)sed '/^[[:space:]]*cmdline / s/$$/ i386.rtl8139smoke=1/' $(I386_JANUS_SMOKE_CONFIG) > $(I386_BUILD)/janus-i386-backend-rtl8139.cfg
 	$(Q)mcopy -o -i $(I386_BUILD)/NexOS-i386-backend-rtl8139.img@@1048576 \
-		$(I386_BUILD)/bootx-i386-backend-rtl8139.cfg ::/BOOT/BOOTX.CFG
+		$(I386_BUILD)/janus-i386-backend-rtl8139.cfg ::/BOOT/JANUS.CFG
 	$(Q)set +e; \
 			timeout 20s $(I386_QEMU) -m 128M \
 				-display none -no-reboot -no-shutdown \

@@ -25,6 +25,12 @@ struct ac97_status {
     uint32_t codec_id;
     uint32_t global_status;
     uint32_t global_control;
+    uint32_t state;
+    uint32_t reset_count;
+    uint32_t play_count;
+    uint32_t error_count;
+    uint32_t last_error;
+    uint32_t last_stream_status;
 };
 
 int ac97_init(void);

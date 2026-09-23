@@ -1,12 +1,35 @@
 #include "drivers/input/keyboard.h"
+#include "arch/x86/common/io.h"
+
+enum {
+    PS2_DATA = 0x60,
+    PS2_STATUS = 0x64,
+    PS2_STATUS_OUTPUT_FULL = 0x01,
+    PS2_STATUS_INPUT_FULL = 0x02,
+    PS2_COMMAND_DISABLE_FIRST_PORT = 0xad,
+    PS2_COMMAND_ENABLE_FIRST_PORT = 0xae,
+    PS2_COMMAND_READ_CONFIG = 0x20,
+    PS2_COMMAND_WRITE_CONFIG = 0x60,
+    PS2_CONFIG_IRQ1 = 0x01,
+    PS2_CONFIG_TRANSLATION = 0x40,
+    PS2_WAIT_LIMIT = 100000
+};
 
 static uint8_t g_shift_active;
+static uint8_t g_left_shift_active;
+static uint8_t g_right_shift_active;
 static uint8_t g_caps_lock_active;
 static uint8_t g_num_lock_active;
 static uint8_t g_scroll_lock_active;
 static uint8_t g_ctrl_active;
 static uint8_t g_alt_active;
 static uint8_t g_extended_prefix_active;
+static uint8_t g_pause_bytes_remaining;
+static uint32_t g_scancode_count;
+static uint32_t g_keyboard_event_count;
+static uint32_t g_ignored_scancode_count;
+static uint32_t g_unknown_scancode_count;
+static uint8_t g_last_scancode;
 
 #define KEYBOARD_EVENT_QUEUE_SIZE 64u
 
@@ -17,8 +40,59 @@ static volatile uint32_t g_event_count;
 static volatile uint32_t g_event_dropped;
 static volatile uint32_t g_event_seq;
 
+static int keyboard_ps2_wait(uint8_t mask, uint8_t value) {
+    for (uint32_t i = 0; i < PS2_WAIT_LIMIT; i++) {
+        if ((inb(PS2_STATUS) & mask) == value) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void keyboard_ps2_discard_output(void) {
+    while ((inb(PS2_STATUS) & PS2_STATUS_OUTPUT_FULL) != 0u) {
+        (void)inb(PS2_DATA);
+    }
+}
+
+void keyboard_ps2_init(void) {
+    uint8_t config;
+
+    if (!keyboard_ps2_wait(PS2_STATUS_INPUT_FULL, 0u)) {
+        return;
+    }
+    outb(PS2_STATUS, PS2_COMMAND_DISABLE_FIRST_PORT);
+    keyboard_ps2_discard_output();
+    if (!keyboard_ps2_wait(PS2_STATUS_INPUT_FULL, 0u)) {
+        return;
+    }
+    outb(PS2_STATUS, PS2_COMMAND_READ_CONFIG);
+    if (!keyboard_ps2_wait(PS2_STATUS_OUTPUT_FULL, PS2_STATUS_OUTPUT_FULL)) {
+        return;
+    }
+    config = inb(PS2_DATA);
+    config = (uint8_t)(config | PS2_CONFIG_IRQ1 | PS2_CONFIG_TRANSLATION);
+    if (!keyboard_ps2_wait(PS2_STATUS_INPUT_FULL, 0u)) {
+        return;
+    }
+    outb(PS2_STATUS, PS2_COMMAND_WRITE_CONFIG);
+    if (!keyboard_ps2_wait(PS2_STATUS_INPUT_FULL, 0u)) {
+        return;
+    }
+    outb(PS2_DATA, config);
+    if (!keyboard_ps2_wait(PS2_STATUS_INPUT_FULL, 0u)) {
+        return;
+    }
+    outb(PS2_STATUS, PS2_COMMAND_ENABLE_FIRST_PORT);
+    keyboard_ps2_discard_output();
+}
+
 static int keyboard_keycode_is_letter(enum keyboard_keycode keycode) {
     return keycode >= KEYBOARD_KEY_A && keycode <= KEYBOARD_KEY_Z;
+}
+
+static void keyboard_refresh_shift_active(void) {
+    g_shift_active = (uint8_t)((g_left_shift_active != 0u || g_right_shift_active != 0u) ? 1u : 0u);
 }
 
 static enum keyboard_keycode keyboard_lookup_keycode(uint8_t scancode, int extended) {
@@ -162,6 +236,25 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
     event.caps_lock = g_caps_lock_active;
     event.num_lock = g_num_lock_active;
     event.scroll_lock = g_scroll_lock_active;
+    g_scancode_count++;
+    g_last_scancode = scancode;
+
+    if (g_pause_bytes_remaining != 0u) {
+        g_pause_bytes_remaining--;
+        g_ignored_scancode_count++;
+        return event;
+    }
+    if (scancode == 0xe1u) {
+        g_extended_prefix_active = 0u;
+        g_pause_bytes_remaining = 5u;
+        g_ignored_scancode_count++;
+        return event;
+    }
+    if (scancode == 0x00u || scancode == 0xfau || scancode == 0xfeu) {
+        g_extended_prefix_active = 0u;
+        g_ignored_scancode_count++;
+        return event;
+    }
 
     /*
      * Korean 103-key PS/2 keyboards send the Hangul key as a standalone
@@ -171,6 +264,7 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
         g_extended_prefix_active = 0u;
         event.keycode = KEYBOARD_KEY_HANGUL;
         event.pressed = 1u;
+        g_keyboard_event_count++;
         return event;
     }
     if (scancode == 0xe0u) {
@@ -183,13 +277,18 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
     event.extended = extended ? 1u : 0u;
     event.keycode = keyboard_lookup_keycode(code, extended);
     if (event.keycode == KEYBOARD_KEY_NONE) {
+        g_unknown_scancode_count++;
         return event;
     }
 
     switch (event.keycode) {
         case KEYBOARD_KEY_LEFT_SHIFT:
+            g_left_shift_active = release ? 0u : 1u;
+            keyboard_refresh_shift_active();
+            break;
         case KEYBOARD_KEY_RIGHT_SHIFT:
-            g_shift_active = release ? 0u : 1u;
+            g_right_shift_active = release ? 0u : 1u;
+            keyboard_refresh_shift_active();
             break;
         case KEYBOARD_KEY_LEFT_CTRL:
         case KEYBOARD_KEY_RIGHT_CTRL:
@@ -230,6 +329,7 @@ struct keyboard_event keyboard_handle_scancode(uint8_t scancode) {
     if (!release) {
         event.ascii = keyboard_keycode_to_ascii(event.keycode, event.shift != 0, event.caps_lock != 0);
     }
+    g_keyboard_event_count++;
     return event;
 }
 
@@ -255,8 +355,12 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
 
     switch (keycode) {
         case KEYBOARD_KEY_LEFT_SHIFT:
+            g_left_shift_active = release ? 0u : 1u;
+            keyboard_refresh_shift_active();
+            break;
         case KEYBOARD_KEY_RIGHT_SHIFT:
-            g_shift_active = release ? 0u : 1u;
+            g_right_shift_active = release ? 0u : 1u;
+            keyboard_refresh_shift_active();
             break;
         case KEYBOARD_KEY_LEFT_CTRL:
         case KEYBOARD_KEY_RIGHT_CTRL:
@@ -294,6 +398,7 @@ struct keyboard_event keyboard_handle_keycode(enum keyboard_keycode keycode, int
     if (!release) {
         event.ascii = keyboard_keycode_to_ascii(event.keycode, event.shift != 0, event.caps_lock != 0);
     }
+    g_keyboard_event_count++;
     return event;
 }
 
@@ -305,6 +410,29 @@ uint8_t keyboard_led_state(void) {
     return (uint8_t)((g_num_lock_active ? 1u : 0u) |
                      (g_caps_lock_active ? 2u : 0u) |
                      (g_scroll_lock_active ? 4u : 0u));
+}
+
+int keyboard_query_status(struct keyboard_status *out) {
+    if (out == 0) {
+        return 0;
+    }
+    out->shift_active = g_shift_active;
+    out->caps_lock_active = g_caps_lock_active;
+    out->num_lock_active = g_num_lock_active;
+    out->scroll_lock_active = g_scroll_lock_active;
+    out->ctrl_active = g_ctrl_active;
+    out->alt_active = g_alt_active;
+    out->extended_prefix_active = g_extended_prefix_active;
+    out->pause_bytes_remaining = g_pause_bytes_remaining;
+    out->pending = g_event_count;
+    out->dropped = g_event_dropped;
+    out->latest_seq = g_event_seq;
+    out->scancode_count = g_scancode_count;
+    out->event_count = g_keyboard_event_count;
+    out->ignored_scancode_count = g_ignored_scancode_count;
+    out->unknown_scancode_count = g_unknown_scancode_count;
+    out->last_scancode = g_last_scancode;
+    return 1;
 }
 
 void keyboard_event_queue_push(const struct keyboard_event *event, uint32_t tick) {

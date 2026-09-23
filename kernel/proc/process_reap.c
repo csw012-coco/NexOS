@@ -4,6 +4,37 @@
 
 static void process_reap_clear_last_exit_record(void);
 
+static int process_reap_pid_active(uint32_t pid) {
+    if (pid == 0u) {
+        return 0;
+    }
+    if (g_user_session.process.pid == pid &&
+        g_user_session.process.state != PROCESS_STATE_FREE &&
+        g_user_session.process.state != PROCESS_STATE_EXITED) {
+        return 1;
+    }
+    for (uint32_t i = 0; i < USER_PROCESS_LIMIT; i++) {
+        if (!g_job_runtimes[i].used) {
+            continue;
+        }
+        if (g_job_runtimes[i].session.process.pid == pid &&
+            g_job_runtimes[i].session.process.state != PROCESS_STATE_FREE &&
+            g_job_runtimes[i].session.process.state != PROCESS_STATE_EXITED) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int process_reap_slot_is_orphan_zombie(uint32_t slot) {
+    if (slot >= USER_PROCESS_LIMIT ||
+        !g_process_slot_used[slot] ||
+        g_process_slots[slot].state != PROCESS_STATE_EXITED) {
+        return 0;
+    }
+    return !process_reap_pid_active(g_process_slots[slot].parent.pid);
+}
+
 static void process_reap_release_slot(uint32_t slot) {
     if (slot < USER_PROCESS_LIMIT) {
         process_discard_files(&g_process_slots[slot]);
@@ -29,7 +60,7 @@ static void process_reap_release_slot(uint32_t slot) {
 
 void process_reap_orphan_zombies(void) {
     for (uint32_t i = 0; i < USER_PROCESS_LIMIT; i++) {
-        if (g_process_slot_used[i] && g_process_slots[i].state == PROCESS_STATE_EXITED) {
+        if (process_reap_slot_is_orphan_zombie(i)) {
             process_reap_release_slot(i);
             if (g_last_exited_process.slot == i) {
                 process_reap_clear_last_exit_record();
@@ -73,6 +104,31 @@ int process_get_last_exit(struct process_snapshot *out) {
     }
     process_snapshot_fill(out, &g_last_exited_process);
     return 1;
+}
+
+int process_has_wait_child(uint32_t parent_pid, uint32_t requested_pid) {
+    if (parent_pid == 0u) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < USER_PROCESS_LIMIT; i++) {
+        const struct process *child;
+
+        if (!g_process_slot_used[i]) {
+            continue;
+        }
+        child = g_job_runtimes[i].used
+            ? &g_job_runtimes[i].session.process
+            : &g_process_slots[i];
+        if (child->state == PROCESS_STATE_FREE ||
+            child->parent.pid != parent_pid) {
+            continue;
+        }
+        if (requested_pid == SYS_WAIT_LAST_PID ||
+            child->pid == requested_pid) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int process_wait_last(struct process_snapshot *out) {

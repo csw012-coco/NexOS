@@ -117,10 +117,6 @@ int32_t i386_scheduler_shared_page_free(uint32_t frame);
 uint32_t i386_scheduler_shared_page_map(uint32_t frame);
 int32_t i386_scheduler_shared_page_unmap(uint32_t user_page);
 int32_t i386_scheduler_shared_page_unmap_pid(uint32_t pid, uint32_t user_page);
-uint32_t i386_scheduler_shared_phys_alloc(void);
-int32_t i386_scheduler_shared_phys_free(uint32_t frame);
-uint32_t i386_scheduler_shared_phys_map(uint32_t frame);
-int32_t i386_scheduler_shared_phys_unmap(uint32_t user_page);
 int32_t i386_scheduler_open(struct vfs *vfs,
                             const char *path,
                             uint32_t flags);

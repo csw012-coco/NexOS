@@ -85,7 +85,8 @@ int fs_service_get_mount_info(struct vfs *vfs, uint32_t index, struct vfs_mount_
 int fs_service_fill_builtin_mount_info(struct vfs *vfs,
                                        uint32_t index,
                                        struct syscall_mount_info *info,
-                                       uint32_t *offset_out) {
+                                       uint32_t *offset_out,
+                                       uint32_t flags) {
     struct vfs_mount_info builtin;
     uint32_t source_known = 0;
 
@@ -109,6 +110,9 @@ int fs_service_fill_builtin_mount_info(struct vfs *vfs,
     info->disk_index = builtin.disk_index;
     info->part_index = builtin.part_index;
     info->source_known = source_known;
-    fs_service_fill_builtin_space(vfs, info, builtin.kind);
+
+    if ((flags & SYS_QUERY_FLAG_NO_SPACE) == 0u) {
+        fs_service_fill_builtin_space(vfs, info, builtin.kind);
+    }
     return 1;
 }

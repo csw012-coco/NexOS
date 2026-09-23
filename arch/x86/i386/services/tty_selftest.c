@@ -97,5 +97,30 @@ int tty_selftest_utf8_edit(void) {
         return 0;
     }
 
+    tty_selftest_feed_key(KEYBOARD_KEY_HANGUL, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_D, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_L, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_LEFT_SHIFT, 0, 0, 1);
+    tty_selftest_feed_key(KEYBOARD_KEY_T, 0, 0, 1);
+    tty_selftest_feed_key(KEYBOARD_KEY_ENTER, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_HANGUL, 0, 0, 0);
+    if (!tty_selftest_read_expected("\xec\x9e\x88")) {
+        return 0;
+    }
+
+    tty_selftest_feed_key(KEYBOARD_KEY_HANGUL, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_D, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_K, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_LEFT_SHIFT, 0, 0, 1);
+    tty_selftest_feed_key(KEYBOARD_KEY_T, 0, 0, 1);
+    tty_selftest_feed_key(KEYBOARD_KEY_D, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_M, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_F, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_ENTER, 0, 0, 0);
+    tty_selftest_feed_key(KEYBOARD_KEY_HANGUL, 0, 0, 0);
+    if (!tty_selftest_read_expected("\xec\x95\x98\xec\x9d\x84")) {
+        return 0;
+    }
+
     return 1;
 }

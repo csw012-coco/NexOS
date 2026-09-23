@@ -156,6 +156,7 @@ static void syscall_native_io_wait_for_interrupt(void *ctx) {
     } else {
         sched_tick();
     }
+    kernel_runtime_display_service_pending();
     kernel_runtime_wait_for_interrupt();
 }
 
@@ -273,8 +274,15 @@ static uint64_t syscall_native_misc_clear(void *ctx) {
 }
 
 static uint64_t syscall_native_misc_ticks(void *ctx) {
+    uint32_t hz = kernel_runtime_timer_hz();
+    uint32_t ticks;
+
     (void)ctx;
-    return g_syscall_ticks != 0 ? *g_syscall_ticks : 0u;
+    ticks = g_syscall_ticks != 0 ? *g_syscall_ticks : 0u;
+    if (hz == 0u) {
+        hz = 100u;
+    }
+    return ((uint64_t)ticks * 1000ull) / hz;
 }
 
 static uint64_t syscall_native_misc_reboot(void *ctx) {
@@ -295,52 +303,10 @@ struct syscall_native_query_context {
 static uint32_t syscall_native_query_fd_kind(void *ctx, uint32_t fd) {
     const struct syscall_native_query_context *query_ctx =
         (const struct syscall_native_query_context *)ctx;
-    const struct process *proc = query_ctx != 0 ? query_ctx->proc : 0;
 
-    if (proc == 0 || fd >= PROCESS_FILE_MAX) {
-        return KERNEL_FILE_NONE;
-    }
-    return proc->files[fd].kind;
-}
-
-static void syscall_native_tty_info_set(struct syscall_tty_info *info,
-                                        uint32_t kind,
-                                        uint32_t index,
-                                        const char *path) {
-    if (info == 0) {
-        return;
-    }
-    memset(info, 0, sizeof(*info));
-    info->kind = kind;
-    info->index = index;
-    info->active = kind == SYS_TTY_KIND_VIRTUAL && index == tty_active_index();
-    syscall_native_copy_name(info->path, sizeof(info->path), path);
-}
-
-static int syscall_native_tty_info_from_handle(
-    struct syscall_tty_info *info,
-    const void *handle) {
-    uint32_t i;
-
-    if (handle == 0) {
-        return 0;
-    }
-    for (i = 0u; i < TTY_VIRTUAL_COUNT; i++) {
-        if (handle == tty_virtual(i)) {
-            if (i == 0u) {
-                syscall_native_tty_info_set(
-                    info, SYS_TTY_KIND_VIRTUAL, i, "/dev/tty");
-            } else if (i == 1u) {
-                syscall_native_tty_info_set(
-                    info, SYS_TTY_KIND_VIRTUAL, i, "/dev/tty2");
-            } else {
-                syscall_native_tty_info_set(
-                    info, SYS_TTY_KIND_VIRTUAL, i, "/dev/tty3");
-            }
-            return 1;
-        }
-    }
-    return 0;
+    return syscall_common_request_core_process_fd_kind(
+        query_ctx != 0 ? query_ctx->proc : 0,
+        fd);
 }
 
 static int syscall_native_query_tty(void *ctx,
@@ -348,30 +314,11 @@ static int syscall_native_query_tty(void *ctx,
                                     struct syscall_tty_info *info) {
     const struct syscall_native_query_context *query_ctx =
         (const struct syscall_native_query_context *)ctx;
-    const struct process *proc = query_ctx != 0 ? query_ctx->proc : 0;
-    const struct file *file;
-    void *tty_handle;
 
-    if (proc == 0 || info == 0 || fd >= PROCESS_FILE_MAX) {
-        return 0;
-    }
-    file = &proc->files[fd];
-    if (!file_is_active(file)) {
-        return 0;
-    }
-    tty_handle = file_tty_private_handle(file);
-    if (tty_handle != 0 &&
-        syscall_native_tty_info_from_handle(info, tty_handle)) {
-        return 1;
-    }
-    if (file->kind == KERNEL_FILE_VFS &&
-        file->vfs_node.mount_kind == VFS_MOUNT_DEVFS &&
-        file->vfs_node.aux_index == VFS_DEV_TTYS0) {
-        syscall_native_tty_info_set(
-            info, SYS_TTY_KIND_SERIAL, 0u, "/dev/ttyS0");
-        return 1;
-    }
-    return 0;
+    return syscall_common_request_core_process_tty_query(
+        query_ctx != 0 ? query_ctx->proc : 0,
+        fd,
+        info);
 }
 
 static int32_t syscall_native_query_fd_query(void *ctx,
@@ -379,24 +326,11 @@ static int32_t syscall_native_query_fd_query(void *ctx,
                                              struct syscall_fd_info *info) {
     const struct syscall_native_query_context *query_ctx =
         (const struct syscall_native_query_context *)ctx;
-    const struct process *proc = query_ctx != 0 ? query_ctx->proc : 0;
-    const struct file *file;
 
-    if (proc == 0 || info == 0 || fd >= PROCESS_FILE_MAX) {
-        return 0;
-    }
-    file = &proc->files[fd];
-    memset(info, 0, sizeof(*info));
-    info->fd = fd;
-    info->kind = file->kind;
-    info->flags = file->flags;
-    info->offset = file->offset;
-    info->node_kind = file->vfs_node.kind;
-    info->mount_kind = file->vfs_node.mount_kind;
-    info->readable = file_can_read(file) ? 1u : 0u;
-    info->writable = file_can_write(file) ? 1u : 0u;
-    syscall_native_copy_name(info->path, sizeof(info->path), file->opened_path);
-    return file->kind != KERNEL_FILE_NONE ? 1 : 0;
+    return syscall_common_request_core_process_fd_query(
+        query_ctx != 0 ? query_ctx->proc : 0,
+        fd,
+        info);
 }
 
 static int syscall_native_query_fill_mount_info(
@@ -415,7 +349,7 @@ static int syscall_native_query_fill_mount_info(
     }
     memset(info, 0, sizeof(*info));
     info->kind = SYS_MOUNT_INFO_NONE;
-    if (!fs_service_fill_builtin_mount_info(vfs, index, info, &offset)) {
+    if (!fs_service_fill_builtin_mount_info(vfs, index, info, &offset, flags)) {
         if (index < offset ||
             !fs_service_get_mount_info(vfs, index - offset, &mount)) {
             return 0;
@@ -539,13 +473,33 @@ static uint64_t syscall_native_proc_error_result(void) {
     return (uint64_t)(-(int64_t)errno_value);
 }
 
-static uint64_t syscall_native_proc_sleep(void *ctx, uint32_t ticks) {
+static uint32_t syscall_native_sleep_ms_to_ticks(uint32_t ms) {
+    uint32_t hz = kernel_runtime_timer_hz();
+    uint64_t ticks;
+
+    if (ms == 0u) {
+        return 0u;
+    }
+    if (hz == 0u) {
+        hz = 100u;
+    }
+    ticks = ((uint64_t)ms * hz + 999ull) / 1000ull;
+    if (ticks == 0u) {
+        ticks = 1u;
+    }
+    if (ticks > 0xffffffffull) {
+        ticks = 0xffffffffull;
+    }
+    return (uint32_t)ticks;
+}
+
+static uint64_t syscall_native_proc_sleep(void *ctx, uint32_t ms) {
     struct syscall_native_proc_context *proc_ctx =
         (struct syscall_native_proc_context *)ctx;
 
     sched_sleep_current(process_current_session(),
                         proc_ctx != 0 ? proc_ctx->frame : 0,
-                        ticks);
+                        syscall_native_sleep_ms_to_ticks(ms));
     return SYSCALL_EXIT_TO_KERNEL;
 }
 
@@ -611,6 +565,7 @@ static uint64_t syscall_native_proc_fork(void *ctx) {
 static uint64_t syscall_native_proc_wait(void *ctx,
                                          uint32_t pid,
                                          uint64_t user_info_addr) {
+    const struct process *caller;
     struct process_snapshot proc;
     int ok;
 
@@ -624,6 +579,10 @@ static uint64_t syscall_native_proc_wait(void *ctx,
         ? process_wait_last(&proc)
         : process_wait_pid(pid, &proc);
     if (!ok) {
+        caller = process_current();
+        if (caller != 0 && process_has_wait_child(caller->pid, pid)) {
+            return (uint64_t)(-(int64_t)NEX_ERR_AGAIN);
+        }
         return (uint64_t)(-(int64_t)NEX_ERR_CHILD);
     }
     if (user_info_addr == 0u) {

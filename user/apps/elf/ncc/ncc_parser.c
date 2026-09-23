@@ -165,6 +165,8 @@ static int ncc_type_is_pointer(struct ncc_type type) {
     return type.pointer_depth != 0u || type.array_length != 0u;
 }
 
+static int ncc_type_same(struct ncc_type a, struct ncc_type b);
+
 static int ncc_parse_type(struct ncc_parser *parser, struct ncc_type *type_out) {
     struct ncc_type type;
     int consumed = 0;
@@ -314,12 +316,19 @@ static struct ncc_global *ncc_add_global(struct ncc_parser *parser,
     existing = ncc_find_global(parser, name);
     if (existing != NULL) {
         if (existing->extern_only && !extern_only) {
+            if (!ncc_type_same(existing->type, type)) {
+                ncc_parser_error(parser, "extern global type does not match definition");
+                return NULL;
+            }
             existing->type = type;
             existing->initial_value = initial_value;
             existing->initializer_data = initializer_data;
             existing->initializer_size = initializer_size;
             existing->has_initializer = has_initializer ? 1u : 0u;
             existing->extern_only = 0u;
+            return existing;
+        }
+        if (extern_only && ncc_type_same(existing->type, type)) {
             return existing;
         }
         ncc_parser_error(parser, "duplicate global variable");
@@ -1650,6 +1659,32 @@ static int ncc_skip_top_level_declaration(struct ncc_parser *parser) {
     return 1;
 }
 
+static int ncc_parse_extern_variable_declarator(struct ncc_parser *parser,
+                                                const char *name,
+                                                struct ncc_type type) {
+    if (ncc_consume(parser, "[")) {
+        if (ncc_consume(parser, "]")) {
+            ncc_parser_error(parser, "extern array length is required");
+            return 0;
+        }
+        if (parser->lexer.token.kind != NCC_TOK_NUMBER ||
+            parser->lexer.token.value == 0u ||
+            parser->lexer.token.value > 65535u) {
+            ncc_parser_error(parser, "array length must be a positive constant");
+            return 0;
+        }
+        type.array_length = (uint32_t)parser->lexer.token.value;
+        if (!ncc_next(parser) || !ncc_expect(parser, "]")) {
+            return 0;
+        }
+    }
+    if (ncc_token_is(&parser->lexer.token, "=")) {
+        ncc_parser_error(parser, "extern global initializer is unsupported");
+        return 0;
+    }
+    return ncc_add_global(parser, name, type, 0, 0, 1, NULL, 0u) != NULL;
+}
+
 static int ncc_parse_extern_declaration(struct ncc_parser *parser) {
     char name[NCC_NAME_MAX + 1];
     struct ncc_type type;
@@ -1669,7 +1704,26 @@ static int ncc_parse_extern_declaration(struct ncc_parser *parser) {
     if (ncc_token_is(&parser->lexer.token, "(")) {
         return ncc_skip_top_level_declaration(parser);
     }
-    return ncc_parse_global_variable(parser, name, type, 1);
+    if (!ncc_parse_extern_variable_declarator(parser, name, type)) {
+        return 0;
+    }
+    while (ncc_consume(parser, ",")) {
+        struct ncc_type next_type = type;
+
+        while (ncc_consume(parser, "*")) {
+            next_type.pointer_depth++;
+        }
+        if (parser->lexer.token.kind != NCC_TOK_IDENT) {
+            ncc_parser_error(parser, "expected extern variable name");
+            return 0;
+        }
+        ncc_copy_text(name, sizeof(name), parser->lexer.token.text);
+        if (!ncc_next(parser) ||
+            !ncc_parse_extern_variable_declarator(parser, name, next_type)) {
+            return 0;
+        }
+    }
+    return ncc_expect(parser, ";");
 }
 
 static int ncc_parse_global_constant(struct ncc_parser *parser, int64_t *value_out) {

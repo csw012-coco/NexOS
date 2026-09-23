@@ -1,4 +1,5 @@
 #include "kernel/internal/core/tty_internal.h"
+#include "arch/x86/i386/services/shared_services.h"
 #include "arch/x86/i386/syscall/compat32_internal.h"
 #include "kernel/internal/sys/syscall_common_request_core.h"
 #include "kernel/public/arch/arch_ops.h"
@@ -12,7 +13,12 @@ static void syscall_compat32_file_drain_tty_input(void *ctx_ptr, struct tty *tty
         return;
     }
     while (ctx->pop_keyboard_event(&event)) {
-        tty_feed_key_event(tty, &event);
+        struct tty *target_tty = shared_services_active_tty();
+
+        if (target_tty == 0) {
+            target_tty = tty;
+        }
+        tty_feed_key_event(target_tty, &event);
     }
 }
 

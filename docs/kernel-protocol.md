@@ -1,6 +1,6 @@
-# boot/x Kernel Protocol Guide
+# Janus Kernel Protocol Guide
 
-This document explains how a kernel should consume the `boot/x` boot
+This document explains how a kernel should consume the `Janus` boot
 protocol provided by `stage3`.
 
 ## Header To Include
@@ -8,55 +8,55 @@ protocol provided by `stage3`.
 Kernels should include:
 
 ```c
-#include "bootx.h"
+#include "janus.h"
 ```
 
 The protocol structs live in
-[`include/bootx/bootx.h`](../include/bootx/bootx.h).
+[`include/janus/janus.h`](../include/janus/janus.h).
 
 ## Entry Convention
 
 ### ELF32 kernels
 
-`boot/x` calls the ELF entry point directly in 32-bit protected mode:
+`Janus` calls the ELF entry point directly in 32-bit protected mode:
 
 ```c
-void kernel_main(const struct bootx_boot_info *boot_info);
+void kernel_main(const struct janus_boot_info *boot_info);
 ```
 
 See:
 
-- [`bootloader/bootx/sample-kernel/kernel.c`](../bootloader/bootx/sample-kernel/kernel.c)
+- [`bootloader/janus/sample-kernel/kernel.c`](../bootloader/janus/sample-kernel/kernel.c)
 
 ### ELF64 kernels
 
-`boot/x` loads the ELF64 image, enables long mode, and jumps to the 64-bit
+`Janus` loads the ELF64 image, enables long mode, and jumps to the 64-bit
 entry point with:
 
-- `RDI = pointer to struct bootx_boot_info`
+- `RDI = pointer to struct janus_boot_info`
 
 In C this looks like:
 
 ```c
-void kernel_main64(const struct bootx_boot_info *boot_info);
+void kernel_main64(const struct janus_boot_info *boot_info);
 ```
 
 See:
 
-- [`bootloader/bootx/sample-kernel64/kernel64.c`](../bootloader/bootx/sample-kernel64/kernel64.c)
+- [`bootloader/janus/sample-kernel64/kernel64.c`](../bootloader/janus/sample-kernel64/kernel64.c)
 
 ## Validate The Hand-Off
 
 Every kernel should check the protocol header first:
 
 ```c
-if (boot_info->hdr.magic != BOOTX_MAGIC) {
+if (boot_info->hdr.magic != JANUS_MAGIC) {
     for (;;) {
         __asm__ __volatile__("hlt");
     }
 }
 
-if (boot_info->hdr.version < BOOTX_PROTOCOL_VERSION) {
+if (boot_info->hdr.version < JANUS_PROTOCOL_VERSION) {
     for (;;) {
         __asm__ __volatile__("hlt");
     }
@@ -65,12 +65,12 @@ if (boot_info->hdr.version < BOOTX_PROTOCOL_VERSION) {
 
 Important values:
 
-- `BOOTX_MAGIC = 0x42545831` which is `BTX1`
+- `JANUS_MAGIC = 0x4A4E5331` which is `JNS1`
 - current protocol version is `2`
 
 ## What The Kernel Receives
 
-`struct bootx_boot_info` currently contains:
+`struct janus_boot_info` currently contains:
 
 - protocol header
 - BIOS boot drive
@@ -106,11 +106,11 @@ the boot info struct. Cast them before use:
 const char *cmdline =
     (const char *)(uintptr_t)boot_info->cmdline;
 
-const struct bootx_memmap_entry *memmap =
-    (const struct bootx_memmap_entry *)(uintptr_t)boot_info->memmap;
+const struct janus_memmap_entry *memmap =
+    (const struct janus_memmap_entry *)(uintptr_t)boot_info->memmap;
 
-const struct bootx_module *modules =
-    (const struct bootx_module *)(uintptr_t)boot_info->modules;
+const struct janus_module *modules =
+    (const struct janus_module *)(uintptr_t)boot_info->modules;
 ```
 
 This is the same pattern used by the sample kernels.
@@ -122,23 +122,23 @@ const char *cmdline =
     (const char *)(uintptr_t)boot_info->cmdline;
 ```
 
-The string is NUL-terminated and comes from `CMDLINE=` in `BOOTX.CFG`.
+The string is NUL-terminated and comes from `CMDLINE=` in `JANUS.CFG`.
 
 Example:
 
 ```ini
 LABEL=Demo Kernel64
 KERNEL=K64DEMO.ELF
-CMDLINE=console=text root=bootx-demo64 arch=x86_64
+CMDLINE=console=text root=janus-demo64 arch=x86_64
 ```
 
 ## Reading The Memory Map
 
-The memory map is an array of `struct bootx_memmap_entry`:
+The memory map is an array of `struct janus_memmap_entry`:
 
 ```c
-const struct bootx_memmap_entry *memmap =
-    (const struct bootx_memmap_entry *)(uintptr_t)boot_info->memmap;
+const struct janus_memmap_entry *memmap =
+    (const struct janus_memmap_entry *)(uintptr_t)boot_info->memmap;
 
 for (uint32_t i = 0; i < boot_info->memmap_count; i++) {
     uint64_t base = memmap[i].base;
@@ -152,19 +152,19 @@ for (uint32_t i = 0; i < boot_info->memmap_count; i++) {
 
 Map types currently include:
 
-- `BOOTX_MEMMAP_USABLE`
-- `BOOTX_MEMMAP_RESERVED`
-- `BOOTX_MEMMAP_ACPI_RECLAIMABLE`
-- `BOOTX_MEMMAP_ACPI_NVS`
-- `BOOTX_MEMMAP_BAD`
-- `BOOTX_MEMMAP_BOOTLOADER_RECLAIMABLE`
+- `JANUS_MEMMAP_USABLE`
+- `JANUS_MEMMAP_RESERVED`
+- `JANUS_MEMMAP_ACPI_RECLAIMABLE`
+- `JANUS_MEMMAP_ACPI_NVS`
+- `JANUS_MEMMAP_BAD`
+- `JANUS_MEMMAP_BOOTLOADER_RECLAIMABLE`
 
 ## Reading Console Info
 
-`boot/x` currently fills text mode console info:
+`Janus` currently fills text mode console info:
 
 ```c
-if (boot_info->console.type == BOOTX_CONSOLE_TEXT) {
+if (boot_info->console.type == JANUS_CONSOLE_TEXT) {
     uint16_t columns = boot_info->console.text_columns;
     uint16_t rows = boot_info->console.text_rows;
     uint8_t color = boot_info->console.text_color;
@@ -176,11 +176,11 @@ if (boot_info->console.type == BOOTX_CONSOLE_TEXT) {
 
 ## Reading Loaded Modules
 
-Modules come from `MODULE=` lines in `BOOTX.CFG`.
+Modules come from `MODULE=` lines in `JANUS.CFG`.
 
 ```c
-const struct bootx_module *modules =
-    (const struct bootx_module *)(uintptr_t)boot_info->modules;
+const struct janus_module *modules =
+    (const struct janus_module *)(uintptr_t)boot_info->modules;
 
 for (uint32_t i = 0; i < boot_info->module_count; i++) {
     const char *name = modules[i].name;
@@ -208,10 +208,10 @@ management setup.
 ## Minimal Example
 
 ```c
-#include "bootx.h"
+#include "janus.h"
 
-void kernel_main64(const struct bootx_boot_info *boot_info) {
-    if (boot_info->hdr.magic != BOOTX_MAGIC) {
+void kernel_main64(const struct janus_boot_info *boot_info) {
+    if (boot_info->hdr.magic != JANUS_MAGIC) {
         for (;;) {
             __asm__ __volatile__("hlt");
         }
@@ -219,8 +219,8 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
 
     const char *cmdline =
         (const char *)(uintptr_t)boot_info->cmdline;
-    const struct bootx_memmap_entry *memmap =
-        (const struct bootx_memmap_entry *)(uintptr_t)boot_info->memmap;
+    const struct janus_memmap_entry *memmap =
+        (const struct janus_memmap_entry *)(uintptr_t)boot_info->memmap;
 
     (void)cmdline;
     (void)memmap;
@@ -233,7 +233,7 @@ void kernel_main64(const struct bootx_boot_info *boot_info) {
 
 ## Current Notes
 
-- `boot/x` currently keeps protocol data structures in low memory
+- `Janus` currently keeps protocol data structures in low memory
 - ELF64 higher-half kernels are supported through bootloader paging setup
 - current sample kernels still rely on the low identity mapping being present
 - true high physical placement above 4GiB is not implemented yet

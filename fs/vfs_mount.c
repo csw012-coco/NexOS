@@ -1,5 +1,8 @@
 #include "fs/vfs_internal.h"
+#include "kernel/public/core/kprint.h"
 #include "lib/string.h"
+
+static uint8_t g_vfs_nxfs_uuid_probe_sector[NXFS_BLOCK_SIZE];
 
 static int vfs_mount_fail(enum vfs_mount_error error) {
     return -(int)error;
@@ -50,7 +53,7 @@ static int vfs_mount_root_from_source(struct vfs *vfs,
         return vfs_mount_fail(VFS_MOUNT_ERR_BAD_ARGS);
     }
     provider = vfs_builtin_mount_provider(mount_kind);
-    if (provider == 0 || provider->mount_builtin == 0 || provider->root_target == 0) {
+    if (provider == 0 || provider->mount_builtin == 0) {
         return vfs_mount_fail(VFS_MOUNT_ERR_UNSUPPORTED_KIND);
     }
     if (blockdev_acquire_device(dev) != 0) {
@@ -69,7 +72,13 @@ static int vfs_mount_root_from_source(struct vfs *vfs,
     }
     blockdev_release(*old_ref);
     *old_ref = new_ref;
-    return vfs_set_root_mount(vfs, provider->root_target);
+    vfs->root_kind = mount_kind;
+    vfs->root_slot = 0u;
+    if (old_dev != 0 && old_dev != new_ref) {
+        blockdev_set_rootfs_protected(old_dev, 0u);
+    }
+    blockdev_set_rootfs_protected(new_ref, 1u);
+    return 0;
 }
 
 static int vfs_resolve_mount_source(uint32_t disk_index,
@@ -446,13 +455,25 @@ int vfs_find_source_by_boot_partition(uint32_t partition_lba,
 }
 
 static int vfs_nxfs_uuid_matches(struct block_device *dev, uint32_t partition_lba, const uint8_t uuid[16]) {
-    struct nxfs_volume probe;
+    struct nxfs_super super;
 
-    if (dev == 0 || uuid == 0 || nxfs_uuid_is_zero(uuid) || nxfs_mount(&probe, dev, partition_lba) != 0) {
+    if (dev == 0 ||
+        uuid == 0 ||
+        nxfs_uuid_is_zero(uuid) ||
+        dev->block_size != NXFS_BLOCK_SIZE ||
+        blockdev_read(dev, partition_lba, 1u, g_vfs_nxfs_uuid_probe_sector) != 0) {
+        return 0;
+    }
+    memcpy(&super, g_vfs_nxfs_uuid_probe_sector, sizeof(super));
+    kprint("root: nxfs uuid probe lba=%u magic=%x blocks=%u\n",
+           partition_lba,
+           super.magic,
+           super.total_blocks);
+    if (super.magic != NXFS_MAGIC || super.total_blocks == 0u) {
         return 0;
     }
     for (uint32_t i = 0; i < 16u; i++) {
-        if (probe.super.uuid[i] != uuid[i]) {
+        if (super.uuid[i] != uuid[i]) {
             return 0;
         }
     }
@@ -480,8 +501,10 @@ int vfs_find_source_by_nxfs_uuid(const uint8_t uuid[16],
             uint32_t partition_lba;
 
             if (blockdev_partition_get(dev, part_slot, &part) != 0 ||
-                vfs_lba_to_u32(part.start_lba, &partition_lba) != 0 ||
-                !vfs_nxfs_uuid_matches(dev, partition_lba, uuid)) {
+                vfs_lba_to_u32(part.start_lba, &partition_lba) != 0) {
+                continue;
+            }
+            if (!vfs_nxfs_uuid_matches(dev, partition_lba, uuid)) {
                 continue;
             }
             *disk_index_out = disk_index;
